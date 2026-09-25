@@ -10,6 +10,41 @@ AI処理の内部構成、利用ツール、実際のプロンプト、Mermaid�
 
 ワークスペース名の右にエラーアイコンがある場合、吹き出しのエラーをクリックすると該当タブ・明細へ移動します。ルールの読み込みエラーも明細で確認できます。ワークスペースやルールの削除は、それぞれのヘッダーのゴミ箱から行います。確認後に削除し、処理対象のソースは保持します。
 
+## Windowsで配布用Setupを作る（最短手順）
+
+Windows 10/11（x64）で、ソースをダウンロード・展開済みの場合の例です。`winget`とインターネット接続を使います。
+
+**1. 初回だけ、PowerShellでビルド用ツールを導入します。**
+
+```powershell
+winget install -e --id GoLang.Go --source winget --accept-package-agreements --accept-source-agreements
+winget install -e --id OpenJS.NodeJS.22 --source winget --accept-package-agreements --accept-source-agreements
+winget install -e --id NSIS.NSIS --source winget --accept-package-agreements --accept-source-agreements
+```
+
+**2. ターミナルを完全に閉じて開き直し、OneByOneのフォルダで実行します。**
+
+`cd`のパスは、ダウンロードしたソースの場所に変更してください。
+
+```powershell
+cd "C:\ダウンロードした場所\OneByOne"
+
+go install github.com/wailsapp/wails/v2/cmd/wails@v2.15.0
+$env:WAILS_BINARY = "$(go env GOPATH)\bin\wails.exe"
+$env:MAKENSIS_BINARY = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+
+npm.cmd --prefix frontend ci
+npm.cmd run package -- --platform windows/amd64
+```
+
+**3. 生成されたSetupを配布します。**
+
+```text
+build\package\OneByOne-windows-amd64-Setup.exe
+```
+
+`package`はビルドと梱包をまとめて行い、Git・ripgrep・WebView2導入用ファイルも自動取得して同梱します。最短手順なのでテストは含めていません。テストする場合はパッケージ作成前に`npm.cmd test`を実行します。詳細は[ビルド・配布手順](docs/build.md)を参照してください。
+
 ## 1. 事前準備
 
 ### 対象ソースと実行環境
@@ -180,7 +215,7 @@ IDは固定です。表示名と対象フォルダは後から変更できます
 
 ### ソースから起動・ビルドする
 
-開発にはGo 1.25以上（ビルド・CIでは1.27.x）、Node.js 22以上、Git、rg、WailsとOS依存環境を用意します。リポジトリ直下の共通コマンドでテスト・ビルド・配布物作成を行います。
+開発にはGo 1.25以上（ビルド・CIでは1.27.x）、Node.js 22以上、WailsとOS依存環境を用意します。Git・rgは共通コマンドが同梱用資材を自動取得します。リポジトリ直下の共通コマンドでテスト・ビルド・配布物作成を行います。
 
 ```sh
 npm --prefix frontend ci
@@ -189,7 +224,7 @@ npm run build
 npm run package
 ```
 
-`npm test`はフロントエンドの型検査、スクリプト・Goのテスト、Go vetをまとめて実行します。`npm run build`はGUIとCLIを`build/bin/`へ出力し、rgとライセンスを同梱します。`npm run package`はビルド後に配布フォルダとZIPを作成します。ツールや依存関係のインストールは自動では行いません。OS・CPU指定、rgの用意、出力先などは[ビルド・配布手順](docs/build.md)を参照してください。
+`npm test`はフロントエンドの型検査、スクリプト・Goのテスト、Go vetをまとめて実行します。`npm run build`はGUIとCLIを`build/bin/`へ出力し、Git・rgとライセンスを同梱します。`npm run package`はビルド後に配布フォルダとZIPを作成し、WindowsではSetupも生成します。Go・Node.js・Wails・NSISなどのビルド用ツールは事前に導入してください。OS・CPU指定、同梱資材、出力先などは[ビルド・配布手順](docs/build.md)を参照してください。
 
 WindowsのCLI名は`onebyone-cli.exe`です。Go・Node.jsは開発用で、ビルド済みアプリの利用者には不要です。画面だけを確認する場合は次のコマンドを使えます。ブラウザ版はプレビュー用データを表示し、ファイル操作やAI実行を行いません。
 
