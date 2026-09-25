@@ -1,0 +1,889 @@
+{
+  "schemaVersion": 1,
+  "updatedAt": "2026-09-22",
+  "targets": {
+    "macos/arm64": {
+      "rg": {
+        "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-aarch64-apple-darwin.tar.gz",
+        "sha256": "3750b2e93f37e0c692657da574d7019a101c0084da05a790c83fd335bad973e4",
+        "version": "15.2.0",
+        "subdir": "ripgrep-15.2.0-aarch64-apple-darwin"
+      },
+      "git": {
+        "url": "https://github.com/desktop/dugite-native/releases/download/v2.53.0-4/dugite-native-v2.53.0-4098283-macOS-arm64.tar.gz",
+        "sha256": "f9dc64635a5b62fbd7ad95db73268bbb8912255ac516d65d37bf7af22fcb8ffe",
+        "version": "2.53.0",
+        "distribution": "dugite-native v2.53.0-4",
+        "sources": [
+          {
+            "url": "https://codeload.github.com/git/git/tar.gz/67ad42147a7acc2af6074753ebd03d904476118f",
+            "sha256": "89b73762be55037144c92eaf5d0657b644330770f66c584c1ba2e7b90b6218cf",
+            "name": "git-source.tar.gz"
+          },
+          {
+            "url": "https://codeload.github.com/desktop/dugite-native/tar.gz/refs/tags/v2.53.0-4",
+            "sha256": "6600bdf3c7e2cbb127ac63d9d38da3a91267610c6034ecb8ff73e94f89508f33",
+            "name": "dugite-build-source.tar.gz"
+          },
+          {
+            "name": "go-uuid-v1.0.2-source.tar.gz",
+            "url": "https://codeload.github.com/hashicorp/go-uuid/tar.gz/refs/tags/v1.0.2",
+            "sha256": "2dee0f810c3e3a2cd3d49a075d0a64a88806c90712a4b66013b20a1ff0562eae"
+          },
+          {
+            "name": "skia-libgifcodec-source.tar.gz",
+            "url": "https://skia.googlesource.com/libgifcodec/+archive/d06d2a6d42baf6c0c91cacc28df2542a911d05fe.tar.gz",
+            "sha256": "4d5eb036cec00e939acac074972a6f312b1ec4f492c66309efd41260cf59c056"
+          }
+        ],
+        "licenses": [
+          {
+            "url": "https://raw.githubusercontent.com/git/git/67ad42147a7acc2af6074753ebd03d904476118f/COPYING",
+            "sha256": "5b2198d1645f767585e8a88ac0499b04472164c0d2da22e75ecf97ef443ab32e",
+            "name": "COPYING"
+          },
+          {
+            "url": "https://raw.githubusercontent.com/desktop/dugite-native/v2.53.0-4/LICENSE.md",
+            "sha256": "db296f2f7f35bca3a174efb0eb392b3b17bd94b341851429a3dff411b1c2fc73",
+            "name": "dugite-LICENSE.md"
+          },
+          {
+            "name": "git-lfs-LICENSE.md",
+            "url": "https://raw.githubusercontent.com/git-lfs/git-lfs/v3.7.1/LICENSE.md",
+            "sha256": "4fae9062ab5cdd5fb15486b728534d8aded8b4ae9d84b6d66a956f5162c366b6"
+          },
+          {
+            "name": "git-lfs-go-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/golang/go/go1.25.1/LICENSE",
+            "sha256": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad"
+          },
+          {
+            "name": "git-lfs-dpotapov-go-spnego-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/dpotapov/go-spnego/298b63a54430/LICENSE",
+            "sha256": "74e635bc5b835cbac01362dc69dcf5d84c4e8f69aa4207ed7301b1a9f238214c"
+          },
+          {
+            "name": "git-lfs-git-lfs-gitobj-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/git-lfs/gitobj/v2.1.1/LICENSE.md",
+            "sha256": "49e9a8cbb772da6682b4613a36aa17934fa949e5e30e58b3f0f24d6ea3265c69"
+          },
+          {
+            "name": "git-lfs-git-lfs-go-netrc-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/git-lfs/go-netrc/ba0029b43d11/LICENSE",
+            "sha256": "c3880f30146c2ad11c85a243858027e8a1d61e241e53284d7cef3aa9452f16df"
+          },
+          {
+            "name": "git-lfs-git-lfs-pktline-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/git-lfs/pktline/06e9096e2825/LICENSE.md",
+            "sha256": "09c5e6c848991ae3a8884ce05457102a474e00ca237b92745eef333a9b0e813a"
+          },
+          {
+            "name": "git-lfs-git-lfs-wildmatch-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/git-lfs/wildmatch/v2.0.1/LICENSE.md",
+            "sha256": "34ece938f52ea9d3b706a780db52c14ba4544c2e0fdbccaa2701283000182c23"
+          },
+          {
+            "name": "git-lfs-golang-groupcache-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/golang/groupcache/2c02b8208cf8/LICENSE",
+            "sha256": "73ba74dfaa520b49a401b5d21459a8523a146f3b7518a833eea5efa85130bf68"
+          },
+          {
+            "name": "git-lfs-hashicorp-go-uuid-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/hashicorp/go-uuid/v1.0.2/LICENSE",
+            "sha256": "60222c28c1a7f6a92c7df98e5c5f4459e624e6e285e0b9b94467af5f6ab3343d"
+          },
+          {
+            "name": "git-lfs-jcmturner-aescts-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/jcmturner/aescts/v2.0.0/LICENSE",
+            "sha256": "b40930bbcf80744c86c46a12bc9da056641d722716c378f5659b9e555ef833e1"
+          },
+          {
+            "name": "git-lfs-jcmturner-dnsutils-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/jcmturner/dnsutils/v2.0.0/LICENSE",
+            "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+          },
+          {
+            "name": "git-lfs-jcmturner-gofork-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/jcmturner/gofork/v1.0.0/LICENSE",
+            "sha256": "2d36597f7117c38b006835ae7f537487207d8ec407aa9d9980794b2030cbc067"
+          },
+          {
+            "name": "git-lfs-jcmturner-goidentity-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/jcmturner/goidentity/v6.0.1/LICENSE",
+            "sha256": "b40930bbcf80744c86c46a12bc9da056641d722716c378f5659b9e555ef833e1"
+          },
+          {
+            "name": "git-lfs-jcmturner-gokrb5-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/jcmturner/gokrb5/v8.4.2/LICENSE",
+            "sha256": "b40930bbcf80744c86c46a12bc9da056641d722716c378f5659b9e555ef833e1"
+          },
+          {
+            "name": "git-lfs-jcmturner-rpc-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/jcmturner/rpc/v2.0.3/LICENSE",
+            "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+          },
+          {
+            "name": "git-lfs-jmhodges-clock-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/jmhodges/clock/v1.2.0/LICENSE",
+            "sha256": "6fd396f2d21c26cac28597b7aea66706684fe7e0aede98c7ce08e8d7886409a1"
+          },
+          {
+            "name": "git-lfs-leonelquinteros-gotext-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/leonelquinteros/gotext/v1.5.0/LICENSE",
+            "sha256": "bf78e51361b486dc8b97c5be426574ffb5ce736414db00af90a11f8e4f9dccdf"
+          },
+          {
+            "name": "git-lfs-mattn-go-isatty-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/mattn/go-isatty/v0.0.4/LICENSE",
+            "sha256": "08eab1118c80885fa1fa6a6dd7303f65a379fcb3733e063d20d1bbc2c76e6fa1"
+          },
+          {
+            "name": "git-lfs-pkg-errors-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/pkg/errors/c605e284fe17/LICENSE",
+            "sha256": "8d427fd87bc9579ea368fde3d49f9ca22eac857f91a9dec7e3004bdfab7dee86"
+          },
+          {
+            "name": "git-lfs-rubyist-tracerx-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/rubyist/tracerx/787959303086/LICENSE",
+            "sha256": "82f0d2a1029154f3184c82cc146f39ae8fd3f357b76832b58190c759cbb9105a"
+          },
+          {
+            "name": "git-lfs-spf13-cobra-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/spf13/cobra/v1.7.0/LICENSE.txt",
+            "sha256": "5e3400b93bbb099e83e52bab885e7441750673c21f97988ca3f1240639b63283"
+          },
+          {
+            "name": "git-lfs-spf13-pflag-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/spf13/pflag/v1.0.5/LICENSE",
+            "sha256": "b8514c577c1c4b46cee454d5a882b15fa411e72c5bd7f801f241591789fce61a"
+          },
+          {
+            "name": "git-lfs-ssgelm-cookiejarparser-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/ssgelm/cookiejarparser/v1.0.1/LICENSE.md",
+            "sha256": "5438a5672aec3e69f928ce05bdec56d887e023297129c17340f08d5d2572cfc7"
+          },
+          {
+            "name": "git-lfs-golang-crypto-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/golang/crypto/v0.36.0/LICENSE",
+            "sha256": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad"
+          },
+          {
+            "name": "git-lfs-golang-net-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/golang/net/v0.38.0/LICENSE",
+            "sha256": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad"
+          },
+          {
+            "name": "git-lfs-golang-sync-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/golang/sync/v0.12.0/LICENSE",
+            "sha256": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad"
+          },
+          {
+            "name": "git-lfs-golang-sys-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/golang/sys/v0.31.0/LICENSE",
+            "sha256": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad"
+          },
+          {
+            "name": "git-lfs-golang-text-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/golang/text/v0.23.0/LICENSE",
+            "sha256": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad"
+          },
+          {
+            "name": "gcm-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/git-ecosystem/git-credential-manager/v2.9.0/LICENSE",
+            "sha256": "b47f1a8a744ecdc7a3da35804f88552805d33f51a726b87a2105acdfae406b07"
+          },
+          {
+            "name": "dotnet-runtime-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/dotnet/runtime/v10.0.9/LICENSE.TXT",
+            "sha256": "cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310"
+          },
+          {
+            "name": "dotnet-runtime-THIRD-PARTY-NOTICES.txt",
+            "url": "https://raw.githubusercontent.com/dotnet/runtime/v10.0.9/THIRD-PARTY-NOTICES.TXT",
+            "sha256": "66f1d4e44973185519bb4aa8a9718eb22fc7af2cc532e3ae9cfc4c127ee7fc54"
+          },
+          {
+            "name": "avalonia-LICENSE.md",
+            "url": "https://raw.githubusercontent.com/AvaloniaUI/Avalonia/11.1.3/licence.md",
+            "sha256": "213814d306090074d234d760239ff0f67eb9b8d20eefb4d5631bb39dbe0b769b"
+          },
+          {
+            "name": "avalonia-NOTICE.md",
+            "url": "https://raw.githubusercontent.com/AvaloniaUI/Avalonia/11.1.3/NOTICE.md",
+            "sha256": "0e1ecea8b94eaacec8ade631994149d678940d05163b21d6f4be3d5dccb0a08d"
+          },
+          {
+            "name": "skiasharp-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/mono/SkiaSharp/v2.88.8/LICENSE.txt",
+            "sha256": "bc2eb4f37d574f9b1b67da2b17e14d151618850527d78f7323239e7518df5b77"
+          },
+          {
+            "name": "harfbuzz-COPYING.txt",
+            "url": "https://raw.githubusercontent.com/harfbuzz/harfbuzz/7.3.0/COPYING",
+            "sha256": "ba8f810f2455c2f08e2d56bb49b72f37fcf68f1f4fade38977cfd7372050ad64"
+          },
+          {
+            "name": "msal-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/AzureAD/microsoft-authentication-library-for-dotnet/4.84.2/LICENSE",
+            "sha256": "2f07c72751aed99790b8a4869cf2311df85a860b22ded05fa22803587a48922c"
+          },
+          {
+            "name": "msal-ThirdPartyNotice.txt",
+            "url": "https://raw.githubusercontent.com/AzureAD/microsoft-authentication-library-for-dotnet/4.84.2/ThirdPartyNotice.txt",
+            "sha256": "6ceaa32c30e007e6f7f7a4ba5e07926da77c82866c459f29b020e66c78d8adcf"
+          },
+          {
+            "name": "identitymodel-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/AzureAD/azure-activedirectory-identitymodel-extensions-for-dotnet/8.14.0/LICENSE.txt",
+            "sha256": "cba03f5387b05405e56b688376421acae396136af4b5116738dc6e5160f87ddd"
+          },
+          {
+            "name": "identitymodel-ThirdPartyNotice.txt",
+            "url": "https://raw.githubusercontent.com/AzureAD/azure-activedirectory-identitymodel-extensions-for-dotnet/8.14.0/ThirdPartyNotice.txt",
+            "sha256": "8d53e3a82ef34420b78b856dc5199ebed5ad854fc586014526ac17224fbbbc5e"
+          },
+          {
+            "name": "tmds-dbus-COPYING.txt",
+            "url": "https://raw.githubusercontent.com/tmds/Tmds.DBus/rel/0.16.0/COPYING",
+            "sha256": "aca3b49277abcc7886ccb2f115603a9f5b15fc3f96019a10c00f2974098b210c"
+          },
+          {
+            "name": "git-lfs-olekukonko-ts-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/olekukonko/ts/78ecb04241c0/LICENCE",
+            "sha256": "eb472e25a1963b3078249c9bbcff5e7ed81e5f0e1ceb8fc8ecc4b43f45e87867"
+          },
+          {
+            "name": "microcom-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/kekekeks/MicroCom/4b8a38f773c109bad558ee3713d9f16d80776e42/LICENSE",
+            "sha256": "6ee769c9ac4dac9abb16b98b1341e9528ff9f4ab685481410d3376d14148f3a9"
+          },
+          {
+            "name": "system-commandline-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/dotnet/command-line-api/209b724a3c843253d3071e8348c353b297b0b8b5/LICENSE.md",
+            "sha256": "58fd5ebf25d75b5bb5f4cd407a9fef3befd3641e1af90a1d0716618e6430fc19"
+          },
+          {
+            "name": "skiasharp-harfbuzzsharp-THIRD-PARTY-NOTICES.txt",
+            "url": "https://api.nuget.org/v3-flatcontainer/harfbuzzsharp/7.3.0.2/harfbuzzsharp.7.3.0.2.nupkg",
+            "sha256": "89b828ab34f5355ed0a397bb5f65ba56defdf3d4caae4776336a6efa58520e0f",
+            "archiveMember": "THIRD-PARTY-NOTICES.txt"
+          },
+          {
+            "name": "skia-libgifcodec-LICENSE.md",
+            "url": "https://skia.googlesource.com/libgifcodec/+archive/d06d2a6d42baf6c0c91cacc28df2542a911d05fe.tar.gz",
+            "sha256": "4d5eb036cec00e939acac074972a6f312b1ec4f492c66309efd41260cf59c056",
+            "archiveMember": "LICENSE.md"
+          },
+          {
+            "name": "skia-zlib-LICENSE.txt",
+            "url": "https://chromium.googlesource.com/chromium/src/third_party/zlib/+archive/3ca9f16f02950edffa391ec19cea856090158e9e.tar.gz",
+            "sha256": "d1904d2640a4a27a0deab84855a4d07b65dab93c1e133219873e6a13b67d9598",
+            "archiveMember": "LICENSE"
+          },
+          {
+            "name": "MPL-1.1.txt",
+            "url": "https://www.mozilla.org/media/MPL/1.1/index.txt",
+            "sha256": "f849fc26a7a99981611a3a370e83078deb617d12a45776d6c4cada4d338be469"
+          }
+        ]
+      }
+    },
+    "macos/amd64": {
+      "rg": {
+        "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-apple-darwin.tar.gz",
+        "sha256": "af7825fcc69a2afc7a7aea55fc9af90e26421d8f20fe59df32e233c0b8a231c1",
+        "version": "15.2.0",
+        "subdir": "ripgrep-15.2.0-x86_64-apple-darwin"
+      },
+      "git": {
+        "url": "https://github.com/desktop/dugite-native/releases/download/v2.53.0-4/dugite-native-v2.53.0-4098283-macOS-x64.tar.gz",
+        "sha256": "ae6686718aa34f4140424db16b92a47dcffd6d1f312eb8b5f3b267f7404e2680",
+        "version": "2.53.0",
+        "distribution": "dugite-native v2.53.0-4",
+        "sources": [
+          {
+            "url": "https://codeload.github.com/git/git/tar.gz/67ad42147a7acc2af6074753ebd03d904476118f",
+            "sha256": "89b73762be55037144c92eaf5d0657b644330770f66c584c1ba2e7b90b6218cf",
+            "name": "git-source.tar.gz"
+          },
+          {
+            "url": "https://codeload.github.com/desktop/dugite-native/tar.gz/refs/tags/v2.53.0-4",
+            "sha256": "6600bdf3c7e2cbb127ac63d9d38da3a91267610c6034ecb8ff73e94f89508f33",
+            "name": "dugite-build-source.tar.gz"
+          },
+          {
+            "name": "go-uuid-v1.0.2-source.tar.gz",
+            "url": "https://codeload.github.com/hashicorp/go-uuid/tar.gz/refs/tags/v1.0.2",
+            "sha256": "2dee0f810c3e3a2cd3d49a075d0a64a88806c90712a4b66013b20a1ff0562eae"
+          },
+          {
+            "name": "skia-libgifcodec-source.tar.gz",
+            "url": "https://skia.googlesource.com/libgifcodec/+archive/d06d2a6d42baf6c0c91cacc28df2542a911d05fe.tar.gz",
+            "sha256": "4d5eb036cec00e939acac074972a6f312b1ec4f492c66309efd41260cf59c056"
+          }
+        ],
+        "licenses": [
+          {
+            "url": "https://raw.githubusercontent.com/git/git/67ad42147a7acc2af6074753ebd03d904476118f/COPYING",
+            "sha256": "5b2198d1645f767585e8a88ac0499b04472164c0d2da22e75ecf97ef443ab32e",
+            "name": "COPYING"
+          },
+          {
+            "url": "https://raw.githubusercontent.com/desktop/dugite-native/v2.53.0-4/LICENSE.md",
+            "sha256": "db296f2f7f35bca3a174efb0eb392b3b17bd94b341851429a3dff411b1c2fc73",
+            "name": "dugite-LICENSE.md"
+          },
+          {
+            "name": "git-lfs-LICENSE.md",
+            "url": "https://raw.githubusercontent.com/git-lfs/git-lfs/v3.7.1/LICENSE.md",
+            "sha256": "4fae9062ab5cdd5fb15486b728534d8aded8b4ae9d84b6d66a956f5162c366b6"
+          },
+          {
+            "name": "git-lfs-go-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/golang/go/go1.25.1/LICENSE",
+            "sha256": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad"
+          },
+          {
+            "name": "git-lfs-dpotapov-go-spnego-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/dpotapov/go-spnego/298b63a54430/LICENSE",
+            "sha256": "74e635bc5b835cbac01362dc69dcf5d84c4e8f69aa4207ed7301b1a9f238214c"
+          },
+          {
+            "name": "git-lfs-git-lfs-gitobj-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/git-lfs/gitobj/v2.1.1/LICENSE.md",
+            "sha256": "49e9a8cbb772da6682b4613a36aa17934fa949e5e30e58b3f0f24d6ea3265c69"
+          },
+          {
+            "name": "git-lfs-git-lfs-go-netrc-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/git-lfs/go-netrc/ba0029b43d11/LICENSE",
+            "sha256": "c3880f30146c2ad11c85a243858027e8a1d61e241e53284d7cef3aa9452f16df"
+          },
+          {
+            "name": "git-lfs-git-lfs-pktline-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/git-lfs/pktline/06e9096e2825/LICENSE.md",
+            "sha256": "09c5e6c848991ae3a8884ce05457102a474e00ca237b92745eef333a9b0e813a"
+          },
+          {
+            "name": "git-lfs-git-lfs-wildmatch-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/git-lfs/wildmatch/v2.0.1/LICENSE.md",
+            "sha256": "34ece938f52ea9d3b706a780db52c14ba4544c2e0fdbccaa2701283000182c23"
+          },
+          {
+            "name": "git-lfs-golang-groupcache-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/golang/groupcache/2c02b8208cf8/LICENSE",
+            "sha256": "73ba74dfaa520b49a401b5d21459a8523a146f3b7518a833eea5efa85130bf68"
+          },
+          {
+            "name": "git-lfs-hashicorp-go-uuid-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/hashicorp/go-uuid/v1.0.2/LICENSE",
+            "sha256": "60222c28c1a7f6a92c7df98e5c5f4459e624e6e285e0b9b94467af5f6ab3343d"
+          },
+          {
+            "name": "git-lfs-jcmturner-aescts-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/jcmturner/aescts/v2.0.0/LICENSE",
+            "sha256": "b40930bbcf80744c86c46a12bc9da056641d722716c378f5659b9e555ef833e1"
+          },
+          {
+            "name": "git-lfs-jcmturner-dnsutils-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/jcmturner/dnsutils/v2.0.0/LICENSE",
+            "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+          },
+          {
+            "name": "git-lfs-jcmturner-gofork-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/jcmturner/gofork/v1.0.0/LICENSE",
+            "sha256": "2d36597f7117c38b006835ae7f537487207d8ec407aa9d9980794b2030cbc067"
+          },
+          {
+            "name": "git-lfs-jcmturner-goidentity-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/jcmturner/goidentity/v6.0.1/LICENSE",
+            "sha256": "b40930bbcf80744c86c46a12bc9da056641d722716c378f5659b9e555ef833e1"
+          },
+          {
+            "name": "git-lfs-jcmturner-gokrb5-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/jcmturner/gokrb5/v8.4.2/LICENSE",
+            "sha256": "b40930bbcf80744c86c46a12bc9da056641d722716c378f5659b9e555ef833e1"
+          },
+          {
+            "name": "git-lfs-jcmturner-rpc-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/jcmturner/rpc/v2.0.3/LICENSE",
+            "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+          },
+          {
+            "name": "git-lfs-jmhodges-clock-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/jmhodges/clock/v1.2.0/LICENSE",
+            "sha256": "6fd396f2d21c26cac28597b7aea66706684fe7e0aede98c7ce08e8d7886409a1"
+          },
+          {
+            "name": "git-lfs-leonelquinteros-gotext-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/leonelquinteros/gotext/v1.5.0/LICENSE",
+            "sha256": "bf78e51361b486dc8b97c5be426574ffb5ce736414db00af90a11f8e4f9dccdf"
+          },
+          {
+            "name": "git-lfs-mattn-go-isatty-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/mattn/go-isatty/v0.0.4/LICENSE",
+            "sha256": "08eab1118c80885fa1fa6a6dd7303f65a379fcb3733e063d20d1bbc2c76e6fa1"
+          },
+          {
+            "name": "git-lfs-pkg-errors-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/pkg/errors/c605e284fe17/LICENSE",
+            "sha256": "8d427fd87bc9579ea368fde3d49f9ca22eac857f91a9dec7e3004bdfab7dee86"
+          },
+          {
+            "name": "git-lfs-rubyist-tracerx-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/rubyist/tracerx/787959303086/LICENSE",
+            "sha256": "82f0d2a1029154f3184c82cc146f39ae8fd3f357b76832b58190c759cbb9105a"
+          },
+          {
+            "name": "git-lfs-spf13-cobra-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/spf13/cobra/v1.7.0/LICENSE.txt",
+            "sha256": "5e3400b93bbb099e83e52bab885e7441750673c21f97988ca3f1240639b63283"
+          },
+          {
+            "name": "git-lfs-spf13-pflag-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/spf13/pflag/v1.0.5/LICENSE",
+            "sha256": "b8514c577c1c4b46cee454d5a882b15fa411e72c5bd7f801f241591789fce61a"
+          },
+          {
+            "name": "git-lfs-ssgelm-cookiejarparser-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/ssgelm/cookiejarparser/v1.0.1/LICENSE.md",
+            "sha256": "5438a5672aec3e69f928ce05bdec56d887e023297129c17340f08d5d2572cfc7"
+          },
+          {
+            "name": "git-lfs-golang-crypto-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/golang/crypto/v0.36.0/LICENSE",
+            "sha256": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad"
+          },
+          {
+            "name": "git-lfs-golang-net-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/golang/net/v0.38.0/LICENSE",
+            "sha256": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad"
+          },
+          {
+            "name": "git-lfs-golang-sync-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/golang/sync/v0.12.0/LICENSE",
+            "sha256": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad"
+          },
+          {
+            "name": "git-lfs-golang-sys-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/golang/sys/v0.31.0/LICENSE",
+            "sha256": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad"
+          },
+          {
+            "name": "git-lfs-golang-text-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/golang/text/v0.23.0/LICENSE",
+            "sha256": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad"
+          },
+          {
+            "name": "gcm-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/git-ecosystem/git-credential-manager/v2.9.0/LICENSE",
+            "sha256": "b47f1a8a744ecdc7a3da35804f88552805d33f51a726b87a2105acdfae406b07"
+          },
+          {
+            "name": "dotnet-runtime-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/dotnet/runtime/v10.0.9/LICENSE.TXT",
+            "sha256": "cfc21f5e8bd655ae997eec916138b707b1d290b83272c02a95c9f821b8c87310"
+          },
+          {
+            "name": "dotnet-runtime-THIRD-PARTY-NOTICES.txt",
+            "url": "https://raw.githubusercontent.com/dotnet/runtime/v10.0.9/THIRD-PARTY-NOTICES.TXT",
+            "sha256": "66f1d4e44973185519bb4aa8a9718eb22fc7af2cc532e3ae9cfc4c127ee7fc54"
+          },
+          {
+            "name": "avalonia-LICENSE.md",
+            "url": "https://raw.githubusercontent.com/AvaloniaUI/Avalonia/11.1.3/licence.md",
+            "sha256": "213814d306090074d234d760239ff0f67eb9b8d20eefb4d5631bb39dbe0b769b"
+          },
+          {
+            "name": "avalonia-NOTICE.md",
+            "url": "https://raw.githubusercontent.com/AvaloniaUI/Avalonia/11.1.3/NOTICE.md",
+            "sha256": "0e1ecea8b94eaacec8ade631994149d678940d05163b21d6f4be3d5dccb0a08d"
+          },
+          {
+            "name": "skiasharp-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/mono/SkiaSharp/v2.88.8/LICENSE.txt",
+            "sha256": "bc2eb4f37d574f9b1b67da2b17e14d151618850527d78f7323239e7518df5b77"
+          },
+          {
+            "name": "harfbuzz-COPYING.txt",
+            "url": "https://raw.githubusercontent.com/harfbuzz/harfbuzz/7.3.0/COPYING",
+            "sha256": "ba8f810f2455c2f08e2d56bb49b72f37fcf68f1f4fade38977cfd7372050ad64"
+          },
+          {
+            "name": "msal-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/AzureAD/microsoft-authentication-library-for-dotnet/4.84.2/LICENSE",
+            "sha256": "2f07c72751aed99790b8a4869cf2311df85a860b22ded05fa22803587a48922c"
+          },
+          {
+            "name": "msal-ThirdPartyNotice.txt",
+            "url": "https://raw.githubusercontent.com/AzureAD/microsoft-authentication-library-for-dotnet/4.84.2/ThirdPartyNotice.txt",
+            "sha256": "6ceaa32c30e007e6f7f7a4ba5e07926da77c82866c459f29b020e66c78d8adcf"
+          },
+          {
+            "name": "identitymodel-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/AzureAD/azure-activedirectory-identitymodel-extensions-for-dotnet/8.14.0/LICENSE.txt",
+            "sha256": "cba03f5387b05405e56b688376421acae396136af4b5116738dc6e5160f87ddd"
+          },
+          {
+            "name": "identitymodel-ThirdPartyNotice.txt",
+            "url": "https://raw.githubusercontent.com/AzureAD/azure-activedirectory-identitymodel-extensions-for-dotnet/8.14.0/ThirdPartyNotice.txt",
+            "sha256": "8d53e3a82ef34420b78b856dc5199ebed5ad854fc586014526ac17224fbbbc5e"
+          },
+          {
+            "name": "tmds-dbus-COPYING.txt",
+            "url": "https://raw.githubusercontent.com/tmds/Tmds.DBus/rel/0.16.0/COPYING",
+            "sha256": "aca3b49277abcc7886ccb2f115603a9f5b15fc3f96019a10c00f2974098b210c"
+          },
+          {
+            "name": "git-lfs-olekukonko-ts-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/olekukonko/ts/78ecb04241c0/LICENCE",
+            "sha256": "eb472e25a1963b3078249c9bbcff5e7ed81e5f0e1ceb8fc8ecc4b43f45e87867"
+          },
+          {
+            "name": "microcom-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/kekekeks/MicroCom/4b8a38f773c109bad558ee3713d9f16d80776e42/LICENSE",
+            "sha256": "6ee769c9ac4dac9abb16b98b1341e9528ff9f4ab685481410d3376d14148f3a9"
+          },
+          {
+            "name": "system-commandline-LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/dotnet/command-line-api/209b724a3c843253d3071e8348c353b297b0b8b5/LICENSE.md",
+            "sha256": "58fd5ebf25d75b5bb5f4cd407a9fef3befd3641e1af90a1d0716618e6430fc19"
+          },
+          {
+            "name": "skiasharp-harfbuzzsharp-THIRD-PARTY-NOTICES.txt",
+            "url": "https://api.nuget.org/v3-flatcontainer/harfbuzzsharp/7.3.0.2/harfbuzzsharp.7.3.0.2.nupkg",
+            "sha256": "89b828ab34f5355ed0a397bb5f65ba56defdf3d4caae4776336a6efa58520e0f",
+            "archiveMember": "THIRD-PARTY-NOTICES.txt"
+          },
+          {
+            "name": "skia-libgifcodec-LICENSE.md",
+            "url": "https://skia.googlesource.com/libgifcodec/+archive/d06d2a6d42baf6c0c91cacc28df2542a911d05fe.tar.gz",
+            "sha256": "4d5eb036cec00e939acac074972a6f312b1ec4f492c66309efd41260cf59c056",
+            "archiveMember": "LICENSE.md"
+          },
+          {
+            "name": "skia-zlib-LICENSE.txt",
+            "url": "https://chromium.googlesource.com/chromium/src/third_party/zlib/+archive/3ca9f16f02950edffa391ec19cea856090158e9e.tar.gz",
+            "sha256": "d1904d2640a4a27a0deab84855a4d07b65dab93c1e133219873e6a13b67d9598",
+            "archiveMember": "LICENSE"
+          },
+          {
+            "name": "MPL-1.1.txt",
+            "url": "https://www.mozilla.org/media/MPL/1.1/index.txt",
+            "sha256": "f849fc26a7a99981611a3a370e83078deb617d12a45776d6c4cada4d338be469"
+          }
+        ]
+      }
+    },
+    "windows/amd64": {
+      "rg": {
+        "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-pc-windows-msvc.zip",
+        "sha256": "71b2fef860abe467217a538ff31de02f5258807c0129f771846f87bd029aafc5",
+        "version": "15.2.0",
+        "subdir": "ripgrep-15.2.0-x86_64-pc-windows-msvc"
+      },
+      "git": {
+        "url": "https://github.com/git-for-windows/git/releases/download/v2.55.0.windows.5/MinGit-2.55.0.5-64-bit.zip",
+        "sha256": "56d7b226b7693196cfc71fef26568f536c4a021ab6c37ff2db4287bed908e96e",
+        "version": "2.55.0.windows.5",
+        "distribution": "MinGit 2.55.0.5",
+        "sources": [
+          {
+            "url": "https://codeload.github.com/git-for-windows/git/tar.gz/refs/tags/v2.55.0.windows.5",
+            "sha256": "eff31530197779f0d38681e9bfc6d62e1ef09b53de98537656685bd1402fe89b",
+            "name": "git-source.tar.gz"
+          },
+          {
+            "url": "https://repo.msys2.org/msys/sources/gawk-5.4.1-1.src.tar.zst",
+            "sha256": "d8b8cdd6cbf72431c02cb26cf92174aca5b6f1b7791aaf29fa3a11d205a66b39",
+            "name": "gawk-5.4.1-1.src.tar.zst"
+          },
+          {
+            "url": "https://repo.msys2.org/msys/sources/coreutils-8.32-5.src.tar.zst",
+            "sha256": "2b8689413bc50367a9995adf50ea84cd3caaff0ec68a8f32d8328842c3f83835",
+            "name": "coreutils-8.32-5.src.tar.zst"
+          },
+          {
+            "url": "https://repo.msys2.org/msys/sources/diffutils-3.12-1.src.tar.zst",
+            "sha256": "474c4a3528a2afbb8d9608c65ad1bdbbd81ff42c143a438d7d56272a61b1bfac",
+            "name": "diffutils-3.12-1.src.tar.zst"
+          },
+          {
+            "url": "https://repo.msys2.org/msys/sources/findutils-4.11.0-2.src.tar.zst",
+            "sha256": "92edf442f61f8873318811a688ba327a0d2878a63a9ed21992b5cce12b0ae146",
+            "name": "findutils-4.11.0-2.src.tar.zst"
+          },
+          {
+            "url": "https://repo.msys2.org/msys/sources/gcc-15.3.0-1.src.tar.zst",
+            "sha256": "110eaa240aaced2ec2d05b1ce1c7d7273b9549c60ac17cb571bd28781766522d",
+            "name": "gcc-15.3.0-1.src.tar.zst"
+          },
+          {
+            "url": "https://repo.msys2.org/msys/sources/gmp-6.3.0-2.src.tar.zst",
+            "sha256": "02356ca25ce362edb883ce7c060050de2cec5f2b1227a1c56ef7c0a0f99ff667",
+            "name": "gmp-6.3.0-2.src.tar.zst"
+          },
+          {
+            "url": "https://repo.msys2.org/msys/sources/grep-1~3.0-7.src.tar.zst",
+            "sha256": "acba43b9b2c3eb393f9a75d02a1eca34fa23d959541150a7ac4ffbafce3cae4e",
+            "name": "grep-1~3.0-7.src.tar.zst"
+          },
+          {
+            "url": "https://repo.msys2.org/msys/sources/libiconv-1.19-1.src.tar.zst",
+            "sha256": "5a8bcd3242e2be94fffd9f03fadcda8d9fd64047430050c5cbd214cd3bf7f0a7",
+            "name": "libiconv-1.19-1.src.tar.zst"
+          },
+          {
+            "url": "https://repo.msys2.org/msys/sources/gettext-0.22.5-1.src.tar.zst",
+            "sha256": "e07a0b3e6716aae86dc0edd2dcdc8864731d56051345592b53659a3840ccfbd8",
+            "name": "gettext-0.22.5-1.src.tar.zst"
+          },
+          {
+            "url": "https://repo.msys2.org/msys/sources/readline-8.3.003-1.src.tar.zst",
+            "sha256": "8b9e2370bf80d30cdb1bfeb00be1e2be2c9ec8b92838ffcb5ddc4805ac0a899e",
+            "name": "readline-8.3.003-1.src.tar.zst"
+          },
+          {
+            "url": "https://repo.msys2.org/msys/sources/libxcrypt-4.5.2-1.src.tar.zst",
+            "sha256": "dc3e44cea067417ff61c25c981d7d58bb0f343b824ba10fd2a0a3b8badc55746",
+            "name": "libxcrypt-4.5.2-1.src.tar.zst"
+          },
+          {
+            "url": "https://repo.msys2.org/mingw/sources/mingw-w64-gcc-16.2.0-3.src.tar.zst",
+            "sha256": "eb3479a8b0b23810fbbbc25ef76879e867e88d09960a40145d73f5505fda4da0",
+            "name": "mingw-w64-gcc-16.2.0-3.src.tar.zst"
+          },
+          {
+            "url": "https://repo.msys2.org/mingw/sources/mingw-w64-gettext-1.0-1.src.tar.zst",
+            "sha256": "cca0d0c8f60353faccc5ad40405240014e4a7ccc8b1c6ca9f4626aef3097d26e",
+            "name": "mingw-w64-gettext-1.0-1.src.tar.zst"
+          },
+          {
+            "url": "https://github.com/git-for-windows/pacman-repo/releases/download/2026-08-20T16-21-04.152533900Z/mingw-w64-git-2.55.0.5-1.src.tar.gz",
+            "sha256": "341cee17fc92e67cfbd1dc97583839fbb24bc0b89a6abab7488d1e97186df0cd",
+            "name": "mingw-w64-git-2.55.0.5-1.src.tar.gz"
+          },
+          {
+            "url": "https://github.com/git-for-windows/pacman-repo/releases/download/2026-06-19T12-32-31.170628300Z/mingw-w64-git-extra-1.1.713.cd940aab6-1.src.tar.gz",
+            "sha256": "fe34fd2ab94930a8d52ce1ffe866a62ac6b7f02dbc8fce3f5e2bf80bfe0c9381",
+            "name": "mingw-w64-git-extra-1.1.713.cd940aab6-1.src.tar.gz"
+          },
+          {
+            "url": "https://repo.msys2.org/mingw/sources/mingw-w64-libiconv-1.19-1.src.tar.zst",
+            "sha256": "74428280c17094da5b702c29b2e1a0abae59556ea5dfdd65705cc8ccc1e000fb",
+            "name": "mingw-w64-libiconv-1.19-1.src.tar.zst"
+          },
+          {
+            "url": "https://repo.msys2.org/mingw/sources/mingw-w64-libidn2-2.3.8-4.src.tar.zst",
+            "sha256": "cd83e8514fbeb6a4499299b88691b9b9ecc3114cca1e2be4f6c54aab6ae9ddd0",
+            "name": "mingw-w64-libidn2-2.3.8-4.src.tar.zst"
+          },
+          {
+            "url": "https://repo.msys2.org/mingw/sources/mingw-w64-libtasn1-4.21.0-1.src.tar.zst",
+            "sha256": "c626129c5131eef0a45c736274f0844747605a105161cc0f7d39f6e1c70ed0ff",
+            "name": "mingw-w64-libtasn1-4.21.0-1.src.tar.zst"
+          },
+          {
+            "url": "https://repo.msys2.org/mingw/sources/mingw-w64-libunistring-1.4.2-1.src.tar.zst",
+            "sha256": "a5bafb360d5c13c5c52ef071d5a8288ce2345346b902f20ed6e9322766ec60eb",
+            "name": "mingw-w64-libunistring-1.4.2-1.src.tar.zst"
+          },
+          {
+            "url": "https://repo.msys2.org/msys/sources/mpfr-4.2.2-1.src.tar.zst",
+            "sha256": "e0c56e3af3819471e74dd37e32660e4eb8f58761c4d214dabd2d62f57c548869",
+            "name": "mpfr-4.2.2-1.src.tar.zst"
+          },
+          {
+            "url": "https://github.com/git-for-windows/pacman-repo/releases/download/2026-07-28T09-45-11.975207800Z/msys2-runtime-3.6.10-1.src.tar.gz",
+            "sha256": "065a779e47383844bba94f4745d3f41377aedf74a9bd4d5831df71143ae78f59",
+            "name": "msys2-runtime-3.6.10-1.src.tar.gz"
+          },
+          {
+            "url": "https://repo.msys2.org/msys/sources/sed-4.9-1.src.tar.zst",
+            "sha256": "a9686da7c1f3cb2ba7ae5f20f30d9ef38f7bba993f9c777b43bd13c7fbd7cc58",
+            "name": "sed-4.9-1.src.tar.zst"
+          },
+          {
+            "url": "https://github.com/git-for-windows/pacman-repo/releases/download/2026-08-20T13-55-07.365148200Z/bash-5.3.015-2.src.tar.gz",
+            "sha256": "817a480aa08f0f112af9496a9335d3a48f4c479ef5e1b1740df6dcc76670d94a",
+            "name": "bash-5.3.015-2.src.tar.gz"
+          },
+          {
+            "url": "https://repo.msys2.org/msys/sources/filesystem-2026.03.06-1.src.tar.zst",
+            "sha256": "aa2444fdd7eb8456ed46b9ab014229638dabaf01f828f05bc22fe415d4cf0a2c",
+            "name": "filesystem-2026.03.06-1.src.tar.zst"
+          },
+          {
+            "url": "https://repo.msys2.org/msys/sources/rebase-4.5.0-5.src.tar.zst",
+            "sha256": "5e9c24c35a881888c045aa04b676f79d238e870a7391f595665e9bd9d26b09c9",
+            "name": "rebase-4.5.0-5.src.tar.zst"
+          },
+          {
+            "url": "https://codeload.github.com/git-for-windows/build-extra/tar.gz/cd940aab6443b0361cf113a06dbf2c0d9bf4cce4",
+            "sha256": "99d613a18f7edf12740d783ba4d18ada96d41bfe59b0259388e9f35b011bd1de",
+            "name": "git-for-windows-build-extra-source.tar.gz"
+          }
+        ],
+        "licenses": []
+      },
+      "webview2": {
+        "url": "https://msedge.sf.dl.delivery.mp.microsoft.com/filestreamingservice/files/913236b0-52e1-4dde-943c-2cfdbe153d31/MicrosoftEdgeWebView2RuntimeInstallerX64.exe",
+        "sha256": "ad9b350625e132481bc0953eee9e032810134df9fedbd7be364c3f4e0e4dbd64",
+        "distribution": "Evergreen Standalone Installer",
+        "verifiedVia": "https://go.microsoft.com/fwlink/?linkid=2124701"
+      }
+    },
+    "windows/arm64": {
+      "rg": {
+        "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-aarch64-pc-windows-msvc.zip",
+        "sha256": "e4abca10c3a64ebea742667dd7009449d49403db5460dd6873e389fa2945360f",
+        "version": "15.2.0",
+        "subdir": "ripgrep-15.2.0-aarch64-pc-windows-msvc"
+      },
+      "git": {
+        "url": "https://github.com/git-for-windows/git/releases/download/v2.55.0.windows.5/MinGit-2.55.0.5-arm64.zip",
+        "sha256": "05843f9d6e60306c3ab886799e2c67200caab921571f10512df3493049179ddb",
+        "version": "2.55.0.windows.5",
+        "distribution": "MinGit 2.55.0.5",
+        "sources": [
+          {
+            "url": "https://codeload.github.com/git-for-windows/git/tar.gz/refs/tags/v2.55.0.windows.5",
+            "sha256": "eff31530197779f0d38681e9bfc6d62e1ef09b53de98537656685bd1402fe89b",
+            "name": "git-source.tar.gz"
+          },
+          {
+            "url": "https://repo.msys2.org/msys/sources/gawk-5.4.1-1.src.tar.zst",
+            "sha256": "d8b8cdd6cbf72431c02cb26cf92174aca5b6f1b7791aaf29fa3a11d205a66b39",
+            "name": "gawk-5.4.1-1.src.tar.zst"
+          },
+          {
+            "url": "https://repo.msys2.org/msys/sources/coreutils-8.32-5.src.tar.zst",
+            "sha256": "2b8689413bc50367a9995adf50ea84cd3caaff0ec68a8f32d8328842c3f83835",
+            "name": "coreutils-8.32-5.src.tar.zst"
+          },
+          {
+            "url": "https://repo.msys2.org/msys/sources/diffutils-3.12-1.src.tar.zst",
+            "sha256": "474c4a3528a2afbb8d9608c65ad1bdbbd81ff42c143a438d7d56272a61b1bfac",
+            "name": "diffutils-3.12-1.src.tar.zst"
+          },
+          {
+            "url": "https://repo.msys2.org/msys/sources/findutils-4.11.0-2.src.tar.zst",
+            "sha256": "92edf442f61f8873318811a688ba327a0d2878a63a9ed21992b5cce12b0ae146",
+            "name": "findutils-4.11.0-2.src.tar.zst"
+          },
+          {
+            "url": "https://repo.msys2.org/msys/sources/gcc-15.3.0-1.src.tar.zst",
+            "sha256": "110eaa240aaced2ec2d05b1ce1c7d7273b9549c60ac17cb571bd28781766522d",
+            "name": "gcc-15.3.0-1.src.tar.zst"
+          },
+          {
+            "url": "https://repo.msys2.org/msys/sources/gmp-6.3.0-2.src.tar.zst",
+            "sha256": "02356ca25ce362edb883ce7c060050de2cec5f2b1227a1c56ef7c0a0f99ff667",
+            "name": "gmp-6.3.0-2.src.tar.zst"
+          },
+          {
+            "url": "https://repo.msys2.org/msys/sources/grep-1~3.0-7.src.tar.zst",
+            "sha256": "acba43b9b2c3eb393f9a75d02a1eca34fa23d959541150a7ac4ffbafce3cae4e",
+            "name": "grep-1~3.0-7.src.tar.zst"
+          },
+          {
+            "url": "https://repo.msys2.org/msys/sources/libiconv-1.19-1.src.tar.zst",
+            "sha256": "5a8bcd3242e2be94fffd9f03fadcda8d9fd64047430050c5cbd214cd3bf7f0a7",
+            "name": "libiconv-1.19-1.src.tar.zst"
+          },
+          {
+            "url": "https://repo.msys2.org/msys/sources/gettext-0.22.5-1.src.tar.zst",
+            "sha256": "e07a0b3e6716aae86dc0edd2dcdc8864731d56051345592b53659a3840ccfbd8",
+            "name": "gettext-0.22.5-1.src.tar.zst"
+          },
+          {
+            "url": "https://repo.msys2.org/msys/sources/readline-8.3.003-1.src.tar.zst",
+            "sha256": "8b9e2370bf80d30cdb1bfeb00be1e2be2c9ec8b92838ffcb5ddc4805ac0a899e",
+            "name": "readline-8.3.003-1.src.tar.zst"
+          },
+          {
+            "url": "https://repo.msys2.org/msys/sources/libxcrypt-4.5.2-1.src.tar.zst",
+            "sha256": "dc3e44cea067417ff61c25c981d7d58bb0f343b824ba10fd2a0a3b8badc55746",
+            "name": "libxcrypt-4.5.2-1.src.tar.zst"
+          },
+          {
+            "url": "https://repo.msys2.org/mingw/sources/mingw-w64-gettext-1.0-1.src.tar.zst",
+            "sha256": "cca0d0c8f60353faccc5ad40405240014e4a7ccc8b1c6ca9f4626aef3097d26e",
+            "name": "mingw-w64-gettext-1.0-1.src.tar.zst"
+          },
+          {
+            "url": "https://github.com/git-for-windows/pacman-repo/releases/download/2026-08-20T16-21-04.152533900Z/mingw-w64-git-2.55.0.5-1.src.tar.gz",
+            "sha256": "341cee17fc92e67cfbd1dc97583839fbb24bc0b89a6abab7488d1e97186df0cd",
+            "name": "mingw-w64-git-2.55.0.5-1.src.tar.gz"
+          },
+          {
+            "url": "https://github.com/git-for-windows/pacman-repo/releases/download/2026-06-19T12-32-31.170628300Z/mingw-w64-git-extra-1.1.713.cd940aab6-1.src.tar.gz",
+            "sha256": "fe34fd2ab94930a8d52ce1ffe866a62ac6b7f02dbc8fce3f5e2bf80bfe0c9381",
+            "name": "mingw-w64-git-extra-1.1.713.cd940aab6-1.src.tar.gz"
+          },
+          {
+            "url": "https://repo.msys2.org/mingw/sources/mingw-w64-libiconv-1.19-1.src.tar.zst",
+            "sha256": "74428280c17094da5b702c29b2e1a0abae59556ea5dfdd65705cc8ccc1e000fb",
+            "name": "mingw-w64-libiconv-1.19-1.src.tar.zst"
+          },
+          {
+            "url": "https://repo.msys2.org/mingw/sources/mingw-w64-libidn2-2.3.8-4.src.tar.zst",
+            "sha256": "cd83e8514fbeb6a4499299b88691b9b9ecc3114cca1e2be4f6c54aab6ae9ddd0",
+            "name": "mingw-w64-libidn2-2.3.8-4.src.tar.zst"
+          },
+          {
+            "url": "https://repo.msys2.org/mingw/sources/mingw-w64-libtasn1-4.21.0-1.src.tar.zst",
+            "sha256": "c626129c5131eef0a45c736274f0844747605a105161cc0f7d39f6e1c70ed0ff",
+            "name": "mingw-w64-libtasn1-4.21.0-1.src.tar.zst"
+          },
+          {
+            "url": "https://repo.msys2.org/mingw/sources/mingw-w64-libunistring-1.4.2-1.src.tar.zst",
+            "sha256": "a5bafb360d5c13c5c52ef071d5a8288ce2345346b902f20ed6e9322766ec60eb",
+            "name": "mingw-w64-libunistring-1.4.2-1.src.tar.zst"
+          },
+          {
+            "url": "https://repo.msys2.org/msys/sources/mpfr-4.2.2-1.src.tar.zst",
+            "sha256": "e0c56e3af3819471e74dd37e32660e4eb8f58761c4d214dabd2d62f57c548869",
+            "name": "mpfr-4.2.2-1.src.tar.zst"
+          },
+          {
+            "url": "https://github.com/git-for-windows/pacman-repo/releases/download/2026-07-28T09-45-11.975207800Z/msys2-runtime-3.6.10-1.src.tar.gz",
+            "sha256": "065a779e47383844bba94f4745d3f41377aedf74a9bd4d5831df71143ae78f59",
+            "name": "msys2-runtime-3.6.10-1.src.tar.gz"
+          },
+          {
+            "url": "https://repo.msys2.org/msys/sources/sed-4.9-1.src.tar.zst",
+            "sha256": "a9686da7c1f3cb2ba7ae5f20f30d9ef38f7bba993f9c777b43bd13c7fbd7cc58",
+            "name": "sed-4.9-1.src.tar.zst"
+          },
+          {
+            "url": "https://github.com/git-for-windows/pacman-repo/releases/download/2026-08-20T13-55-07.365148200Z/bash-5.3.015-2.src.tar.gz",
+            "sha256": "817a480aa08f0f112af9496a9335d3a48f4c479ef5e1b1740df6dcc76670d94a",
+            "name": "bash-5.3.015-2.src.tar.gz"
+          },
+          {
+            "url": "https://repo.msys2.org/msys/sources/filesystem-2026.03.06-1.src.tar.zst",
+            "sha256": "aa2444fdd7eb8456ed46b9ab014229638dabaf01f828f05bc22fe415d4cf0a2c",
+            "name": "filesystem-2026.03.06-1.src.tar.zst"
+          },
+          {
+            "url": "https://repo.msys2.org/msys/sources/rebase-4.5.0-5.src.tar.zst",
+            "sha256": "5e9c24c35a881888c045aa04b676f79d238e870a7391f595665e9bd9d26b09c9",
+            "name": "rebase-4.5.0-5.src.tar.zst"
+          },
+          {
+            "url": "https://codeload.github.com/git-for-windows/build-extra/tar.gz/cd940aab6443b0361cf113a06dbf2c0d9bf4cce4",
+            "sha256": "99d613a18f7edf12740d783ba4d18ada96d41bfe59b0259388e9f35b011bd1de",
+            "name": "git-for-windows-build-extra-source.tar.gz"
+          }
+        ],
+        "licenses": []
+      },
+      "webview2": {
+        "url": "https://msedge.sf.dl.delivery.mp.microsoft.com/filestreamingservice/files/08448960-cb06-4164-8a60-d235220bc3ec/MicrosoftEdgeWebView2RuntimeInstallerARM64.exe",
+        "sha256": "00c9179bb0ac30a45a068c6e6716c988be511dca09fb3960a62ee0d86acfa543",
+        "distribution": "Evergreen Standalone Installer",
+        "verifiedVia": "https://go.microsoft.com/fwlink/?linkid=2099616"
+      }
+    }
+  }
+}

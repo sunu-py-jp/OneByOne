@@ -1,0 +1,8 @@
+.disabled-reason-trigger { display: inline-flex; min-width: 0; cursor: not-allowed; border-radius: 5px; }
+.disabled-reason-trigger > :disabled { pointer-events: none; }
+.disabled-reason-trigger:focus-visible { outline: 2px solid #aba1ea; outline-offset: 3px; }
+.disabled-reason-bubble { position: fixed; z-index: 12000; max-width: min(360px, calc(100vw - 20px)); padding: 11px 14px; border: 1px solid #ded9f0; border-radius: 9px; background: #fff; box-shadow: 0 7px 28px #34305224; color: #5d6178; font-size: 12px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; pointer-events: none; }
+.disabled-reason-arrow { position: absolute; bottom: -5px; width: 8px; height: 8px; transform: translateX(-50%) rotate(45deg); background: #fff; border-right: 1px solid #ded9f0; border-bottom: 1px solid #ded9f0; }
+.disabled-reason-bubble[data-below="true"] .disabled-reason-arrow { top: -5px; bottom: auto; transform: translateX(-50%) rotate(225deg); }
+.workflow-tabs > .workflow-step-tip { display: flex; flex: 1; border-radius: 0; }
+.workflow-tabs > .workflow-step-tip > button { width: 100%; }

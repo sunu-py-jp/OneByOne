@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "name": "全件検証を副作用より前に完了させる",
+  "overview": "InventoryReservations.reserve から reservations.reserve({ orderId, sku, quantity }) へ移す際は、全入力の検証が完了するまで予約や完了通知などの副作用を発生させない。不正入力があれば予約は 0 件とし、既存の検証規則に従った全エラーを返す。通信障害など実行時の失敗とは区別する。",
+  "before": "import { InventoryReservations } from '../../lib/parcel-kit.js';\n\nexport async function holdEventPackages(eventId, packages) {\n  const issues = [];\n  const holds = [];\n  for (const pack of packages) {\n    if (!pack.stockCode || !Number.isInteger(pack.count) || pack.count <= 0) {\n      issues.push('Invalid package');\n      continue;\n    }\n    holds.push(await InventoryReservations.reserve({\n      orderId: eventId, sku: pack.stockCode, quantity: pack.count,\n    }));\n  }\n  return { issues, holds };\n}\n",
+  "after": "import { reservations } from '../../lib/parcel-client.js';\n\nexport async function holdEventPackages(eventId, packages) {\n  const work = packages.map(pack => ({\n    orderId: eventId, sku: pack.stockCode, quantity: pack.count,\n  }));\n  const issues = work\n    .filter(item => !item.sku || !Number.isInteger(item.quantity) || item.quantity <= 0)\n    .map(() => 'Invalid package');\n  const holds = [];\n  if (issues.length === 0) {\n    for (const item of work) holds.push(await reservations.reserve(item));\n  }\n  return { issues, holds };\n}\n",
+  "notes": "検証と副作用を分け、検証したデータと予約へ渡すデータを同一にする。非同期処理や外部コールバックで元入力が変更されうる場合、必要項目を先にコピーしてその値を検証・実行する。対象に既存の重複判定、正規化、範囲検証などがあれば保持し、例の簡略な検証へ置き換えない。エラーの順序・位置情報、空入力の成功、結果の集計方法、成功通知のタイミングも保持する。入力不正時は予約後の通知も発生させない。全入力が正しくても、実行中の通信失敗に対して原子性は保証されない。実行時例外は従来の契約どおり伝播させ、存在しないロールバック機能や架空の成功結果を追加しない。",
+  "holdConditions": "部分成功が明示的な外部契約である場合。検証自体に不可逆な副作用が必要な場合。実行時失敗まで含む原子性が必須だが、利用 API にその保証がない場合。",
+  "pattern": "\\bInventoryReservations\\b"
+}

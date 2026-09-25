@@ -1,0 +1,15 @@
+{
+  "name": "onebyone-development",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node scripts/dev.mjs test",
+    "build": "node scripts/dev.mjs build",
+    "package": "node scripts/dev.mjs package",
+    "runtime:prepare": "node scripts/prepare-runtime.mjs",
+    "help": "node scripts/dev.mjs --help"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "name": "ローカル変数の再代入とスコープを判断して var を整理する",
+  "overview": "ローカル変数の参照範囲と生存期間を確認し、束縛そのものを再代入しない変数はconst、再代入する変数はletにする。配列やオブジェクトの内容の変更と、変数の再代入は区別する。共通ルールは全ファイルで検討するが、不要な変更は要求しない。",
+  "before": "export function measureWords(words) {\n  var lengths = [];\n  var total = 0;\n  for (var word of words) {\n    var length = word.length;\n    lengths.push(length);\n    total += length;\n  }\n  return { lengths, total };\n}\n",
+  "after": "export function measureWords(words) {\n  const lengths = [];\n  let total = 0;\n  for (const word of words) {\n    const length = word.length;\n    lengths.push(length);\n    total += length;\n  }\n  return { lengths, total };\n}\n",
+  "notes": "代入、複合代入、増減演算子、分割代入を、入れ子の関数や返却されるクロージャ内も含めて調べる。配列へのpushやプロパティ更新だけなら、その束縛にletは不要。例は単純なループだが、実ファイルでは状態更新や参照範囲から個別に選ぶ。既に適切な宣言は維持し、無関係な書式変更・関数分割・最適化は行わない。",
+  "holdConditions": "宣言前参照、巻き上げ、eval、ブロック外参照、同名再宣言、ループ変数の捕捉などがあり、let/constのブロックスコープや初期化前アクセスで振る舞いが変わるか判断できない場合。",
+  "pattern": ""
+}

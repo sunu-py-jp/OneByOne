@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "name": "キューの確認応答を永続的な処理成功後へ移す",
+  "overview": "WorkQueue.take(name) / ack(id) / fail(id, reason) を queue.lease(name) が返す所有ハンドルへ移す。受信や中間処理の成功だけでは確認応答しない。メッセージが要求する処理全体が永続的に成功した境界を読み取り、その後にcompleteする。失敗・中断時は再配信可能な状態に戻す。",
+  "before": "import { WorkQueue } from '../../lib/parcel-kit.js';\n\nexport async function archiveAvailableMessages(name, archive) {\n  let archived = 0;\n  for (;;) {\n    const entry = WorkQueue.take(name);\n    if (!entry) return archived;\n    WorkQueue.ack(entry.id);\n    try {\n      await archive(entry);\n      archived += 1;\n    } catch (error) {\n      WorkQueue.fail(entry.id, String(error?.message ?? error));\n      throw error;\n    }\n  }\n}\n",
+  "after": "import { queue } from '../../lib/parcel-client.js';\n\nexport async function archiveAvailableMessages(name, archive) {\n  let archived = 0;\n  for (;;) {\n    const delivery = queue.lease(name);\n    if (!delivery) return archived;\n    try {\n      await archive(delivery.message);\n      delivery.complete();\n      archived += 1;\n    } catch (error) {\n      delivery.retry(String(error?.message ?? error));\n      throw error;\n    } finally {\n      delivery.close();\n    }\n  }\n}\n",
+  "notes": "新APIは lib/parcel-client.js の名前付きexportを利用し、importは対象ファイルからの相対パスにする。未使用になった旧importだけを取り除く。例はAPI契約を示す小さな別用途の処理であり、対象の業務ロジックや公開関数を置き換えるテンプレートではない。対象にある検証、戻り値、通知の意味、例外契約を読み取り、必要な制御フローだけを変える。 leaseは同期で、処理対象がなければnull、あれば { message, complete(), retry(reason), close() } を返す。messageは旧takeのメッセージと同じ業務データ。complete/retry/closeは同期・冪等・例外なし。completeは処理済みに確定し、retryは再配信可能にして理由を記録する。未確定のままcloseすると再配信可能に戻る。例のarchiveは保存完了まで待つ契約である。実際の処理では複数の外部操作や保存があり得るため、そのどれが最後の成功境界かを判断する。例外時にはretryして元の例外を伝播し、自分で取得したハンドルはすべての経路でcloseする。以前のack位置をそのままcompleteに置換しない。再配信による外部副作用の重複を避ける既存の冪等キーや検証を保持する。",
+  "holdConditions": "確認応答や永続化が外部の非同期処理に隠れている、メッセージを渡した後に別所有者が確定する、公開契約を変えないと成功境界を待てないなど、所有範囲と成功条件を判断できない場合。",
+  "pattern": "\\bWorkQueue\\b"
+}

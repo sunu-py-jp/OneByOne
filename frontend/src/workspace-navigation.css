@@ -1,0 +1,37 @@
+.workspace-nav-item {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  min-width: 0;
+  border-radius: 7px;
+}
+.workspace-nav-item.active { background: var(--accent-pale); }
+.workspace-nav-item > .workspace-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: auto;
+  white-space: nowrap;
+}
+.workspace-nav-item > .workspace-issues-trigger { margin-right: 7px; }
+.danger-icon { flex: none; }
+.danger-icon:not(:disabled):hover { color: #b54545; background: #fcecec; }
+.rule-error-details {
+  flex: none;
+  padding: 16px 18px;
+  background: #fff7f7;
+  color: #ac5050;
+  border-bottom: 1px solid #f0dcdc;
+  overflow-wrap: anywhere;
+}
+.rule-error-details h3 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 0 10px;
+  font-size: 12px;
+}
+.rule-error-details ul { margin: 0; padding-left: 18px; }
+.rule-error-details li { line-height: 1.8; white-space: pre-wrap; }
+.rule-error-details li + li { margin-top: 10px; }
+.rule-error-details:focus-visible { outline: 2px solid #d68686; outline-offset: -2px; }
+.invalid-rule-item > svg:last-child { flex: 0 0 auto; color: #c15353; }

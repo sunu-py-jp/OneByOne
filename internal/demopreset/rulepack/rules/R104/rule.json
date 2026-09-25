@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "name": "保存を前提とする処理の前にバッファをflushする",
+  "overview": "ReportWriter.open(name) の add / finish を reports.open(name) の write / flush / close に移す。writeは即時保存ではなくバッファへの追加になる。後続の処理が保存済みデータを前提とする箇所を特定し、その直前までにflushを完了させる。closeを保存の代わりにしてはならない。",
+  "before": "import { ReportWriter } from '../../lib/parcel-kit.js';\n\nexport async function publishCheckpoint(checkpoint, announce) {\n  const output = ReportWriter.open('checkpoints');\n  try {\n    output.add({ revision: checkpoint.revision, digest: checkpoint.digest });\n    await announce(output.id);\n    return output.id;\n  } finally {\n    output.finish();\n  }\n}\n",
+  "after": "import { reports } from '../../lib/parcel-client.js';\n\nexport async function publishCheckpoint(checkpoint, announce) {\n  const output = reports.open('checkpoints');\n  try {\n    output.write({ revision: checkpoint.revision, digest: checkpoint.digest });\n    await output.flush();\n    await announce(output.id);\n    return output.id;\n  } finally {\n    output.close();\n  }\n}\n",
+  "notes": "新APIは lib/parcel-client.js の名前付きexportを利用し、importは対象ファイルからの相対パスにする。未使用になった旧importだけを取り除く。例はAPI契約を示す小さな別用途の処理であり、対象の業務ロジックや公開関数を置き換えるテンプレートではない。対象にある検証、戻り値、通知の意味、例外契約を読み取り、必要な制御フローだけを変える。 openは同期で、id、write(row)、flush()、close()を持つwriterを返す。writeは同期、flushはPromiseで未保存行を永続化し、closeは同期で未flushデータを破棄する。closeは冪等・例外なしで自動flushはしない。空バッファにflushしてもよい。保存済み件数の通知、外部からの読み出し、完了応答など、保存を前提とする各境界を元のコメントと処理内容から判断する。毎行、まとまりごと、最後のどこでflushするかはその境界による。後続の成功通知はflush成功後に限定し、flush失敗では元のエラーを返す。書き込み、flush、通知のいずれが失敗しても、自分で開いたwriterはfinallyでcloseする。異常終了時に未保存の行を無条件にflushして成功扱いにしない。",
+  "holdConditions": "writerが別の所有者に属する、呼び出しをまたいで共有される、外部の完了処理を変更しないと保存の保証を満たせないなど、所有期間や必要なflush位置を確定できない場合。",
+  "pattern": "\\bReportWriter\\b"
+}

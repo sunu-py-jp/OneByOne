@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "name": "再試行の入力を固定し同じ冪等キーを使い続ける",
+  "overview": "PaymentGateway.send の可変な送信要求を、payments.submit(snapshot, { idempotencyKey }) に移す。同じ業務操作を再試行する間は、入力データと冪等キーを固定する。呼び出し途中の外部処理が元データを変更しても、送信やその操作を識別する結果に影響させない。",
+  "before": "import { PaymentGateway } from '../../lib/parcel-kit.js';\n\nexport async function confirmDonation(donation) {\n  const send = suffix => PaymentGateway.send({\n    amountCents: donation.cents,\n    dedication: donation.dedication,\n    requestKey: donation.reference + suffix,\n  });\n  try {\n    return await send(':first');\n  } catch (error) {\n    if (error?.retryable !== true) throw error;\n    return send(':repeat');\n  }\n}\n",
+  "after": "import { payments } from '../../lib/parcel-client.js';\n\nfunction freezeTree(value) {\n  if (value && typeof value === 'object') {\n    Object.values(value).forEach(freezeTree);\n    Object.freeze(value);\n  }\n  return value;\n}\n\nexport async function confirmDonation(donation) {\n  const snapshot = freezeTree(structuredClone({\n    amountCents: donation.cents,\n    dedication: donation.dedication,\n  }));\n  const options = { idempotencyKey: 'donation:' + donation.reference };\n  try {\n    return await payments.submit(snapshot, options);\n  } catch (error) {\n    if (error?.retryable !== true) throw error;\n    return payments.submit(snapshot, options);\n  }\n}\n",
+  "notes": "対象となる業務データは循環参照を含まない plain object / array / primitive で、Date・Map・関数などの特殊値は含まない。元オブジェクトとの入れ子の参照も切り、スナップショットを再帰的に凍結する。固定すべきデータと識別子は最初の await や外部コールバックより前に確定する。キーは業務操作を一意に表す安定した値とし、試行回数・現在時刻・試行ごとの乱数を含めない。attempt / requestKey は新 API の本文に入れず、必要な試行情報は既存の通知や返り値に維持する。入力検証、再試行の条件と上限、外部への通知順序、公開結果とエラーの契約は保持する。例の再試行回数やキーの接頭辞を実コードへ一律に当てはめない。",
+  "holdConditions": "同じ操作識別子が異なる正当な業務要求に再利用されるか判定できない場合。循環参照・特殊オブジェクト・外部可変状態をどの時点の値として固定するか契約が不明な場合。",
+  "pattern": "\\bPaymentGateway\\b"
+}

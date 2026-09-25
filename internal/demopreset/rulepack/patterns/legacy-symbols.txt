@@ -1,0 +1,2 @@
+\b(TransactionManager|EventBus|RecordDirectory|ReportWriter|WorkQueue|RequestTelemetry|PaymentGateway|InventoryReservations|InvoiceService|ClientOptions)\b
+lib/parcel-kit\.js

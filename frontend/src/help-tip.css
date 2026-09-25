@@ -1,0 +1,114 @@
+.help-tip-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  margin: -2px 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: #9799ac;
+  vertical-align: middle;
+  cursor: help;
+}
+
+.help-tip-trigger:hover,
+.help-tip-trigger.is-open,
+.help-tip-trigger:focus-visible {
+  color: var(--accent, #5b58d6);
+  background: var(--accent-pale, #efedfc);
+}
+
+.help-tip-trigger:focus-visible {
+  outline: 2px solid #a29eeb;
+  outline-offset: 2px;
+}
+
+.help-tip-bubble {
+  position: fixed;
+  z-index: 10000;
+  width: max-content;
+  max-width: min(350px, calc(100vw - 24px));
+  border: 1px solid #dedcef;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 8px 30px #3430571a, 0 2px 6px #3430570a;
+  color: #656b7d;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.8;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  user-select: text;
+  animation: help-tip-appear 120ms ease-out;
+}
+
+.help-tip-content {
+  position: relative;
+  max-height: min(420px, calc(100vh - 24px));
+  padding: 13px 16px 14px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  border-radius: inherit;
+}
+
+.help-tip-heading {
+  margin-bottom: 5px;
+  color: #56518f;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.6;
+}
+
+.help-tip-text {
+  white-space: pre-line;
+}
+
+.help-tip-text p {
+  margin: 0;
+}
+
+.help-tip-text p + p {
+  margin-top: 8px;
+}
+
+.help-tip-arrow {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  margin-left: -5px;
+  background: #fff;
+  transform: rotate(45deg);
+}
+
+.help-tip-bubble[data-placement="below"] .help-tip-arrow {
+  top: -6px;
+  border-top: 1px solid #dedcef;
+  border-left: 1px solid #dedcef;
+}
+
+.help-tip-bubble[data-placement="above"] .help-tip-arrow {
+  bottom: -6px;
+  border-bottom: 1px solid #dedcef;
+  border-right: 1px solid #dedcef;
+}
+
+@keyframes help-tip-appear {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .help-tip-bubble {
+    animation: none;
+  }
+}

@@ -1,0 +1,38 @@
+.page-target { display: flex; flex-direction: column; overflow-y: auto; }
+.page-target .target-folder-content { display: flex; flex-direction: column; flex: 1; gap: 12px; width: 100%; max-width: none; min-width: 0; min-height: 320px; }
+.target-folder-content > .field, .target-folder-content > .field-validation-error { flex: none; margin: 0; }
+.target-browser { display: grid; grid-template-columns: minmax(200px, 36%) 9px minmax(0, 1fr); flex: 1; min-height: 240px; overflow: hidden; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+.target-browser-list, .target-browser-detail { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
+.target-browser-list-header, .target-browser-detail-header { display: flex; align-items: center; flex: none; gap: 8px; height: 38px; min-width: 0; padding: 0 12px; border-bottom: 1px solid var(--line); background: #fafbfe; color: #687286; font-size: 12px; }
+.target-browser-list-header > .icon-button { margin-left: auto; width: 26px; height: 26px; }
+.target-browser-detail-header > svg { flex: none; color: #969db0; }
+.target-browser-detail-header > .target-file-path { flex: 1; }
+.target-browser-size { flex: none; color: #969db0; font-size: 10px; white-space: nowrap; }
+.target-browser-search { display: flex; align-items: center; gap: 7px; flex: none; margin: 8px; padding: 0 8px; border: 1px solid var(--line); border-radius: 5px; color: #9aa1b0; }
+.target-browser-search:focus-within { border-color: var(--accent); }
+.target-browser-search input { width: 100%; min-width: 0; height: 29px; padding: 0; border: 0; outline: none; box-shadow: none; background: transparent; font-size: 11px; }
+.target-browser-search input:focus { box-shadow: none; }
+.target-browser-file-scroll { flex: 1; min-height: 0; overflow: auto; outline-offset: -2px; }
+.target-browser-file { display: flex; align-items: center; gap: 7px; height: 32px; padding: 0 12px; border-bottom: 1px solid #f0f1f5; cursor: pointer; font-size: 11px; }
+.target-browser-file > svg { flex: none; color: #929bad; }
+.target-browser-file:hover { background: #f8f7fc; }
+.target-browser-file.is-selected { color: var(--accent); background: #eeebfc; box-shadow: inset 3px 0 var(--accent); }
+.target-file-path { display: flex; align-items: baseline; min-width: 0; overflow: hidden; white-space: nowrap; }
+.target-file-directory { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: #8c95a5; }
+.target-file-path strong { flex: 0 0 auto; max-width: 100%; overflow: hidden; text-overflow: ellipsis; font-weight: 600; color: #424b5f; }
+.target-file-directory + strong { max-width: 78%; }
+.target-browser-file.is-selected strong { color: var(--accent); }
+.target-browser-splitter { display: flex; align-items: center; justify-content: center; background: #fafafe; border-inline: 1px solid #ececf3; cursor: col-resize; touch-action: none; outline: none; }
+.target-browser-splitter > span { width: 3px; height: 25px; border-radius: 2px; background: radial-gradient(circle, #aaa5bf 1px, transparent 1.3px) center / 3px 5px; }
+.target-browser-splitter:hover, .target-browser-splitter:focus-visible, .target-browser-splitter.is-resizing { background: #eae5fa; border-color: #d4caed; }
+.target-browser-splitter:focus-visible { box-shadow: inset 0 0 0 1px var(--accent); }
+.target-browser-message { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; flex: 1; min-width: 0; min-height: 100px; padding: 20px; color: #939caf; font-size: 12px; text-align: center; overflow-wrap: anywhere; white-space: pre-wrap; }
+.target-browser-message.is-error { color: #b04d59; }
+.target-browser-message .text-button { font-size: 12px; }
+.target-browser-note { flex: none; padding: 6px 12px; border-bottom: 1px solid var(--line); color: #8a7850; background: #fffcf3; font-size: 11px; }
+.target-source-scroll { flex: 1; min-width: 0; min-height: 0; overflow: auto; outline-offset: -2px; tab-size: 4; }
+.target-source-lines { display: flex; align-items: stretch; width: max-content; min-width: 100%; min-height: 100%; }
+.target-source-lines pre { margin: 0; padding: 10px 14px; font: 12px/21px "SFMono-Regular", Consolas, "Liberation Mono", monospace; white-space: pre; border: 0; border-radius: 0; background: transparent; overflow: visible; }
+.target-source-lines .target-source-gutter { position: sticky; left: 0; flex: none; min-width: 42px; padding-inline: 10px; text-align: right; color: #a0a8b7; background: #f9fafc; border-right: 1px solid #edf0f5; user-select: none; }
+.target-source-lines .target-source-code { flex: 1; color: #46516a; }
+.target-source-code code { padding: 0; background: none; color: inherit; font: inherit; }

@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "name": "禁止された生ペイロード記録を削除し許可項目だけ記録する",
+  "overview": "RequestTelemetry.capturePayload の任意ペイロード記録を廃止する。処理の目的・成功失敗・データの流れを読み取り、安全な操作メタデータだけを audits.record(event, { operationId, count, outcome }) に渡す。業務処理に必要なデータと、観測のためだけのデータを区別する。",
+  "before": "import { RequestTelemetry } from '../../lib/parcel-kit.js';\n\nexport function inspectImportManifest(manifest) {\n  RequestTelemetry.capturePayload('import-inspected', {\n    manifest,\n    token: manifest.accessToken,\n  });\n  return manifest.entries.map(entry => entry.kind);\n}\n",
+  "after": "import { audits } from '../../lib/parcel-client.js';\n\nexport function inspectImportManifest(manifest) {\n  audits.record('import-inspected', {\n    operationId: manifest.runId,\n    count: manifest.entries.length,\n    outcome: 'inspected',\n  });\n  return manifest.entries.map(entry => entry.kind);\n}\n",
+  "notes": "audits.record は同期で例外を送出しない。第二引数の許可項目は operationId / count / outcome のみで、値は安全な操作識別子・件数・固定的な状態名から構成する。本文全文、連絡先、カード情報、トークン、任意 metadata、例外メッセージは記録しない。マスキング、別 logger、console への移し替えも禁止する。記録専用のシリアライズや分岐は、使用先がなくなり副作用もないと確認できれば削除する。他の用途を持つデータや業務 API への引数は保持する。開始・成功・失敗のイベントがある場合は各時点の意味を維持し、記録のために例外や戻り値の契約を変えない。コード例は許可リストの説明であり、実コードのイベント名や制御フローを置き換える雛形ではない。",
+  "holdConditions": "監査上の必須項目が許可リストと矛盾する場合。操作識別子の安全性が不明、または記録専用に見える処理の業務上の副作用を判定できない場合。",
+  "pattern": "\\bRequestTelemetry\\b"
+}

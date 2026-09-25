@@ -1,0 +1,11 @@
+{
+  "includeGlobs": ["src/**/*.js"],
+  "excludeGlobs": [],
+  "checkCommands": [
+    {
+      "name": "Gitの差分・空白チェック",
+      "executable": "git",
+      "args": ["diff", "--check"]
+    }
+  ]
+}

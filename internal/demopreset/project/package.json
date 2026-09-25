@@ -1,0 +1,7 @@
+{
+  "name": "onebyone-parcel-desk-demo",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Offline control-flow and ownership migration scenarios. No dependencies."
+}

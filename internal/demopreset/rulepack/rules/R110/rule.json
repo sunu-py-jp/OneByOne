@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "name": "設定の時間単位と null の契約を構造化する",
+  "overview": "ClientOptions.resolve の入力を runtimeOptions.resolve の構造化された入力へ移す。timeoutSeconds は request.timeoutMs に秒からミリ秒へ換算し、retries は retry.attempts、label は display.label に対応する。入力値の意味と既存の正規化を保って変換する。",
+  "before": "import { ClientOptions } from '../../lib/parcel-kit.js';\n\nexport function mediaProcessingProfiles() {\n  return {\n    preview: ClientOptions.resolve({ timeoutSeconds: 0, retries: 0, label: '' }),\n    transcode: ClientOptions.resolve({ timeoutSeconds: 1.5, retries: 1, label: 'short' }),\n    archival: ClientOptions.resolve({ timeoutSeconds: null, label: 'unbounded' }),\n    automatic: ClientOptions.resolve({}),\n  };\n}\n",
+  "after": "import { runtimeOptions } from '../../lib/parcel-client.js';\n\nexport function mediaProcessingProfiles() {\n  return {\n    preview: runtimeOptions.resolve({\n      request: { timeoutMs: 0 }, retry: { attempts: 0 }, display: { label: '' },\n    }),\n    transcode: runtimeOptions.resolve({\n      request: { timeoutMs: 1500 }, retry: { attempts: 1 }, display: { label: 'short' },\n    }),\n    archival: runtimeOptions.resolve({\n      request: { timeoutMs: null }, display: { label: 'unbounded' },\n    }),\n    automatic: runtimeOptions.resolve({}),\n  };\n}\n",
+  "notes": "timeoutSeconds の undefined または省略は既定値 30000ms、null はタイムアウト無効、0 は即時タイムアウトであり、それぞれ区別する。数値は小数も含めて 1000 倍する。|| や ?? による一律の既定値補完はこの区別を失う。retries の省略は既定値 2、0 は再試行なし。label の null / undefined は空文字列に解決される。両 API の出力は同じ timeoutMs / attempts / label 形式なので、出力側の項目名や既存の付加情報を変更しない。対象に数値文字列の解析、範囲チェック、独自の既定値があれば、その結果を入力変換に使う。コード例の定数だけを扱う実装にはしない。",
+  "holdConditions": "外部から不透明なオプションを受け取り、時間単位・null の意味・未知項目の扱いが定義されていない場合。移行に必要な入力の契約を推測しない。",
+  "pattern": "\\bClientOptions\\b"
+}

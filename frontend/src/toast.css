@@ -1,0 +1,88 @@
+.toast-region {
+  position: fixed;
+  z-index: 90;
+  left: calc(var(--sidebar-width, 0px) + 16px);
+  right: 16px;
+  /* Keep notifications clear of the workflow footer and status bar. */
+  bottom: calc(68px + 29px + 16px + env(safe-area-inset-bottom, 0px));
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.toast {
+  --toast-accent: #6862b8;
+  --toast-icon-background: #efedfb;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  width: fit-content;
+  max-width: min(600px, 100%);
+  padding: 14px 12px 14px 15px;
+  border: 1px solid #e3e5ee;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 8px 30px #28314b1a, 0 2px 6px #28314b0a;
+  pointer-events: auto;
+  animation: toast-enter 220ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+
+.toast-success {
+  --toast-accent: #328268;
+  --toast-icon-background: #eaf6f0;
+}
+
+.toast-error {
+  --toast-accent: #b85151;
+  --toast-icon-background: #fff0ef;
+  border-color: #eddbd9;
+}
+
+.toast-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 28px;
+  height: 28px;
+  border-radius: 7px;
+  color: var(--toast-accent);
+  background: var(--toast-icon-background);
+}
+
+.toast-message {
+  flex: 1;
+  min-width: 0;
+  max-height: min(220px, calc(100vh - 180px));
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  margin: 3px 0;
+  color: #505a70;
+  font-size: 12px;
+  line-height: 1.8;
+}
+
+.toast-dismiss {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #838b9b;
+}
+
+.toast-dismiss:hover { background: #f1f2f7; color: #505a70; }
+.toast-dismiss:focus-visible { outline: 2px solid var(--accent, #5b58d6); outline-offset: 2px; }
+
+@keyframes toast-enter {
+  from { opacity: 0; transform: translateY(18px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast { animation: none; }
+}

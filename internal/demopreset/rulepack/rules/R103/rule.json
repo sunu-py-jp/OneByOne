@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "name": "同期の全件取得を非同期のページ走査へ移す",
+  "overview": "RecordDirectory.listAll(filters) と RecordDirectory.count(filters) の同期全件操作を directory.fetchPage({ filters, cursor, limit }) に移す。必要な処理が全件を前提とするか逐次実行できるかを判断し、元の集計・重複排除・順序・副作用の実行回数を維持する。単に最初のページだけを使ってはならない。",
+  "before": "import { RecordDirectory } from '../../lib/parcel-kit.js';\n\nexport function countCatalogEntries(criteria) {\n  return RecordDirectory.count(criteria);\n}\n",
+  "after": "import { directory } from '../../lib/parcel-client.js';\n\nexport async function countCatalogEntries(criteria) {\n  let cursor = null;\n  let count = 0;\n  do {\n    const page = await directory.fetchPage({ filters: criteria, cursor, limit: 100 });\n    count += page.items.length;\n    cursor = page.nextCursor;\n  } while (cursor !== null);\n  return count;\n}\n",
+  "notes": "新APIは lib/parcel-client.js の名前付きexportを利用し、importは対象ファイルからの相対パスにする。未使用になった旧importだけを取り除く。例はAPI契約を示す小さな別用途の処理であり、対象の業務ロジックや公開関数を置き換えるテンプレートではない。対象にある検証、戻り値、通知の意味、例外契約を読み取り、必要な制御フローだけを変える。 fetchPageはPromiseを返し、結果は { items: 配列, nextCursor: 文字列またはnull }。初回cursorはnull、limitは正の整数。サーバー側の上限により要求数より少ない件数でも次ページがあり得る。空のitemsや取得件数では終了を決めず、nextCursorがnullになるまで、直前に返された値をそのまま渡して順次awaitする。旧APIの全件配列が必要な処理では収集してから既存ロジックへ渡せる。全件集計に基づく開始通知、全体の並べ替え、全体を置き換える保存などをページごとに繰り返さない。対象にキャンセル処理がある場合は、取得開始前と非同期の取得完了後にも中断を検出し、キャンセル後に結果を公開しない。同期の戻り値をPromiseに変える例は呼び出し側がPromise対応できる場合に限る。",
+  "holdConditions": "同期の公開コールバック、getter、外部ホストなどがPromiseを受け付けず、対象ファイル内で非同期化を完結できない場合。動的な操作名によってlistAll/count以外の契約も要求され、処理内容を確定できない場合。",
+  "pattern": "\\bRecordDirectory\\b"
+}

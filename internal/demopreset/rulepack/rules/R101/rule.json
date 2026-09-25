@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "name": "トランザクションの所有権と終了処理を明示する",
+  "overview": "TransactionManager.open(namespace) の自動解放を transactions.begin(namespace) に移す。save(key, value) は put(key, value) になる。新しいトランザクションは、確定または取り消しだけでは解放されない。作成者が所有する範囲を特定し、すべての終了経路でcloseする。確定を前提とする後続処理を、取り消し可能な処理と区別する。",
+  "before": "import { TransactionManager } from '../../lib/parcel-kit.js';\n\nexport async function publishPreference(key, value, publish) {\n  if (value === undefined) return false;\n  const edit = TransactionManager.open('preferences');\n  try {\n    edit.save(key, value);\n    await edit.commit();\n  } catch (error) {\n    await edit.rollback();\n    throw error;\n  }\n  await publish(key);\n  return true;\n}\n",
+  "after": "import { transactions } from '../../lib/parcel-client.js';\n\nexport async function publishPreference(key, value, publish) {\n  if (value === undefined) return false;\n  const edit = transactions.begin('preferences');\n  try {\n    edit.put(key, value);\n    await edit.commit();\n  } catch (error) {\n    await edit.rollback();\n    throw error;\n  } finally {\n    edit.close();\n  }\n  await publish(key);\n  return true;\n}\n",
+  "notes": "新APIは lib/parcel-client.js の名前付きexportを利用し、importは対象ファイルからの相対パスにする。未使用になった旧importだけを取り除く。例はAPI契約を示す小さな別用途の処理であり、対象の業務ロジックや公開関数を置き換えるテンプレートではない。対象にある検証、戻り値、通知の意味、例外契約を読み取り、必要な制御フローだけを変える。 beginとputは同期。commitとrollbackはPromiseを返し、必ず完了を待つ。commitが成功するまで書き込みは未確定で、失敗時にはrollbackする。rollbackはこのAPIでは失敗しないため、元の例外をそのまま伝播する。closeは同期・冪等・例外なしで、未確定の内容を破棄するが確定済みの内容は取り消さない。取得前の検証失敗に解放処理は不要。確定後の通知や外部処理の失敗を、確定前の失敗と同じcatchに巻き込まない。複数書き込みや途中returnがある場合も、元の処理単位と所有期間を維持する。",
+  "holdConditions": "作成したトランザクションを外部へ返す、別の所有者が確定・解放する、共有ハンドルの有効期間が対象ファイルだけでは確定できない場合。所有者の契約を変更したり、外部にcloseを追加する前提で修正しない。",
+  "pattern": "\\bTransactionManager\\b"
+}

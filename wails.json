@@ -1,0 +1,23 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "OneByOne",
+  "outputfilename": "OneByOne",
+  "frontend:install": "npm ci",
+  "frontend:build": "npm run build",
+  "frontend:dev:watcher": "npm run dev",
+  "frontend:dev:serverUrl": "auto",
+  "postBuildHooks": {
+    "*/*": "node ../../scripts/package.mjs --runtime-only --wails-target ${platform} --app ${bin}"
+  },
+  "author": {
+    "name": "OneByOne",
+    "email": "onebyone@localhost"
+  },
+  "info": {
+    "companyName": "OneByOne",
+    "productName": "OneByOne",
+    "productVersion": "0.8.1",
+    "copyright": "OneByOne",
+    "comments": "Rule-driven code workspace"
+  }
+}

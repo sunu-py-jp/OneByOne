@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "name": "nullish な既定値を保ち余分な条件分岐を整理する",
+  "overview": "nullとundefinedだけを同じ既定値にする条件式を、評価の副作用がない場合にnull合体演算子へ整理する。0・false・空文字列、およびnullとundefinedを別に扱う契約は維持する。",
+  "before": "export function describePreview(caption, enabled) {\n  const text = caption == null ? 'Untitled' : caption;\n  const visible = enabled == null ? true : enabled;\n  return { text, visible };\n}\n",
+  "after": "export function describePreview(caption, enabled) {\n  const text = caption ?? 'Untitled';\n  const visible = enabled ?? true;\n  return { text, visible };\n}\n",
+  "notes": "識別子や副作用のない通常のデータプロパティを対象にする。関数呼び出し・getter・Proxyは評価回数の変化に注意し、同じ見た目だけを根拠にまとめない。||への置換はfalse等を失うので禁止。nullが無期限、undefinedが既定値など異なる意味を持つ分岐は統合しない。該当する条件式がなければ変更しない。",
+  "holdConditions": "値の取得の副作用、特殊な等価比較（document.all等）、または既定値の評価タイミングに依存しており、等価性を確定できない場合。",
+  "pattern": ""
+}

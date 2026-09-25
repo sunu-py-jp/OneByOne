@@ -1,0 +1,137 @@
+.workspace-issues-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: #c15353;
+}
+
+.workspace-issues-trigger:hover,
+.workspace-issues-trigger.is-open,
+.workspace-issues-trigger:focus-visible {
+  color: #ad4141;
+  background: #fcecec;
+}
+
+.workspace-issues-trigger:focus-visible {
+  outline: 2px solid #d68686;
+  outline-offset: 2px;
+}
+
+.workspace-issues-bubble {
+  position: fixed;
+  z-index: 10000;
+  width: 360px;
+  max-width: calc(100vw - 24px);
+  border: 1px solid #e8d6d9;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 8px 30px #3430571a, 0 2px 6px #3430570a;
+  color: #656b7d;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.8;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.workspace-issues-content {
+  position: relative;
+  max-height: min(420px, calc(100vh - 24px));
+  padding: 13px 10px 10px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border-radius: inherit;
+}
+
+.workspace-issues-heading {
+  margin: 0 6px 7px;
+  color: #ac4c4c;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.6;
+}
+
+.workspace-issues-heading span {
+  white-space: nowrap;
+}
+
+.workspace-issues-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.workspace-issues-list li + li {
+  margin-top: 3px;
+}
+
+.workspace-issues-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 7px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: #656b7d;
+  font: inherit;
+  line-height: 1.8;
+  text-align: left;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.workspace-issues-item span {
+  flex: 1;
+  min-width: 0;
+}
+
+.workspace-issues-item svg {
+  margin-top: 4px;
+  color: #b97878;
+}
+
+.workspace-issues-item:hover,
+.workspace-issues-item:focus-visible {
+  background: #fdf3f3;
+  color: #994747;
+}
+
+.workspace-issues-item:focus-visible {
+  outline: 2px solid #d68686;
+  outline-offset: -1px;
+}
+
+.workspace-issues-item[aria-disabled="true"] {
+  cursor: default;
+}
+
+.workspace-issues-arrow {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  margin-left: -5px;
+  background: #fff;
+  transform: rotate(45deg);
+}
+
+.workspace-issues-bubble[data-placement="below"] .workspace-issues-arrow {
+  top: -6px;
+  border-top: 1px solid #e8d6d9;
+  border-left: 1px solid #e8d6d9;
+}
+
+.workspace-issues-bubble[data-placement="above"] .workspace-issues-arrow {
+  bottom: -6px;
+  border-bottom: 1px solid #e8d6d9;
+  border-right: 1px solid #e8d6d9;
+}

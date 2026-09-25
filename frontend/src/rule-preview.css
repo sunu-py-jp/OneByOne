@@ -1,0 +1,21 @@
+.rule-preview-pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; border-left: 1px solid var(--line); background: #fff; }
+.rule-preview-header { display: flex; align-items: center; gap: 7px; flex: none; min-height: 38px; padding: 5px 10px; border-bottom: 1px solid var(--line); background: #fafbfe; font-size: 11px; }
+.rule-preview-kind { display: flex; flex: none; color: var(--accent); }
+.rule-preview-kind.is-common { color: #609788; }
+.rule-preview-id { flex: none; color: var(--accent); font-weight: 600; }
+.rule-preview-header > strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; color: #4e566d; }
+.rule-preview-header > .icon-button { flex: none; margin-left: auto; width: 26px; height: 26px; }
+.rule-preview-caption { flex: none; margin: 0; padding: 7px 14px 0; color: #969eaf; font-size: 10px; }
+.rule-preview-body { flex: 1; min-height: 0; overflow: auto; padding: 14px; outline-offset: -2px; }
+.rule-preview-section { min-width: 0; margin: 0 0 18px; }
+.rule-preview-section:last-child { margin-bottom: 0; }
+.rule-preview-section h3 { margin: 0 0 7px; color: #737d91; font-size: 11px; font-weight: 600; }
+.rule-preview-section p { margin: 0; color: #47526a; font-size: 12px; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; }
+.rule-preview-section pre { margin: 0; padding: 9px 10px; overflow: auto; border: 1px solid #e9ecf4; border-radius: 5px; background: #f8f9fc; color: #47526a; font: 11px/1.65 "SFMono-Regular", Consolas, "Liberation Mono", monospace; tab-size: 4; }
+.rule-preview-section code { padding: 0; color: inherit; background: none; font: inherit; }
+.rule-preview-section .rule-preview-muted { color: #8d95a5; }
+.rule-preview-comparison { display: flex; flex-direction: column; align-items: stretch; gap: 8px; margin-bottom: 18px; }
+.rule-preview-comparison > .rule-preview-section { margin: 0; }
+.rule-preview-comparison > svg { align-self: center; color: #a39cb8; transform: rotate(90deg); }
+.rule-preview-message { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; flex: 1; min-width: 0; min-height: 90px; padding: 20px; color: #939caf; font-size: 12px; text-align: center; overflow-wrap: anywhere; }
+.rule-preview-message.is-error { color: #b04d59; }

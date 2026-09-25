@@ -1,0 +1,25 @@
+.review-file-panel.task-file-panel { min-height: 360px; }
+.execution-primary-content > .review-file-panel.task-file-panel { flex: 1; min-height: 0; }
+.task-files-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex: none; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+.task-files-heading h2 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 12px; font-weight: 600; }
+.task-files-heading h2 > span { color: #949aab; font-size: 11px; font-weight: 400; }
+.target-browser.task-files-browser { min-height: 0; border: 0; border-radius: 0; }
+.task-files-list-header input { flex: none; width: 13px; height: 13px; margin: 0; cursor: pointer; accent-color: var(--accent); }
+.task-files-list-header input:disabled { cursor: not-allowed; }
+.task-files-list-header .task-selected-filter { display: flex; align-items: center; gap: 5px; margin-left: auto; color: #8b93a6; font-size: 10px; cursor: pointer; white-space: nowrap; }
+.task-selected-filter > input { width: 12px; height: 12px; margin: 0; accent-color: var(--accent); }
+.task-files-list-header > .disabled-reason-trigger { flex: none; }
+.task-header-candidates { display: flex; align-items: center; gap: 4px; min-width: 0; overflow-x: auto; scrollbar-width: thin; }
+.task-candidate-chip.rule-tag { flex: none; padding: 1px 5px; font-size: 10px; line-height: 19px; }
+.task-candidate-chip.is-active { color: #fff; background: var(--accent); }
+.task-file-context { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; min-height: 0; overflow: hidden; }
+.task-file-context.has-rule-preview { grid-template-columns: minmax(0, 1fr) clamp(235px, 42%, 370px); }
+.task-content-header { height: auto; min-height: 38px; align-items: flex-start; padding-top: 7px; padding-bottom: 7px; }
+.task-content-header > svg { margin-top: 3px; }
+.task-content-identity { display: flex; align-items: center; flex: 1; min-width: 0; gap: 7px; }
+.task-content-identity > .target-file-path { flex: 0 1 auto; min-width: 50px; max-width: 65%; line-height: 21px; }
+.task-content-header .task-header-candidates { flex: 0 1 auto; min-width: 0; max-width: 100%; }
+.task-content-header > .task-list-status { margin-left: auto; }
+@media (max-width: 1100px) {
+  .task-file-context.has-rule-preview { grid-template-columns: minmax(0, 1fr) 230px; }
+}

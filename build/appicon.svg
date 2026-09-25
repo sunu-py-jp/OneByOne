@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 33 33" role="img" aria-labelledby="title">
+  <title id="title">OneByOne</title>
+  <rect width="33" height="33" rx="9" fill="#5b58d6" />
+  <rect x="8.5" y="8.5" width="6" height="16" rx="1.5" fill="#ffffff" />
+  <rect x="18.5" y="6.5" width="6" height="20" rx="1.5" fill="#ffffff" opacity="0.72" />
+</svg>

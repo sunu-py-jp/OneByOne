@@ -1,0 +1,27 @@
+node_modules/
+frontend/dist/
+build/bin/
+build/package/
+build/validation/
+.tools/
+.cache/
+.DS_Store
+*.log
+.onebyone/
+coverage.out
+
+# Local credentials and application data
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+/private/
+/llm-settings/
+/workspaces/
+/workspace-locks/
+/workspace-trash/
+/app-settings.json
+/master-key.json

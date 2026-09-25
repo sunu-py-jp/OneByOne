@@ -1,0 +1,12 @@
+/* Wails uses the computed property on the actual pointer target. */
+.native-desktop .workspace-topbar,
+.native-desktop .workspace-sidebar .brand {
+  --wails-draggable: drag;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.native-desktop .workspace-topbar :is(button, a, input, select, textarea, [role="button"]),
+.native-desktop .workspace-topbar :is(button, a, input, select, textarea, [role="button"]) * {
+  --wails-draggable: no-drag;
+}

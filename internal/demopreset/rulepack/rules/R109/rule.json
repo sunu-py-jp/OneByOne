@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "name": "コールバックの決済パイプラインを順次 await に変える",
+  "overview": "InvoiceService の error-first callback API を billing の Promise API へ移す。lookup(id)、authorize(invoice)、capture(authorization)、void(authorizationId) はそれぞれ結果を resolve し、失敗を reject する。呼び出し間のデータ依存、成功時の処理、失敗段階ごとの補償責任を読み取って await で表現する。",
+  "before": "import { InvoiceService } from '../../lib/parcel-kit.js';\n\nexport function finishPreauthorizedCheckout(heldAuthorization) {\n  return new Promise((resolve, reject) => {\n    InvoiceService.capture(heldAuthorization, (failure, receipt) => {\n      if (!failure) return resolve(receipt.id);\n      InvoiceService.void(heldAuthorization.id, () => reject(failure));\n    });\n  });\n}\n",
+  "after": "import { billing } from '../../lib/parcel-client.js';\n\nexport async function finishPreauthorizedCheckout(heldAuthorization) {\n  let receipt;\n  try {\n    receipt = await billing.capture(heldAuthorization);\n  } catch (failure) {\n    try {\n      await billing.void(heldAuthorization.id);\n    } catch {\n      // Cleanup failure does not replace the capture failure.\n    }\n    throw failure;\n  }\n  return receipt.id;\n}\n",
+  "notes": "認証を取得してから決済するなど、依存する呼び出しを Promise.all で並列化しない。lookup 後や authorize 前などに置かれた入力・業務検証の位置も維持する。既存処理が capture 失敗時に認証を取り消す責任を持つ場合だけ、取得済み認証を void する。取得前のエラー、capture 成功後の結果加工エラー、成功した決済に対して無条件に void しない。補償が完了するまで待ち、void も失敗した場合は従来どおり capture の元エラーを優先する。catch の範囲を広げて別段階の失敗を capture 失敗扱いにしない。公開関数が既に Promise を返す場合、引数と解決値を保持して内部を移行できる。例は補償を所有する処理の一部を示すものであり、対象固有の検証・集計・戻り値を省略する指示ではない。",
+  "holdConditions": "公開関数の callback 契約そのものを Promise に変える必要があり呼び出し元まで波及する場合。認証や補償の責任が外部にあって、対象処理が void を行ってよいか不明な場合。",
+  "pattern": "\\bInvoiceService\\b"
+}

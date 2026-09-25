@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "name": "旧APIの残存を隠さず import と所有範囲を確認する",
+  "overview": "個別のAPI変換後に実際の参照を確認し、使われなくなった旧APIのimportだけを取り除く。新APIのimportは重複や名前衝突を解消する。旧APIの未解決な使用箇所は削除して隠さず、該当する個別ルールで判断する。",
+  "before": "import { ClientOptions } from '../../lib/parcel-kit.js';\nimport { runtimeOptions } from '../../lib/parcel-client.js';\n\nexport function previewDefaults() {\n  return runtimeOptions.resolve({ display: { label: 'Preview' } });\n}\n",
+  "after": "import { runtimeOptions } from '../../lib/parcel-client.js';\n\nexport function previewDefaults() {\n  return runtimeOptions.resolve({ display: { label: 'Preview' } });\n}\n",
+  "notes": "デモの旧APIは../../lib/parcel-kit.js、新APIは../../lib/parcel-client.jsから公開される。部分的な変換ではまだ使うimportを残す。名前衝突時はimport aliasを選び、既存のローカル変数を壊さない。例のような未使用import削除と、未対応の処理を消すことは異なる。コードのコメントアウト、旧名の別名化、ライブラリ本体や別ファイルの編集によって検証をすり抜けない。",
+  "holdConditions": "残存APIの置換にファイル外の所有権・同期契約・動的な操作名の確定が必要であり、個別ルールの保留条件を解消できない場合。",
+  "pattern": ""
+}

@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "name": "イベント購読を所有者ごとのハンドルで解放する",
+  "overview": "EventBus.on(scope, topic, handler) と EventBus.clear(scope) を events.subscribe(scope, topic, handler) が返すハンドルのcloseへ移す。スコープ全体ではなく、現在の所有者が取得した購読だけを解放する。開始・停止・再開始や初期化失敗の経路から所有期間を判断する。",
+  "before": "import { EventBus } from '../../lib/parcel-kit.js';\n\nexport function monitorTemperature(channel, threshold, alarm) {\n  let listening = true;\n  EventBus.on(channel, 'temperature', reading => {\n    if (listening && reading.celsius > threshold) alarm(reading.celsius);\n  });\n  return () => {\n    listening = false;\n    EventBus.clear(channel);\n  };\n}\n",
+  "after": "import { events } from '../../lib/parcel-client.js';\n\nexport function monitorTemperature(channel, threshold, alarm) {\n  let listening = true;\n  const handle = events.subscribe(channel, 'temperature', reading => {\n    if (listening && reading.celsius > threshold) alarm(reading.celsius);\n  });\n  return () => {\n    listening = false;\n    handle.close();\n  };\n}\n",
+  "notes": "新APIは lib/parcel-client.js の名前付きexportを利用し、importは対象ファイルからの相対パスにする。未使用になった旧importだけを取り除く。例はAPI契約を示す小さな別用途の処理であり、対象の業務ロジックや公開関数を置き換えるテンプレートではない。対象にある検証、戻り値、通知の意味、例外契約を読み取り、必要な制御フローだけを変える。 subscribeは同期で、close()を持つハンドルを返す。closeは同期・冪等・例外なしで、そのハンドルの購読だけを解除する。scopeは配信先を識別する値であり所有権ではない。新APIにclearや一括解除はない。複数の購読を取得する場合、後続の購読や初期化処理が失敗しても取得済みハンドルをすべて解放する。停止状態への遷移は解放より先に行い、停止後の通知を無視する仕組みを保つ。再開始を持つ処理では、以前の開始に属するコールバックと現在のコールバックの区別、および重複開始の防止を保つ。例の単一購読では不要な管理も、対象のライフサイクルには必要な場合がある。",
+  "holdConditions": "購読を別の所有者へ引き渡す、終了通知が対象ファイルの外にしかない、共有ハンドルの解除範囲や再開時の責任を確定できない場合。他の所有者の購読まで解除して辻褄を合わせない。",
+  "pattern": "\\bEventBus\\b"
+}
