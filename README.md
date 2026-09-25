@@ -45,6 +45,17 @@ build\package\OneByOne-windows-amd64-Setup.exe
 
 `package`はビルドと梱包をまとめて行い、Git・ripgrep・WebView2導入用ファイルも自動取得して同梱します。最短手順なのでテストは含めていません。テストする場合はパッケージ作成前に`npm.cmd test`を実行します。詳細は[ビルド・配布手順](docs/build.md)を参照してください。
 
+**修正版を配布するとき**は、更新したソースからもう一度パッケージを作ります。既存の出力は上書きしないため、たとえば日時付きの出力先を指定します。
+
+```powershell
+$packageOut = "build/package/OneByOne-windows-amd64-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+npm.cmd run package -- --platform windows/amd64 --out $packageOut
+```
+
+配布するSetupは、指定した出力先に `-Setup.exe` を付けたファイルです。利用者はOneByOneとCLIを終了し、新しいSetupを実行するだけで更新できます。事前のアンインストールは不要で、ワークスペース・LLM接続設定・認証情報は保持します。
+
+**アンインストール**はWindowsの「設定 → アプリ」のOneByOne、またはスタートメニューの「OneByOne → Uninstall OneByOne」から行います。直接実行する場合は `%LOCALAPPDATA%\Programs\OneByOne\Uninstall.exe` です。アンインストールでも利用者の設定・実行結果は残ります。
+
 ## 1. 事前準備
 
 ### 対象ソースと実行環境

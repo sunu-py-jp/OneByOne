@@ -66,7 +66,9 @@ Setupは現在のユーザーの `%LOCALAPPDATA%/Programs/OneByOne/` へイン�
 
 この方式は[Microsoftのオフライン配布方法](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/distribution)に沿っています。WebView2は導入後にEvergreenの更新機構で更新される共有ランタイムで、OneByOne専用のFixed Versionではありません。アンインストール時はOneByOneの配布ファイルだけを削除し、利用者のワークスペース・認証設定・共有WebView2は保持します。
 
-更新時は登録済みの旧アンインストーラーで旧配布ファイルを削除してから展開するため、削除されたGit helperが残りません。起動中・書き込み不可・リンクへの置き換えを検出した場合は中断します。利用者が追加したファイルは再帰削除しません。
+更新は、利用者がOneByOneとCLIを終了してから新しいSetupを実行します。事前のアンインストールは不要です。Setupが登録済みの旧アンインストーラーで旧配布ファイルを削除してから展開するため、削除されたGit helperが残りません。起動中・書き込み不可・リンクへの置き換えを検出した場合は中断します。利用者が追加したファイルは再帰削除しません。`%LOCALAPPDATA%/OneByOne/`のワークスペース・実行結果・LLM接続設定・認証情報は保持します。
+
+アンインストールはWindowsの「設定 → アプリ」のOneByOne、またはスタートメニューの「OneByOne → Uninstall OneByOne」から行えます。実行ファイルは既定で `%LOCALAPPDATA%\Programs\OneByOne\Uninstall.exe` です。アンインストール時も上記の利用者データは残ります。
 
 通常の利用者にはZIPではなくSetupを渡します。ZIPを直接展開する場合はWebView2が別途導入済みである必要があります。Wailsの `-webview2 embed` はオンライン導入用の補助であり、WebView2の全ランタイムをexeに内蔵する指定ではありません。
 
@@ -81,6 +83,13 @@ npm run help
 ```
 
 既定は実行中のOS・CPUです。`--platform` は `macos/arm64`、`macos/amd64`、`windows/amd64`、`windows/arm64` に対応します。`darwin` は `macos` の別名です。MacアプリはmacOS上でビルドします。MacからWindowsへのクロスビルドも同じコマンドで行えますが、Windowsの実動作確認にはなりません。既存出力は上書きしません。
+
+Windowsの修正版を繰り返し作る場合は、ソースを更新して次のように日時付きの出力先を指定できます。`package`には再ビルドも含まれます。配布するSetupは、指定した出力先に `-Setup.exe` を付けたファイルです。
+
+```powershell
+$packageOut = "build/package/OneByOne-windows-amd64-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+npm.cmd run package -- --platform windows/amd64 --out $packageOut
+```
 
 macOSでは同梱ライブラリを含めてアドホック署名を作り直し、署名後に同梱Gitのinit・commit・worktreeを実行します。正式なDeveloper ID署名・公証は別工程です。WindowsのSetupも組織の証明書によるコード署名は行いません。WebView2の取得ファイルは全OSでSHA256を照合し、WindowsでのSetup生成時はMicrosoftのAuthenticode署名も検証します。
 

@@ -5,17 +5,21 @@ package engine
 import (
 	"os/exec"
 	"strconv"
-	"syscall"
+
+	"golang.org/x/sys/windows"
+
+	"onebyone/internal/processutil"
 )
 
 func configureProcess(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x200}
+	processutil.HideWindow(cmd)
+	cmd.SysProcAttr.CreationFlags |= windows.CREATE_NEW_PROCESS_GROUP
 	cmd.Cancel = func() error {
 		if cmd.Process == nil {
 			return nil
 		}
 		k := exec.Command("taskkill", "/PID", strconv.Itoa(cmd.Process.Pid), "/T", "/F")
-		k.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+		processutil.HideWindow(k)
 		if err := k.Run(); err != nil {
 			return cmd.Process.Kill()
 		}

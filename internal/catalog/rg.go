@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"onebyone/internal/processutil"
 )
 
 func findRG(configured string) (string, error) {
@@ -105,6 +107,7 @@ func (c *Catalog) matchFiles(ctx context.Context, root string, files, patterns [
 
 func (c *Catalog) run(ctx context.Context, dir string, input io.Reader, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, c.rg, args...)
+	processutil.HideWindow(cmd)
 	cmd.Dir = dir
 	cmd.Stdin = input
 	var stdout, stderr bytes.Buffer
