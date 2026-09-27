@@ -50,7 +50,7 @@ func executionUsage(current, baseline model.Usage) model.Usage {
 
 func (s *Service) beginExecution(limit int) error {
 	s.mu.Lock()
-	r := &executionRecord{Version: 1, Run: model.ExecutionRun{ID: uid(), StartedAt: now(), Status: "running"}, StartingUsage: s.state.Usage, TargetFiles: []string{}, targetSet: map[string]bool{}}
+	r := &executionRecord{Version: 1, Run: model.ExecutionRun{ID: uid(), StartedAt: now(), Status: "running", Concurrency: s.state.Config.EffectiveConcurrency()}, StartingUsage: s.state.Usage, TargetFiles: []string{}, targetSet: map[string]bool{}}
 	for _, task := range s.state.Tasks {
 		if task.Excluded || (task.Status != "pending" && task.Status != "failed" && task.Status != "running") {
 			continue
@@ -98,6 +98,7 @@ func (s *Service) captureExecution() *executionRecord {
 	r.State.WorkspaceLock = nil
 	if r.Run.Status != "running" {
 		r.State.Running, r.State.Phase, r.State.CurrentFile = false, "idle", ""
+		r.State.CurrentFiles, r.State.FilePhases = nil, nil
 	}
 	r.State.Usage = executionUsage(st.Usage, r.StartingUsage)
 	r.Meta = s.meta
@@ -350,7 +351,7 @@ func recoverExecutionAccounting(r *executionRecord) {
 					if h.FinishedAt == "" {
 						h.Outcome, h.FinishedAt, h.Note = "interrupted", r.Run.FinishedAt, r.Run.Error
 					}
-					h.Changes = buildChangeReport(*h, checkpoint)
+					h.Changes = buildRecordedChangeReport(r.State.Config, *h, checkpoint)
 				}
 			}
 			addUsage(&total, h.Usage)
@@ -427,27 +428,53 @@ func (s *Service) GetExecutionFileDetail(id, file string, index int) (model.File
 		if r.Meta.BaseCommit == "" {
 			return d, fmt.Errorf("この実行は処理開始前に終了したため、ファイル内容は記録されていません")
 		}
-		return cumulativeFileDetail(r.State.Config, r.Meta, task)
+		return cumulativeFileDetailWithSources(r.State.Config, r.Meta, task, func(h model.Attempt) (string, bool) {
+			e, err := readFrozenExecutionEvidence(r, h)
+			if err != nil || digest([]byte(e.Before)) != h.InputHash {
+				return "", false
+			}
+			// No-change reviews can hold before the candidate journal writes
+			// OutputHash. Only byte-identical input is safe in that case.
+			expected := h.OutputHash
+			if expected == "" {
+				expected = h.InputHash
+			}
+			if digest([]byte(e.After)) != expected {
+				return "", false
+			}
+			return e.After, true
+		})
 	}
-	dir, _ := executionDirectory(r.State.Config.QueuePath, r.Run.ID)
-	if owner := r.EvidenceRuns[task.History[index].ID]; owner != "" {
-		dir, err = executionDirectory(r.State.Config.QueuePath, owner)
-		if err != nil {
-			return d, err
-		}
-	}
-	path := filepath.Join(dir, "attempts", task.History[index].ID+".json")
-	b, err := os.ReadFile(path)
+	e, err := readFrozenExecutionEvidence(r, task.History[index])
 	if err != nil {
-		return d, fmt.Errorf("実行時点のファイルを読み込めません: %w", err)
-	}
-	var e executionEvidence
-	if err := json.Unmarshal(b, &e); err != nil {
 		return d, err
-	}
-	if e.Error != "" {
-		return d, fmt.Errorf("%s", e.Error)
 	}
 	d.Before, d.After, d.Diff, d.Changes = e.Before, e.After, e.Diff, e.Changes
 	return d, nil
+}
+
+func readFrozenExecutionEvidence(r *executionRecord, h model.Attempt) (executionEvidence, error) {
+	var e executionEvidence
+	dir, err := executionDirectory(r.State.Config.QueuePath, r.Run.ID)
+	if err != nil {
+		return e, err
+	}
+	if owner := r.EvidenceRuns[h.ID]; owner != "" {
+		dir, err = executionDirectory(r.State.Config.QueuePath, owner)
+		if err != nil {
+			return e, err
+		}
+	}
+	path := filepath.Join(dir, "attempts", h.ID+".json")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return e, fmt.Errorf("実行時点のファイルを読み込めません: %w", err)
+	}
+	if err := json.Unmarshal(b, &e); err != nil {
+		return e, err
+	}
+	if e.Error != "" {
+		return e, fmt.Errorf("%s", e.Error)
+	}
+	return e, nil
 }

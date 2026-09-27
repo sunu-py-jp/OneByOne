@@ -18,10 +18,6 @@ export function ChooseDirectory(arg1) {
   return window['go']['main']['App']['ChooseDirectory'](arg1);
 }
 
-export function ChooseLegacy() {
-  return window['go']['main']['App']['ChooseLegacy']();
-}
-
 export function ChooseRulePackage() {
   return window['go']['main']['App']['ChooseRulePackage']();
 }

@@ -3,85 +3,59 @@ package catalog
 import (
 	"context"
 	"onebyone/internal/model"
-	"os"
+	"onebyone/internal/rulepack"
 	"path/filepath"
 	"reflect"
 	"testing"
 )
 
-func TestCommonRuleCoversEntireConfiguredScopeWithLegacyGateEnabled(t *testing.T) {
-	for _, commonPattern := range []string{"", " \t"} {
-		t.Run(commonPattern, func(t *testing.T) {
+func TestPatternIntersectionAndRuleUnion(t *testing.T) {
+	for _, tc := range []struct {
+		name, path, content string
+		want                []string
+	}{{"common", "", "", []string{"docs/a.tsx", "src/a.tsx", "src/b.tsx", "src/deep/c.tsx"}}, {"path", "src/**/*.tsx", "", []string{"src/a.tsx", "src/b.tsx", "src/deep/c.tsx"}}, {"content", "", "Save", []string{"docs/a.tsx", "src/a.tsx", "src/deep/c.tsx"}}, {"both", "src/**/*.tsx", "Save", []string{"src/a.tsx", "src/deep/c.tsx"}}} {
+		t.Run(tc.name, func(t *testing.T) {
 			cfg := fixture(t)
-			cfg.IncludeGlobs = []string{"*.ext"}
-			cfg.ExcludeGlobs = []string{"skip/**"}
-			cfg.LegacyPath = filepath.Join(filepath.Dir(cfg.Root), "legacy.txt")
-			write(t, cfg.LegacyPath, `\bOldClient\b`)
-			updateRule(t, cfg, "R001", func(d *model.RuleDefinition) { d.Pattern = commonPattern })
-			for name, content := range map[string]string{
-				"src/clean.ext":               "NewClient.Persist(options);\n",
-				"src/legacy.ext":              "OldClient.Save(options);\n",
-				"src/no-legacy-match.ext":     "OtherClient.Save(options);\n",
-				"src/not-included.txt":        "OldClient.Save(options);\n",
-				"skip/excluded.ext":           "OldClient.Save(options);\n",
-				"node_modules/dependency.ext": "OldClient.Save(options);\n",
-			} {
-				write(t, filepath.Join(cfg.Root, name), content)
+			saveRules(t, cfg, &rulepack.Package{})
+			writeRule(t, cfg, "R1", model.RuleDefinition{Name: "scope", Description: "scope description", PathPattern: tc.path, ContentPattern: tc.content})
+			for _, f := range []string{"docs/a.tsx", "src/a.tsx", "src/deep/c.tsx"} {
+				write(t, filepath.Join(cfg.Root, f), "Save()")
 			}
-			cat, err := Load(context.Background(), cfg)
+			write(t, filepath.Join(cfg.Root, "src/b.tsx"), "Other()")
+			c, err := Load(context.Background(), cfg)
 			if err != nil {
 				t.Fatal(err)
 			}
-			tasks, scanned, excluded, err := cat.Scan(context.Background(), cfg)
+			tasks, _, _, err := c.Scan(context.Background(), cfg)
 			if err != nil {
 				t.Fatal(err)
 			}
-			var files []string
+			files := []string{}
 			for _, task := range tasks {
 				files = append(files, task.File)
-				if task.Status != "pending" {
-					t.Fatal("common-rule source was not queued")
+				if !reflect.DeepEqual(task.Rules, []string{"R1"}) {
+					t.Fatal(task)
 				}
 			}
-			if !reflect.DeepEqual(files, []string{"src/clean.ext", "src/legacy.ext", "src/no-legacy-match.ext"}) || scanned != 3 || excluded != 0 {
-				t.Fatalf("common-rule scope still depends on legacy matches: %v scanned=%d excluded=%d", files, scanned, excluded)
+			if !reflect.DeepEqual(files, tc.want) {
+				t.Fatal(files, tc.want)
 			}
-			if len(tasks[0].Rules) != 0 || !reflect.DeepEqual(tasks[1].Rules, []string{"R019"}) || !reflect.DeepEqual(tasks[2].Rules, []string{"R019"}) {
-				t.Fatal("queue must retain only matching individual candidate IDs; common rules are provided globally")
+			if c.Rules[0].Always != (tc.path == "" && tc.content == "") {
+				t.Fatal("scoped rule marked common")
 			}
-			if cat.Rules[0].CandidateCount != 3 || cat.Rules[1].CandidateCount != 2 {
-				t.Fatal("candidate counts do not reflect the expanded source scope")
+			writeRule(t, cfg, "R2", model.RuleDefinition{Name: "other", Description: "match other code", ContentPattern: "Other"})
+			c, _ = Load(context.Background(), cfg)
+			tasks, _, _, err = c.Scan(context.Background(), cfg)
+			if err != nil {
+				t.Fatal(err)
 			}
-			for _, checkCase := range []struct{ file, status string }{{"src/clean.ext", "passed"}, {"src/legacy.ext", "failed"}} {
-				check, err := cat.CheckLegacy(context.Background(), cfg, filepath.Join(cfg.Root, checkCase.file))
-				if err != nil || check.Status != checkCase.status {
-					t.Fatalf("common rule changed legacy verification for %s: %+v %v", checkCase.file, check, err)
-				}
+			found := false
+			for _, task := range tasks {
+				found = found || task.File == "src/b.tsx"
+			}
+			if !found {
+				t.Fatal("rule union lost second rule")
 			}
 		})
-	}
-}
-
-func TestOnlyCommonRuleQueuesSourcesWithoutAnyLegacyMatch(t *testing.T) {
-	cfg := fixture(t)
-	if err := os.RemoveAll(filepath.Join(cfg.RulesPath, "R019")); err != nil {
-		t.Fatal(err)
-	}
-	cfg.LegacyPath = filepath.Join(filepath.Dir(cfg.Root), "legacy.txt")
-	write(t, cfg.LegacyPath, "NoSourceContainsThisSymbol")
-	write(t, filepath.Join(cfg.Root, "a.ext"), "modern source\n")
-	write(t, filepath.Join(cfg.Root, "b.ext"), "another source\n")
-	cat, err := Load(context.Background(), cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tasks, scanned, excluded, err := cat.Scan(context.Background(), cfg)
-	if err != nil || len(tasks) != 2 || scanned != 2 || excluded != 0 {
-		t.Fatalf("common-only package produced an empty queue: %+v %d %d %v", tasks, scanned, excluded, err)
-	}
-	for _, task := range tasks {
-		if len(task.Rules) != 0 || task.Status != "pending" {
-			t.Fatal("common-only queue should need no individual candidate")
-		}
 	}
 }

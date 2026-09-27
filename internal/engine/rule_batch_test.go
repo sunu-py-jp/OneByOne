@@ -47,8 +47,6 @@ func TestSaveRulesAddsAndEditsInOneVersionWithoutChangingWorkspaceData(t *testin
 	if err != nil || len(initial.Rules) != 2 {
 		t.Fatalf("initial batch failed: %v", err)
 	}
-	helper := filepath.Join(initial.Config.RulesPath, "R001", "examples", "helper.txt")
-	writeTest(t, helper, []byte("keep helper resource"))
 	if _, err := s.Scan(); err != nil {
 		t.Fatal(err)
 	}
@@ -66,12 +64,12 @@ func TestSaveRulesAddsAndEditsInOneVersionWithoutChangingWorkspaceData(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	common.ExpectedRevision, common.Notes = first.Revision, "edited notes"
+	common.ExpectedRevision, common.Body = first.Revision, "edited notes"
 	last, err := s.OpenRule(individual.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	individual.ExpectedRevision, individual.After = last.Revision, "updated implementation"
+	individual.ExpectedRevision, individual.Body = last.Revision, "updated implementation"
 	retainedLease := s.ruleLease
 	added := ruleEdit("R200", "new rule", "Modern")
 	saved, err := s.SaveRules([]model.RuleEdit{common, individual, added})
@@ -82,23 +80,20 @@ func TestSaveRulesAddsAndEditsInOneVersionWithoutChangingWorkspaceData(t *testin
 	if err != nil || len(newVersions) != len(versions)+1 {
 		t.Fatal("batch created more than one package version")
 	}
-	if len(saved.Rules) != 3 || saved.Rules[0].Notes != common.Notes || saved.Rules[1].After != individual.After || saved.Rules[2].ID != added.ID {
+	if len(saved.Rules) != 3 || saved.Rules[0].Body != common.Body || saved.Rules[1].Body != individual.Body || saved.Rules[2].ID != added.ID {
 		t.Fatal("batch did not publish every draft together")
 	}
-	if saved.Config.Root != before.Config.Root || saved.Config.QueuePath != before.Config.QueuePath || saved.SelectedLLMConnectionID != connectionID || !saved.Config.CredentialSet || !reflect.DeepEqual(saved.Tasks, before.Tasks) || !reflect.DeepEqual(rulepack.FromConfig(saved.Config), rulepack.FromConfig(before.Config)) {
+	if saved.Config.Root != before.Config.Root || saved.Config.QueuePath != before.Config.QueuePath || saved.SelectedLLMConnectionID != connectionID || !saved.Config.CredentialSet || !reflect.DeepEqual(saved.Tasks, before.Tasks) {
 		t.Fatal("batch changed workspace, queue, tasks, personal connection, or processing settings")
+	}
+	if s.ruleLease != retainedLease {
+		t.Fatal("batch released active rule lease")
 	}
 	currentQueue, err := os.ReadFile(saved.Config.QueuePath)
 	if err != nil || !bytes.Equal(queueBytes, currentQueue) {
 		t.Fatal("batch rewrote the existing queue")
 	}
-	asset, err := os.ReadFile(filepath.Join(saved.Config.RulesPath, "R001", "examples", "helper.txt"))
-	if err != nil || string(asset) != "keep helper resource" {
-		t.Fatal("batch lost auxiliary resources")
-	}
-	if s.ruleLease != retainedLease || s.ruleLeaseID != individual.ID {
-		t.Fatal("batch released the active editor's lease")
-	}
+
 	for _, id := range []string{common.ID, added.ID} {
 		lockPath, err := s.ruleLockPath(saved.ActiveWorkspaceID, id)
 		if err != nil {
@@ -108,12 +103,12 @@ func TestSaveRulesAddsAndEditsInOneVersionWithoutChangingWorkspaceData(t *testin
 			t.Fatalf("batch retained a temporary lease for %s: %v", id, err)
 		}
 	}
-	oldData, err := os.ReadFile(filepath.Join(before.Config.RulesPath, common.ID, "rule.json"))
+	oldPack, err := rulepack.Snapshot(before.Config.RulesPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	old, err := ruleformat.Decode(oldData)
-	if err != nil || old.Notes == common.Notes {
+	old, err := ruleformat.Decode([]byte(oldPack.Rules[0].Markdown))
+	if err != nil || old.Body == common.Body {
 		t.Fatal("batch modified the previous package version")
 	}
 	assertRulePackageSourceUntouched(t, source)
@@ -131,7 +126,7 @@ func TestSaveRulesRejectsEntireBatchForValidationRevisionOrDuplicateFailure(t *t
 		t.Fatal(err)
 	}
 	update := original
-	update.ExpectedRevision, update.Notes = opened.Revision, "must not be partially saved"
+	update.ExpectedRevision, update.Body = opened.Revision, "must not be partially saved"
 	invalid := ruleEdit("R019", "invalid regex", "[invalid")
 	invalidName := ruleEdit("R020", "", "")
 	missingRevision := update
@@ -193,8 +188,15 @@ func TestSaveRulesReadsCurrentDiskRevisionAndPreservesCanonicalID(t *testing.T) 
 		t.Fatal(err)
 	}
 	current := editDefinition(original)
-	current.Notes = "disk content changed after the draft was opened"
-	writeTest(t, filepath.Join(created.Config.RulesPath, original.ID, "rule.json"), ruleDefinitionBytes(t, current))
+	current.Body = "disk content changed after the draft was opened"
+	pack, err := rulepack.Snapshot(created.Config.RulesPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pack.Rules[0].Markdown = string(ruleDefinitionBytes(t, current))
+	if err = rulepack.Write(created.Config.RulesPath, pack); err != nil {
+		t.Fatal(err)
+	}
 	stale := original
 	stale.ExpectedRevision = opened.Revision
 	_, err = s.SaveRules([]model.RuleEdit{stale, ruleEdit("R200", "new", "")})
@@ -202,13 +204,13 @@ func TestSaveRulesReadsCurrentDiskRevisionAndPreservesCanonicalID(t *testing.T) 
 	if s.Snapshot().Config.RulesPath != created.Config.RulesPath {
 		t.Fatal("stale cached state replaced a newer disk definition")
 	}
-	stale.ID, stale.ExpectedRevision, stale.Notes = "r019", ruleformat.Revision(current), "reconciled change"
+	stale.ID, stale.ExpectedRevision, stale.Body = "r019", ruleformat.Revision(current), "reconciled change"
 	saved, err := s.SaveRules([]model.RuleEdit{stale})
-	if err != nil || len(saved.Rules) != 1 || saved.Rules[0].ID != "R019" || saved.Rules[0].Notes != stale.Notes {
+	if err != nil || len(saved.Rules) != 1 || saved.Rules[0].ID != "R019" || saved.Rules[0].Body != stale.Body {
 		t.Fatalf("reconciled batch did not preserve the existing canonical ID: %v", err)
 	}
-	entries, err := os.ReadDir(saved.Config.RulesPath)
-	if err != nil || len(entries) != 1 || entries[0].Name() != original.ID {
+	pack, err = rulepack.Snapshot(saved.Config.RulesPath)
+	if err != nil || len(pack.Rules) != 1 || pack.Rules[0].ID != original.ID {
 		t.Fatal("case-variant draft created a second rule directory")
 	}
 }
@@ -224,7 +226,7 @@ func TestSaveRulesHonorsBusyRuleAndWorkspaceGuards(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	initial.ExpectedRevision, initial.Notes = opened.Revision, "do not partially save"
+	initial.ExpectedRevision, initial.Body = opened.Revision, "do not partially save"
 	newFirst, newBusy := ruleEdit("R100", "temporary lease", ""), ruleEdit("R200", "other editor", "")
 	busyPath, err := s.ruleLockPath(before.ActiveWorkspaceID, newBusy.ID)
 	if err != nil {

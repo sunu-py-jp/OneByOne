@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"onebyone/internal/model"
+	"onebyone/internal/ruleformat"
 	"onebyone/internal/rulepack"
 )
 
@@ -133,23 +134,16 @@ func TestCLIExecutionHTTPWorkflowPersistsHistoricalResultsAndHumanHold(t *testin
 	}
 	cliExecutionCommitSources(t, root)
 
-	rule := model.RuleDefinition{
-		Version: 1, Name: "Update storage while preserving caller contracts", Pattern: "",
-		Overview: "Use RecordStore.write instead of ArchiveStore.save and preserve callers' completion behavior.",
-		Before:   "return ArchiveStore.save(value);", After: "return await RecordStore.write(value);",
-		Notes: "Do not infer an external callback's ownership contract.", HoldConditions: "An external save contract is not available in the target.",
-	}
-	ruleJSON, err := json.Marshal(rule)
+	rule := model.RuleDefinition{ID: "R001", Name: "Update storage while preserving caller contracts", Description: "Use RecordStore.write instead of ArchiveStore.save and preserve callers completion behavior.", Body: "# Transform\n\nreturn ArchiveStore.save(value); -> return await RecordStore.write(value);\n\n# Hold\n\nDo not infer an external callback ownership contract."}
+	md, err := ruleformat.Encode(rule)
 	if err != nil {
 		t.Fatal(err)
 	}
-	archive := filepath.Join(base, "fixture.oborules")
-	if err := rulepack.Write(archive, &rulepack.Package{
-		Settings: rulepack.Settings{IncludeGlobs: []string{"**/*.js"}, ExcludeGlobs: []string{}, CheckCommands: []model.Command{}},
-		Files:    map[string][]byte{"rules/R001/rule.json": ruleJSON, "patterns/legacy-symbols.txt": []byte(`\bArchiveStore\b`)},
-	}); err != nil {
+	archive := filepath.Join(base, "fixture.json")
+	if err := rulepack.Write(archive, &rulepack.Package{Rules: []rulepack.Entry{{ID: "R001", Markdown: string(md)}}}); err != nil {
 		t.Fatal(err)
 	}
+	var ruleID string
 
 	var editorRequests, reviewRequests, heldRequests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -193,14 +187,14 @@ func TestCLIExecutionHTTPWorkflowPersistsHistoricalResultsAndHumanHold(t *testin
 		}
 		if len(request.Tools) == 0 {
 			reviewRequests.Add(1)
-			if payload.File != file || payload.Before != before || payload.After != after || len(request.Input) != 1 || len(payload.Rules) != 1 || payload.Rules[0].ID != "R001" {
+			if payload.File != file || payload.Before != before || payload.After != after || len(request.Input) != 1 || len(payload.Rules) != 1 || payload.Rules[0].ID != ruleID {
 				t.Error("independent review did not receive only the expected target and rule")
 				http.Error(w, "unexpected review context", http.StatusBadRequest)
 				return
 			}
 			cliExecutionResponse(w, map[string]any{
 				"baseHash": payload.BaseHash, "candidateHash": payload.CandidateHash, "verdict": "passed", "summary": "The storage call preserves the caller's returned value.",
-				"assessments": []model.ReviewAssessment{{RuleID: "R001", Status: "satisfied", Reason: "The supported API is awaited and its result is returned."}}, "issues": []model.ReviewIssue{},
+				"assessments": []model.ReviewAssessment{{RuleID: ruleID, Status: "satisfied", Reason: "The supported API is awaited and its result is returned."}}, "issues": []model.ReviewIssue{},
 			}, "", "")
 			return
 		}
@@ -212,10 +206,12 @@ func TestCLIExecutionHTTPWorkflowPersistsHistoricalResultsAndHumanHold(t *testin
 				return
 			}
 			if turn == 1 {
+				// The model miscounts a line. The unique full-line quotation must
+				// resolve to actual line 2 before its persisted report is trusted.
 				cliExecutionResponse(w, model.PlanUpdate{
 					ExpectedRevision: 0,
-					RuleDecisions:    []model.PlanDecision{{RuleID: "R001", Decision: "blocked", Reason: "The externalSave callback contract is outside this file and must be confirmed."}},
-					Items:            []model.PlanItem{{ID: "P1", RuleID: "R001", Location: "externalSave(record)", Risk: "Changing the callback could change transaction ownership.", Change: "Confirm externalSave's ownership before updating storage.", Expected: "The external contract remains intact.", Status: "blocked", HoldReason: "The externalSave contract is unavailable."}},
+					RuleDecisions:    []model.PlanDecision{{RuleID: ruleID, Decision: "blocked", Reason: "The externalSave callback contract is outside this file and must be confirmed."}},
+					Items:            []model.PlanItem{{ID: "P1", RuleID: ruleID, Location: "externalSave(record)", Risk: "Changing the callback could change transaction ownership.", Change: "Confirm externalSave's ownership before updating storage.", Expected: "The external contract remains intact.", Status: "blocked", HoldReason: "The externalSave contract is unavailable.", SourceLocations: []model.SourceLocation{{StartLine: 1, EndLine: 1, Excerpt: "  return externalSave(record);"}}}},
 				}, "update_state", "hold-plan")
 			} else {
 				cliExecutionResponse(w, map[string]string{"outcome": "needs_human", "candidateId": "", "note": "The externalSave contract must be confirmed before changing this file."}, "", "")
@@ -231,13 +227,13 @@ func TestCLIExecutionHTTPWorkflowPersistsHistoricalResultsAndHumanHold(t *testin
 		case 1:
 			cliExecutionResponse(w, model.PlanUpdate{
 				ExpectedRevision: 0,
-				RuleDecisions:    []model.PlanDecision{{RuleID: "R001", Decision: "modify", Reason: "The storage call uses the removed API."}},
-				Items:            []model.PlanItem{{ID: "P1", RuleID: "R001", Location: "return ArchiveStore.save(record);", Risk: "The removed API will fail after the library update.", Change: "Await RecordStore.write and return its result.", Expected: "The save function returns the supported storage result.", Status: "proposed"}},
+				RuleDecisions:    []model.PlanDecision{{RuleID: ruleID, Decision: "modify", Reason: "The storage call uses the removed API."}},
+				Items:            []model.PlanItem{{ID: "P1", RuleID: ruleID, Location: "return ArchiveStore.save(record);", Risk: "The removed API will fail after the library update.", Change: "Await RecordStore.write and return its result.", Expected: "The save function returns the supported storage result.", Status: "proposed", SourceLocations: []model.SourceLocation{{StartLine: 2, EndLine: 2, Excerpt: "  return ArchiveStore.save(record);"}}}},
 			}, "update_state", "save-plan")
 		case 2:
 			cliExecutionResponse(w, model.CandidateRequest{
 				PlanRevision: 1, BaseHash: payload.BaseHash,
-				Edits: []model.Edit{{OldText: "return ArchiveStore.save(record);", NewText: "return await RecordStore.write(record);", ItemIDs: []string{"P1"}}}, AddressedItemIDs: []string{"P1"},
+				Edits: []model.Edit{{OldText: "return ArchiveStore.save(record);", NewText: "return await RecordStore.write(record);", ItemIDs: []string{"P1"}, Attributions: []model.EditAttribution{}}}, AddressedItemIDs: []string{"P1"},
 			}, "validate_candidate", "save-candidate")
 		case 3:
 			var candidate model.CandidateValidation
@@ -267,7 +263,9 @@ func TestCLIExecutionHTTPWorkflowPersistsHistoricalResultsAndHumanHold(t *testin
 	defer server.Close()
 
 	cliExecutionCommand(t, config, 0, nil, "workspace", "create", "--name", "CLI HTTP workflow", "--root", root)
-	cliExecutionCommand(t, config, 0, nil, "rules", "import", "--input", archive, "--mode", "replace")
+	var imported model.State
+	cliExecutionDecode(t, cliExecutionCommand(t, config, 0, nil, "rules", "import", "--input", archive, "--mode", "replace"), &imported)
+	ruleID = imported.Rules[0].ID
 	cliExecutionCommand(t, config, 0, map[string]any{"maxAttempts": 1, "maxTurns": 6, "timeoutSeconds": 15, "maxOutputTokens": 2048}, "settings", "update", "--input", "-")
 	var registered model.State
 	cliExecutionDecode(t, cliExecutionCommand(t, config, 0, model.LLMConnection{
@@ -307,6 +305,26 @@ func TestCLIExecutionHTTPWorkflowPersistsHistoricalResultsAndHumanHold(t *testin
 	if held.Status != "needs_human" || len(held.History) != 1 || len(held.History[0].Reviews) != 0 || held.History[0].Commit != "" {
 		t.Fatalf("recorded human hold was not retained without review or commit: %+v", held)
 	}
+	assertHeldLocation := func(rows []model.ChangeReportItem) {
+		t.Helper()
+		if len(rows) != 1 || rows[0].Status != "needs_human" || rows[0].RuleID != ruleID || rows[0].AttributionVersion != model.LineAttributionVersion || !strings.Contains(rows[0].Reason, "externalSave") {
+			t.Fatalf("held location lost its rule, reason or verified provenance: %+v", rows)
+		}
+		found := false
+		for _, span := range rows[0].LineRanges {
+			found = found || span.BeforeStart == 2 && span.BeforeEnd == 2
+		}
+		if !found {
+			t.Fatalf("held location lost original source line 2: %+v", rows)
+		}
+	}
+	assertHeldLocation(held.History[0].Changes)
+	var heldDetail model.FileDetail
+	cliExecutionDecode(t, cliExecutionCommand(t, config, 0, nil, "detail", "--run", held.History[0].ExecutionID, "--file", heldFile), &heldDetail)
+	if !heldDetail.Cumulative || heldDetail.Before != heldBefore || heldDetail.After != heldBefore || heldDetail.Diff != "" {
+		t.Fatal("unchanged held-file detail fabricated a modification")
+	}
+	assertHeldLocation(heldDetail.Changes)
 	var runs []model.ExecutionRun
 	cliExecutionDecode(t, cliExecutionCommand(t, config, 0, nil, "runs", "list"), &runs)
 	if len(runs) != 2 || held.History[0].ExecutionID == firstID || held.History[0].ExecutionID == "" {
@@ -319,7 +337,7 @@ func TestCLIExecutionHTTPWorkflowPersistsHistoricalResultsAndHumanHold(t *testin
 	}
 	var detail model.FileDetail
 	cliExecutionDecode(t, cliExecutionCommand(t, config, 0, nil, "detail", "--run", firstID, "--file", file), &detail)
-	if !detail.Cumulative || detail.Before != before || detail.After != after || !strings.Contains(detail.Diff, "+  return await RecordStore.write(record);") || len(detail.Changes) != 1 || detail.Changes[0].RuleID != "R001" || detail.Changes[0].Status != "fixed" || detail.Changes[0].SourceAttemptID != firstTask.History[0].ID {
+	if !detail.Cumulative || detail.Before != before || detail.After != after || !strings.Contains(detail.Diff, "+  return await RecordStore.write(record);") || len(detail.Changes) != 1 || detail.Changes[0].RuleID != ruleID || detail.Changes[0].Status != "fixed" || detail.Changes[0].SourceAttemptID != firstTask.History[0].ID {
 		t.Fatalf("historical CLI detail omitted the adopted diff or rule attribution: %+v", detail)
 	}
 	beforeLine, afterLine := false, false
@@ -334,7 +352,7 @@ func TestCLIExecutionHTTPWorkflowPersistsHistoricalResultsAndHumanHold(t *testin
 	// must not check out that branch or expose the held file's proposed edits.
 	var preview model.ResultPublicationPreview
 	cliExecutionDecode(t, cliExecutionCommand(t, config, 0, nil, "publish", "preview"), &preview)
-	if preview.WorkspaceID != secondRun.ActiveWorkspaceID || preview.Revision == "" || len(preview.Files) != 1 || preview.Files[0].File != file || !reflect.DeepEqual(preview.Files[0].RulesApplied, []string{"R001"}) || !strings.Contains(preview.Message, file) || !strings.Contains(preview.Message, "R001") {
+	if preview.WorkspaceID != secondRun.ActiveWorkspaceID || preview.Revision == "" || len(preview.Files) != 1 || preview.Files[0].File != file || !reflect.DeepEqual(preview.Files[0].RulesApplied, []string{ruleID}) || !strings.Contains(preview.Message, file) || !strings.Contains(preview.Message, ruleID) {
 		t.Fatalf("publication preview omitted cumulative adopted edits or included a hold: %+v", preview)
 	}
 	var publishedDiff map[string]string
@@ -417,6 +435,15 @@ func TestCLIExecutionHTTPWorkflowPersistsHistoricalResultsAndHumanHold(t *testin
 	if saved.Run.ID != firstID || !reflect.DeepEqual(saved.TargetFiles, []string{file}) || cliExecutionTask(t, saved.State.Tasks, heldFile).Status != "pending" || cliExecutionTask(t, saved.State.Tasks, file).Status != "done" || len(saved.State.LLMConnections) != 0 || bytes.Contains(report, []byte(cliExecutionTestCredential)) {
 		t.Fatal("historical export mixed executions or exposed personal connection data")
 	}
+	heldReportPath := filepath.Join(base, "held-execution.json")
+	cliExecutionCommand(t, config, 0, nil, "report", "--run", held.History[0].ExecutionID, "--output", heldReportPath)
+	heldReport, err := os.ReadFile(heldReportPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var savedHold model.ExecutionRunResult
+	cliExecutionDecode(t, heldReport, &savedHold)
+	assertHeldLocation(cliExecutionTask(t, savedHold.State.Tasks, heldFile).History[0].Changes)
 	if editorRequests.Load() != 3 || reviewRequests.Load() != 1 || heldRequests.Load() != 2 {
 		t.Fatalf("unexpected HTTP loop counts: editor=%d review=%d hold=%d", editorRequests.Load(), reviewRequests.Load(), heldRequests.Load())
 	}

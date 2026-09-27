@@ -3,14 +3,11 @@
 package demopreset
 
 import (
-	"bytes"
 	"embed"
-	"encoding/json"
 	"fmt"
 	"io/fs"
 	"strings"
 
-	"onebyone/internal/ruleformat"
 	"onebyone/internal/rulepack"
 )
 
@@ -44,40 +41,18 @@ func ProjectFiles() (map[string][]byte, error) {
 // target paths, result paths, execution limits or prices. It uses the same
 // schema as imported packages.
 func Rules() (*rulepack.Package, error) {
-	files, err := readFiles("rulepack")
+	data, err := assets.ReadFile("rulepack/rules.json")
 	if err != nil {
 		return nil, err
 	}
-	settingsData, ok := files["settings.json"]
-	if !ok {
-		return nil, fmt.Errorf("デモルールの設定がありません")
+	p, err := rulepack.Decode(data)
+	if err != nil {
+		return nil, fmt.Errorf("デモルールを読み込めません: %w", err)
 	}
-	delete(files, "settings.json")
-	var settings rulepack.Settings
-	decoder := json.NewDecoder(bytes.NewReader(settingsData))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&settings); err != nil {
-		return nil, fmt.Errorf("デモルールの設定を読み込めません: %w", err)
-	}
-	common, individual := 0, 0
-	for name, data := range files {
-		if !strings.HasPrefix(name, "rules/") || !strings.HasSuffix(name, "/rule.json") {
-			continue
-		}
-		definition, err := ruleformat.Decode(data)
-		if err != nil {
-			return nil, fmt.Errorf("デモルール %s を読み込めません: %w", name, err)
-		}
-		if strings.TrimSpace(definition.Pattern) == "" {
-			common++
-		} else {
-			individual++
-		}
-	}
-	if common != CommonRuleCount || individual != IndividualRuleCount {
+	if len(p.Rules) != CommonRuleCount+IndividualRuleCount {
 		return nil, fmt.Errorf("デモルールの件数が不正です")
 	}
-	return &rulepack.Package{Settings: settings, Files: files}, nil
+	return p, nil
 }
 
 func readFiles(directory string) (map[string][]byte, error) {

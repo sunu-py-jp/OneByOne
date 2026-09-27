@@ -43,7 +43,7 @@ func reviewWire(in ReviewInput, verdict string) map[string]any {
 		assessments[1].(map[string]any)["status"] = "violated"
 		assessments[1].(map[string]any)["reason"] = "保存APIへの引数が不足しています。"
 		issues = append(issues, map[string]any{
-			"ruleId": "R019", "location": "save", "lineBasis": "after", "excerpt": "ParcelClient.write()",
+			"ruleId": "R019", "location": "save", "lineBasis": "after", "startLine": 1, "endLine": 1, "excerpt": strings.TrimSuffix(in.After, "\n"),
 			"reason": "保存対象を渡していません。", "requestedChange": "保存対象を write に渡してください。",
 		})
 	}
@@ -191,7 +191,6 @@ func TestIndependentReviewRejectsInvalidVerdicts(t *testing.T) {
 		{"missing general issue ID", "needs_changes", func(w map[string]any) { delete(w["issues"].([]any)[0].(map[string]any), "ruleId") }},
 		{"null general issue ID", "needs_changes", func(w map[string]any) { w["issues"].([]any)[0].(map[string]any)["ruleId"] = nil }},
 		{"empty requested change", "needs_changes", func(w map[string]any) { w["issues"].([]any)[0].(map[string]any)["requestedChange"] = " " }},
-		{"needs changes with unresolved rule", "needs_changes", func(w map[string]any) { w["assessments"].([]any)[0].(map[string]any)["status"] = "needs_human" }},
 		{"oversized summary", "passed", func(w map[string]any) { w["summary"] = strings.Repeat("x", 8193) }},
 		{"unknown verdict", "passed", func(w map[string]any) { w["verdict"] = "approved" }},
 	}

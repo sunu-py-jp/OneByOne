@@ -3,21 +3,18 @@ package engine
 import (
 	"context"
 	"fmt"
+	"onebyone/internal/catalog"
+	"onebyone/internal/model"
+	"onebyone/internal/ruleformat"
+	"onebyone/internal/rulepack"
+	"onebyone/internal/store"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
-
-	"onebyone/internal/catalog"
-	"onebyone/internal/model"
-	"onebyone/internal/rulepack"
-	"onebyone/internal/store"
 )
 
-// ImportRulePackage validates an owned local copy before one atomic setting.json
-// replacement publishes it. No configured program, check, source scan, or LLM
-// call is run while importing a package.
 func (s *Service) ImportRulePackage(path, mode string) (model.State, error) {
 	s.op.Lock()
 	defer s.op.Unlock()
@@ -25,14 +22,14 @@ func (s *Service) ImportRulePackage(path, mode string) (model.State, error) {
 		return s.Snapshot(), err
 	}
 	if mode != "replace" && mode != "merge" {
-		return s.Snapshot(), fmt.Errorf("ルールの取り込み方法は上書きまたはマージを指定してください")
+		return s.Snapshot(), fmt.Errorf("取り込み方法は上書きまたはマージを指定してください")
 	}
 	s.mu.Lock()
 	cfg := s.state.Config
 	w := model.Workspace{ID: s.state.ActiveWorkspaceID, Root: cfg.Root}
-	for _, candidate := range s.workspaces {
-		if candidate.ID == w.ID {
-			w.Name = candidate.Name
+	for _, v := range s.workspaces {
+		if v.ID == w.ID {
+			w.Name = v.Name
 			break
 		}
 	}
@@ -40,102 +37,88 @@ func (s *Service) ImportRulePackage(path, mode string) (model.State, error) {
 	if w.ID == "" || cfg.Root == "" {
 		return s.Snapshot(), fmt.Errorf("先にワークスペースを選択してください")
 	}
-	if !strings.EqualFold(filepath.Ext(path), ".oborules") {
-		return s.Snapshot(), fmt.Errorf(".oborules ファイルを選択してください")
-	}
-	pkg, err := rulepack.Read(path)
+	incoming, err := rulepack.Read(path)
 	if err != nil {
 		return s.Snapshot(), err
 	}
-	existingIDs, err := storedRuleIDs(cfg.RulesPath)
-	if err != nil {
-		return s.Snapshot(), err
+	pkg := incoming
+	if mode == "replace" {
+		cfg.ExcludedRuleIDs = nil
 	}
-	incomingIDs := packageRuleIDs(pkg)
-	renamed := map[string]string{}
+	var lockIDs []string
 	if mode == "merge" {
-		renamed = mergedRuleIDs(existingIDs, incomingIDs)
-	}
-	lockIDs := append([]string{}, existingIDs...)
-	for _, id := range incomingIDs {
-		if replacement, found := renamed[id]; found {
-			id = replacement
+		current := &rulepack.Package{Rules: []rulepack.Entry{}}
+		if cfg.RulesPath != "" {
+			if current, err = rulepack.Snapshot(cfg.RulesPath); err != nil {
+				return s.Snapshot(), err
+			}
 		}
-		lockIDs = append(lockIDs, id)
+		renamed := mergedRuleIDs(packageRuleIDs(current), packageRuleIDs(incoming))
+		pkg = &rulepack.Package{Rules: append([]rulepack.Entry{}, current.Rules...)}
+		for _, entry := range incoming.Rules {
+			if id := renamed[entry.ID]; id != entry.ID {
+				if entry, err = rulepack.WithID(entry, id); err != nil {
+					return s.Snapshot(), err
+				}
+			}
+			pkg.Rules = append(pkg.Rules, entry)
+		}
+		lockIDs = packageRuleIDs(pkg)
+	} else {
+		// A valid replacement can repair a corrupt local JSON document.
+		if lockIDs, err = s.existingRuleIDs(w.ID, cfg.RulesPath); err != nil {
+			return s.Snapshot(), err
+		}
+		lockIDs = append(lockIDs, packageRuleIDs(incoming)...)
 	}
 	release, err := s.lockImportedRules(w.ID, lockIDs)
 	if err != nil {
 		return s.Snapshot(), err
 	}
 	defer release()
-	if mode == "merge" {
-		current := &rulepack.Package{Settings: rulepack.FromConfig(cfg), Files: map[string][]byte{}}
-		if cfg.RulesPath != "" {
-			var snapshotErr error
-			current, snapshotErr = rulepack.Snapshot(cfg.RulesPath, cfg.LegacyPath, rulepack.FromConfig(cfg))
-			if snapshotErr != nil {
-				return s.Snapshot(), snapshotErr
-			}
-		}
-		pkg = mergeRulePackages(current, pkg, renamed)
-		if cfg.RulePackageName == "" {
-			cfg.RulePackageName = "rules.oborules"
-		}
-	} else {
-		cfg = pkg.Settings.Apply(cfg)
-		cfg.RulePackageName = filepath.Base(path)
-	}
-	cfg, err = normalizeConfig(cfg)
-	if err != nil {
-		return s.Snapshot(), err
-	}
 	state, err := s.installRulePackage(w, cfg, pkg)
 	if err == nil {
 		s.releaseRuleLease()
 	}
 	return state, err
 }
-
 func packageRuleIDs(pkg *rulepack.Package) []string {
-	seen := map[string]bool{}
-	for path := range pkg.Files {
-		parts := strings.Split(path, "/")
-		if len(parts) >= 3 && parts[0] == "rules" {
-			seen[parts[1]] = true
-		}
+	ids := []string{}
+	for _, r := range pkg.Rules {
+		ids = append(ids, r.ID)
 	}
-	ids := make([]string, 0, len(seen))
-	for id := range seen {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
 	return ids
 }
 
-// Reading names alone allows a valid package to replace a broken rule.json.
-func storedRuleIDs(path string) ([]string, error) {
-	if path == "" {
+// existingRuleIDs names every rule a replacement must lock. A corrupt local
+// document still cannot bypass a lease held on one of its rules.
+func (s *Service) existingRuleIDs(workspaceID, rulesPath string) ([]string, error) {
+	if rulesPath == "" {
 		return nil, nil
 	}
-	entries, err := os.ReadDir(path)
-	if os.IsNotExist(err) {
-		return nil, nil
+	if current, err := rulepack.Snapshot(rulesPath); err == nil {
+		return packageRuleIDs(current), nil
 	}
+	probe, err := s.ruleLockPath(workspaceID, "probe")
 	if err != nil {
 		return nil, err
 	}
-	var ids []string
+	entries, err := os.ReadDir(filepath.Dir(probe))
+	if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	ids := []string{}
 	for _, entry := range entries {
-		if entry.IsDir() && editableRuleID.MatchString(entry.Name()) {
-			ids = append(ids, entry.Name())
+		if id := strings.TrimSuffix(entry.Name(), ".lock"); !entry.IsDir() && id != entry.Name() && ruleformat.ValidID(id) {
+			ids = append(ids, id)
 		}
 	}
 	return ids, nil
 }
 
-// Reserve all incoming original IDs before allocating suffixes. R019 and
-// R019_2 in one import must not steal each other's names on case-insensitive
-// Windows or macOS filesystems. Titles are separate from directory-based IDs.
+// Reserve all incoming original IDs before allocating suffixes. 1 and 1_2 in
+// one import must not steal each other's names on case-insensitive Windows or
+// macOS filesystems, where rule lock files are named after IDs.
 func mergedRuleIDs(existing, incoming []string) map[string]string {
 	used, occupied := map[string]bool{}, map[string]bool{}
 	for _, id := range existing {
@@ -164,38 +147,6 @@ func mergedRuleIDs(existing, incoming []string) map[string]string {
 		}
 	}
 	return result
-}
-
-func mergeRulePackages(current, incoming *rulepack.Package, renamed map[string]string) *rulepack.Package {
-	merged := &rulepack.Package{Settings: current.Settings, Files: map[string][]byte{}}
-	for name, data := range current.Files {
-		merged.Files[name] = data
-	}
-	for name, data := range incoming.Files {
-		parts := strings.Split(name, "/")
-		if len(parts) >= 3 && parts[0] == "rules" {
-			parts[1] = renamed[parts[1]]
-			merged.Files[strings.Join(parts, "/")] = data
-		}
-	}
-	const legacy = "patterns/legacy-symbols.txt"
-	_, hasCurrent := current.Files[legacy]
-	_, hasIncoming := incoming.Files[legacy]
-	if hasCurrent || hasIncoming {
-		seen := map[string]bool{}
-		var lines []string
-		for _, data := range [][]byte{current.Files[legacy], incoming.Files[legacy]} {
-			for _, line := range strings.Split(strings.TrimPrefix(string(data), "\ufeff"), "\n") {
-				line = strings.TrimSpace(line)
-				if line != "" && !seen[line] {
-					seen[line] = true
-					lines = append(lines, line)
-				}
-			}
-		}
-		merged.Files[legacy] = []byte(strings.Join(lines, "\n") + "\n")
-	}
-	return merged
 }
 
 // Keep stable per-ID locks until the new package revision has been published.
@@ -243,6 +194,10 @@ func (s *Service) lockImportedRules(workspaceID string, ids []string) (func(), e
 // installRulePackage publishes a validated copy while the caller owns op and
 // the workspace lease. Rule edits keep their rule lease across this operation.
 func (s *Service) installRulePackage(w model.Workspace, cfg model.Config, pkg *rulepack.Package) (model.State, error) {
+	return s.installRuleVersion(w, cfg, pkg, false)
+}
+
+func (s *Service) installRuleVersion(w model.Workspace, cfg model.Config, pkg *rulepack.Package, allowInvalid bool) (model.State, error) {
 	settings, err := s.workspacePath(w.ID, "setting.json")
 	if err != nil {
 		return s.Snapshot(), err
@@ -254,29 +209,29 @@ func (s *Service) installRulePackage(w model.Workspace, cfg model.Config, pkg *r
 	}
 	defer workspaceRoot.Close()
 	parentWasMissing := false
-	if info, err := workspaceRoot.Lstat("rule-packages"); os.IsNotExist(err) {
-		if err = workspaceRoot.Mkdir("rule-packages", 0700); err != nil {
+	if info, err := workspaceRoot.Lstat("rule-versions"); os.IsNotExist(err) {
+		if err = workspaceRoot.Mkdir("rule-versions", 0700); err != nil {
 			return s.Snapshot(), err
 		}
 		parentWasMissing = true
 	} else if err != nil {
 		return s.Snapshot(), err
 	} else if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return s.Snapshot(), fmt.Errorf("ルールパッケージの保存先が通常のフォルダではありません")
+		return s.Snapshot(), fmt.Errorf("ルールの保存先が通常のフォルダではありません")
 	}
-	packageRoot, err := workspaceRoot.OpenRoot("rule-packages")
+	packageRoot, err := workspaceRoot.OpenRoot("rule-versions")
 	if err != nil {
 		if parentWasMissing {
-			_ = workspaceRoot.Remove("rule-packages")
+			_ = workspaceRoot.Remove("rule-versions")
 		}
 		return s.Snapshot(), err
 	}
 	defer packageRoot.Close()
 	stageName := uid()
-	staging := filepath.Join(workspaceDir, "rule-packages", stageName)
+	staging := filepath.Join(workspaceDir, "rule-versions", stageName)
 	if err = packageRoot.Mkdir(stageName, 0700); err != nil {
 		if parentWasMissing {
-			_ = workspaceRoot.Remove("rule-packages")
+			_ = workspaceRoot.Remove("rule-versions")
 		}
 		return s.Snapshot(), err
 	}
@@ -288,18 +243,15 @@ func (s *Service) installRulePackage(w model.Workspace, cfg model.Config, pkg *r
 			_ = packageRoot.RemoveAll(stageName)
 			_ = packageRoot.Close()
 			if parentWasMissing {
-				_ = workspaceRoot.Remove("rule-packages")
+				_ = workspaceRoot.Remove("rule-versions")
 			}
 		}
 	}()
 	if err = rulepack.Extract(pkg, staging); err != nil {
 		return s.Snapshot(), err
 	}
-	cfg.RulesPath = filepath.Join(staging, "rules")
-	cfg.LegacyPath = ""
-	if _, present := pkg.Files["patterns/legacy-symbols.txt"]; present {
-		cfg.LegacyPath = filepath.Join(staging, "patterns", "legacy-symbols.txt")
-	}
+	cfg.RulesPath = filepath.Join(staging, "rules.json")
+	cfg.ExcludedRuleIDs = normalizedWorkspaceRuleSelection(cfg)
 	ctx, cancel := context.WithCancel(context.Background())
 	s.mu.Lock()
 	if s.closed {
@@ -312,9 +264,17 @@ func (s *Service) installRulePackage(w model.Workspace, cfg model.Config, pkg *r
 	defer func() { cancel(); s.mu.Lock(); s.cancel = nil; s.mu.Unlock() }()
 	validation := cfg
 	validation.RGPath = "" // A package-provided executable is data, never an import hook.
-	cat, err := catalog.Load(ctx, validation)
-	if err != nil {
-		return s.Snapshot(), fmt.Errorf("ルールパッケージを検証できません: %w", err)
+	var cat *catalog.Catalog
+	var catalogErr error
+	if allowInvalid && len(pkg.Rules) == 0 {
+		cfg.RulesPath = ""
+		cfg.ExcludedRuleIDs = nil
+	} else {
+		cat, err = catalog.Load(ctx, validation)
+		catalogErr = err
+	}
+	if err != nil && !allowInvalid {
+		return s.Snapshot(), fmt.Errorf("ルールを検証できません: %w", err)
 	}
 	if err = ctx.Err(); err != nil {
 		return s.Snapshot(), err
@@ -328,11 +288,23 @@ func (s *Service) installRulePackage(w model.Workspace, cfg model.Config, pkg *r
 	s.mu.Lock()
 	s.state.Config = cfg
 	s.cat = cat
-	s.state.Rules = cat.Rules
+	s.state.Rules = []model.Rule{}
+	if cat != nil {
+		s.state.Rules = cat.Rules
+	} else {
+		for _, entry := range pkg.Rules {
+			d, _ := ruleformat.Decode([]byte(entry.Markdown))
+			rule := ruleformat.ToRule(entry.ID, d)
+			if rule.Title == "" {
+				rule.Title = "名称未入力"
+			}
+			s.state.Rules = append(s.state.Rules, rule)
+		}
+	}
 	s.recountLocked()
-	s.setWorkspaceIssueLocked(s.state.ActiveWorkspaceID, "catalog", nil, "", "")
+	s.setWorkspaceIssueLocked(s.state.ActiveWorkspaceID, "catalog", catalogErr, "rules", "")
 	// A run may have stopped on the same invalid catalog before this repair.
-	if issue := s.workspaceIssues[s.state.ActiveWorkspaceID]["run"]; issue.Page == "rules" {
+	if issue := s.workspaceIssues[s.state.ActiveWorkspaceID]["run"]; issue.Page == "rules" && catalogErr == nil {
 		s.setWorkspaceIssueLocked(s.state.ActiveWorkspaceID, "run", nil, "", "")
 	}
 	s.publishWorkspacesLocked()
@@ -340,8 +312,6 @@ func (s *Service) installRulePackage(w model.Workspace, cfg model.Config, pkg *r
 	return s.Snapshot(), nil
 }
 
-// ExportRulePackage writes a new archive from the current saved settings and
-// rule assets. It does not edit the selected archive or the workspace settings.
 func (s *Service) ExportRulePackage(path string) (string, error) {
 	s.op.Lock()
 	defer s.op.Unlock()
@@ -350,41 +320,27 @@ func (s *Service) ExportRulePackage(path string) (string, error) {
 	}
 	s.mu.Lock()
 	cfg := s.state.Config
+	id := s.state.ActiveWorkspaceID
 	s.mu.Unlock()
 	if cfg.Root == "" || cfg.RulesPath == "" {
-		return "", fmt.Errorf("先にルールパッケージを読み込んでください")
-	}
-	if !strings.EqualFold(filepath.Ext(path), ".oborules") {
-		return "", fmt.Errorf("保存先は .oborules ファイルを指定してください")
+		return "", fmt.Errorf("先にルールを読み込んでください")
 	}
 	absolute, err := filepath.Abs(path)
 	if err != nil {
 		return "", err
 	}
-	s.mu.Lock()
-	id := s.state.ActiveWorkspaceID
-	s.mu.Unlock()
 	settingPath, err := s.workspacePath(id, "setting.json")
 	if err != nil {
 		return "", err
 	}
-	// An export is a separate artifact, never a rewrite of managed workspace
-	// files or of a file that will be included as a rule auxiliary asset.
-	for _, reserved := range []string{filepath.Dir(settingPath), cfg.RulesPath} {
-		for current := absolute; ; current = filepath.Dir(current) {
-			if sameRoot(current, reserved) {
-				return "", fmt.Errorf("パッケージの保存先はワークスペース設定とルールフォルダの外に指定してください")
-			}
-			if filepath.Dir(current) == current {
-				break
-			}
-		}
+	if isAtOrWithin(filepath.Dir(settingPath), absolute) {
+		return "", fmt.Errorf("書き出し先はワークスペース設定の外に指定してください")
 	}
-	pkg, err := rulepack.Snapshot(cfg.RulesPath, cfg.LegacyPath, rulepack.FromConfig(cfg))
+	p, err := rulepack.Snapshot(cfg.RulesPath)
 	if err != nil {
 		return "", err
 	}
-	if err = rulepack.Write(absolute, pkg); err != nil {
+	if err = rulepack.Write(absolute, p); err != nil {
 		return "", err
 	}
 	return absolute, nil
@@ -397,7 +353,7 @@ func (s *Service) copyWorkspaceRules(c model.Config, id string) (model.Config, e
 	if c.RulesPath == "" {
 		return c, nil
 	}
-	pkg, err := rulepack.Snapshot(c.RulesPath, c.LegacyPath, rulepack.FromConfig(c))
+	pkg, err := rulepack.Snapshot(c.RulesPath)
 	if err != nil {
 		return c, err
 	}
@@ -410,17 +366,17 @@ func (s *Service) copyWorkspaceRules(c model.Config, id string) (model.Config, e
 		return c, err
 	}
 	defer workspaceRoot.Close()
-	if err = workspaceRoot.Mkdir("rule-packages", 0700); err != nil && !os.IsExist(err) {
+	if err = workspaceRoot.Mkdir("rule-versions", 0700); err != nil && !os.IsExist(err) {
 		return c, err
 	}
-	info, err := workspaceRoot.Lstat("rule-packages")
+	info, err := workspaceRoot.Lstat("rule-versions")
 	if err != nil {
 		return c, err
 	}
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return c, fmt.Errorf("ルールパッケージの保存先が通常のフォルダではありません")
 	}
-	root, err := workspaceRoot.OpenRoot("rule-packages")
+	root, err := workspaceRoot.OpenRoot("rule-versions")
 	if err != nil {
 		return c, err
 	}
@@ -429,17 +385,11 @@ func (s *Service) copyWorkspaceRules(c model.Config, id string) (model.Config, e
 	if err = root.Mkdir(name, 0700); err != nil {
 		return c, err
 	}
-	stage := filepath.Join(filepath.Dir(settingPath), "rule-packages", name)
+	stage := filepath.Join(filepath.Dir(settingPath), "rule-versions", name)
 	if err = rulepack.Extract(pkg, stage); err != nil {
 		_ = root.RemoveAll(name)
 		return c, err
 	}
-	c.RulesPath, c.LegacyPath = filepath.Join(stage, "rules"), ""
-	if _, present := pkg.Files["patterns/legacy-symbols.txt"]; present {
-		c.LegacyPath = filepath.Join(stage, "patterns", "legacy-symbols.txt")
-	}
-	if c.RulePackageName == "" {
-		c.RulePackageName = "rules.oborules"
-	}
+	c.RulesPath = filepath.Join(stage, "rules.json")
 	return c, nil
 }

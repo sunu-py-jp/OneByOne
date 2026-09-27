@@ -3,13 +3,12 @@ package engine
 import (
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"onebyone/internal/model"
 	"onebyone/internal/privateconfig"
+	"onebyone/internal/ruleformat"
 	"onebyone/internal/rulepack"
 )
 
@@ -115,24 +114,22 @@ func (s *Service) DeleteWorkspace(id string) (model.State, error) {
 	return s.Snapshot(), nil
 }
 
-// DeleteRule creates a new local rule directory with just this ID omitted.
-// Other malformed rules remain intact and visible as diagnostics, so each can
-// be removed independently. Existing packages and run history stay immutable.
+// DeleteRule publishes a new local version; earlier execution definitions remain intact.
 func (s *Service) DeleteRule(id string) (model.State, error) {
 	s.op.Lock()
 	defer s.op.Unlock()
 	if err := s.editable(); err != nil {
 		return s.Snapshot(), err
 	}
-	if !editableRuleID.MatchString(id) {
+	if !ruleformat.ValidID(id) {
 		return s.Snapshot(), fmt.Errorf("ルールIDが不正です")
 	}
 	s.mu.Lock()
 	cfg := s.state.Config
 	w := model.Workspace{ID: s.state.ActiveWorkspaceID, Root: cfg.Root}
-	for _, item := range s.workspaces {
-		if item.ID == w.ID {
-			w.Name = item.Name
+	for _, v := range s.workspaces {
+		if v.ID == w.ID {
+			w.Name = v.Name
 		}
 	}
 	s.mu.Unlock()
@@ -146,190 +143,23 @@ func (s *Service) DeleteRule(id string) (model.State, error) {
 	if owner != nil {
 		return s.Snapshot(), fmt.Errorf("他のユーザーがこのルールを編集中です（%s / %s）", owner.Owner, owner.Host)
 	}
-	// Keep the newly acquired rule lock until after publishing the new setting.
 	defer s.releaseRuleLease()
-	rulesPath, cleanup, err := s.copyRulesWithout(cfg.RulesPath, w.ID, id)
+	p, err := rulepack.Snapshot(cfg.RulesPath)
 	if err != nil {
 		return s.Snapshot(), err
 	}
-	committed := false
-	defer func() { cleanup(!committed) }()
-	cfg.RulesPath = rulesPath
-	if cfg.RulePackageName == "" {
-		cfg.RulePackageName = "rules.oborules"
-	}
-	cat, catalogErr := passiveCatalog(cfg)
-	if err = s.writeWorkspaceSetting(w, cfg); err != nil {
-		return s.Snapshot(), err
-	}
-	committed = true
-	s.mu.Lock()
-	s.state.Config, s.cat = cfg, cat
-	s.state.Rules = []model.Rule{}
-	if cat != nil {
-		s.state.Rules = cat.Rules
-	}
-	s.setWorkspaceIssueLocked(w.ID, "catalog", catalogErr, "rules", "")
-	if catalogErr != nil {
-		s.state.LastError = s.redactLocked(catalogErr.Error())
-	}
-	s.recountLocked()
-	s.mu.Unlock()
-	return s.Snapshot(), nil
-}
-
-// This copy intentionally does not use rulepack.Snapshot, whose format checks
-// reject the invalid rules that the user is trying to remove. It is bounded,
-// rejects links/special files, and copies bytes only into a new private stage.
-func (s *Service) copyRulesWithout(path, workspaceID, removedID string) (string, func(bool), error) {
-	checked, err := settingsRoot(path)
-	if err != nil {
-		return "", nil, err
-	}
-	source, err := os.OpenRoot(checked)
-	if err != nil {
-		return "", nil, err
-	}
-	defer source.Close()
-	info, err := source.Lstat(removedID)
-	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return "", nil, fmt.Errorf("削除するルールフォルダが見つからないか、通常のフォルダではありません: %s", removedID)
-	}
-	setting, err := s.workspacePath(workspaceID, "setting.json")
-	if err != nil {
-		return "", nil, err
-	}
-	parentPath := filepath.Join(filepath.Dir(setting), "rule-packages")
-	if err = ensureSharedOutputDirectory(parentPath, 0700); err != nil {
-		return "", nil, err
-	}
-	parent, err := os.OpenRoot(parentPath)
-	if err != nil {
-		return "", nil, err
-	}
-	stage := uid()
-	cleanup := func(remove bool) {
-		if remove {
-			_ = parent.RemoveAll(stage)
-		}
-		_ = parent.Close()
-	}
-	if err = parent.Mkdir(stage, 0700); err != nil {
-		parent.Close()
-		return "", nil, err
-	}
-	stageRoot, err := parent.OpenRoot(stage)
-	if err != nil {
-		cleanup(true)
-		return "", nil, err
-	}
-	defer stageRoot.Close()
-	if err = stageRoot.Mkdir("rules", 0700); err != nil {
-		cleanup(true)
-		return "", nil, err
-	}
-	destination, err := stageRoot.OpenRoot("rules")
-	if err != nil {
-		cleanup(true)
-		return "", nil, err
-	}
-	defer destination.Close()
-	entries, total := 0, int64(0)
-	remainingRules, err := copyRuleResources(source, destination, removedID, 0, &entries, &total)
-	if err != nil {
-		cleanup(true)
-		return "", nil, err
-	}
-	if remainingRules == 0 {
-		return "", cleanup, nil
-	}
-	return filepath.Join(parentPath, stage, "rules"), cleanup, nil
-}
-
-func copyRuleResources(source, destination *os.Root, removedID string, depth int, count *int, total *int64) (int, error) {
-	if depth > 32 {
-		return 0, fmt.Errorf("ルール資材のフォルダ階層が深すぎます")
-	}
-	folder, err := source.Open(".")
-	if err != nil {
-		return 0, err
-	}
-	entries, err := folder.ReadDir(rulepack.MaxFiles + 1 - *count)
-	folder.Close()
-	if err != nil && err != io.EOF {
-		return 0, err
-	}
-	*count += len(entries)
-	if *count > rulepack.MaxFiles {
-		return 0, fmt.Errorf("ルール資材の項目数が上限を超えています")
-	}
-	remainingRules := 0
-	for _, entry := range entries {
-		if depth == 0 && entry.Name() == removedID {
-			continue
-		}
-		before, err := source.Lstat(entry.Name())
-		if err != nil {
-			return 0, err
-		}
-		if before.Mode()&os.ModeSymlink != 0 || (!before.IsDir() && !before.Mode().IsRegular()) {
-			return 0, fmt.Errorf("ルール資材にリンクや特殊ファイルは含められません: %s", entry.Name())
-		}
-		if before.IsDir() {
-			if depth == 0 && !strings.HasPrefix(entry.Name(), ".") {
-				remainingRules++
-			}
-			if err = destination.Mkdir(entry.Name(), 0700); err != nil {
-				return 0, err
-			}
-			input, err := source.OpenRoot(entry.Name())
-			if err != nil {
-				return 0, err
-			}
-			after, statErr := input.Stat(".")
-			current, currentErr := source.Lstat(entry.Name())
-			if statErr != nil || currentErr != nil || !os.SameFile(before, after) || !os.SameFile(after, current) {
-				input.Close()
-				return 0, fmt.Errorf("ルール資材がコピー中に変更されました")
-			}
-			output, err := destination.OpenRoot(entry.Name())
-			if err != nil {
-				input.Close()
-				return 0, err
-			}
-			_, err = copyRuleResources(input, output, "", depth+1, count, total)
-			input.Close()
-			output.Close()
-			if err != nil {
-				return 0, err
-			}
-			continue
-		}
-		if before.Size() > rulepack.MaxFileBytes || before.Size() > rulepack.MaxExpandedBytes-*total {
-			return 0, fmt.Errorf("ルール資材のサイズが上限を超えています")
-		}
-		input, err := source.Open(entry.Name())
-		if err != nil {
-			return 0, err
-		}
-		after, statErr := input.Stat()
-		current, currentErr := source.Lstat(entry.Name())
-		if statErr != nil || currentErr != nil || !after.Mode().IsRegular() || !current.Mode().IsRegular() || !os.SameFile(before, after) || !os.SameFile(after, current) {
-			input.Close()
-			return 0, fmt.Errorf("ルール資材がコピー中に変更されました")
-		}
-		data, readErr := io.ReadAll(io.LimitReader(input, rulepack.MaxFileBytes+1))
-		input.Close()
-		*total += int64(len(data))
-		if readErr != nil {
-			return 0, readErr
-		}
-		if int64(len(data)) > rulepack.MaxFileBytes || *total > rulepack.MaxExpandedBytes {
-			return 0, fmt.Errorf("ルール資材のサイズが上限を超えています")
-		}
-		if err = destination.WriteFile(entry.Name(), data, 0600); err != nil {
-			return 0, err
+	remaining := []rulepack.Entry{}
+	found := false
+	for _, r := range p.Rules {
+		if r.ID == id {
+			found = true
+		} else {
+			remaining = append(remaining, r)
 		}
 	}
-	return remainingRules, nil
+	if !found {
+		return s.Snapshot(), fmt.Errorf("ルールが見つかりません: %s", id)
+	}
+	p.Rules = remaining
+	return s.installRuleVersion(w, cfg, p, true)
 }

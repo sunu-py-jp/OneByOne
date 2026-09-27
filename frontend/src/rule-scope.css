@@ -1,0 +1,8 @@
+/* Pastel tones per pattern state: path yellow, content blue, common green, both red. */
+.rule-scope-icon { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; width: 23px; height: 23px; border-radius: 6px; }
+.rule-scope-icon.scope-path, .rule-scope-chip.scope-path { background: #fdf3cf; border-color: #f0dc95; color: #aa841b; }
+.rule-scope-icon.scope-content, .rule-scope-chip.scope-content { background: #e3eefc; border-color: #bcd3f3; color: #4b7cc0; }
+.rule-scope-icon.scope-common, .rule-scope-chip.scope-common { background: #e1f4e9; border-color: #b9e3cb; color: #3f9468; }
+.rule-scope-icon.scope-both, .rule-scope-chip.scope-both { background: #fbe4e5; border-color: #f3c3c6; color: #c45a62; }
+.rule-scope-chip { position: fixed; z-index: 12000; padding: 3px 10px; border: 1px solid; border-radius: 999px; box-shadow: 0 4px 14px #34305218; font-size: 11px; font-weight: 600; line-height: 1.5; white-space: nowrap; pointer-events: none; transform: translate(-50%, calc(-100% - 6px)); }
+.rule-scope-chip[data-below="true"] { transform: translate(-50%, 6px); }

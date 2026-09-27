@@ -70,6 +70,8 @@ func TestCompletionLoopRecordedHumanBlockerBypassesReview(t *testing.T) {
 			prior := initializedRepairState()
 			update := testPlan(1)
 			update.Items[0].Status = "blocked"
+			update.Items[0].SourceLocations = []model.SourceLocation{{StartLine: 1, EndLine: 1, Excerpt: "Legacy.Save()"}}
+			update.Items[0].HoldReason = "The external Save contract must be confirmed."
 			if scope == "item" {
 				update.Items[0].HoldReason = "The external Save contract is missing; confirm whether the callback owns the transaction."
 			} else {
@@ -167,7 +169,7 @@ func TestCompletionLoopUnlimitedContinuesPastFormerAggregateLimits(t *testing.T)
 	}
 	in.ValidateCandidate = func(_ context.Context, candidate model.CandidateRequest) (model.CandidateValidation, error) {
 		validations++
-		result := model.CandidateValidation{CandidateID: fmt.Sprintf("C%d", validations), CandidateHash: fmt.Sprintf("hash-%d", validations), PlanRevision: candidate.PlanRevision, Passed: validations == candidateAttempts}
+		result := model.CandidateValidation{AttributionVersion: model.LineAttributionVersion, CandidateID: fmt.Sprintf("C%d", validations), CandidateHash: fmt.Sprintf("hash-%d", validations), PlanRevision: candidate.PlanRevision, Passed: validations == candidateAttempts}
 		if !result.Passed {
 			result.Diagnostics = []model.CandidateDiagnostic{{Check: "behavior", Message: "Update the complete original-based proposal to satisfy the next behavior check."}}
 		}
@@ -238,7 +240,7 @@ func TestCompletionLoopUnlimitedTurnsStillHonorsExplicitValidationLimit(t *testi
 	in.SaveRepairState = func(state model.RepairState) error { saved = state; return nil }
 	in.ValidateCandidate = func(_ context.Context, candidate model.CandidateRequest) (model.CandidateValidation, error) {
 		validations++
-		return model.CandidateValidation{CandidateID: fmt.Sprintf("C%d", validations), PlanRevision: candidate.PlanRevision, Passed: false, Diagnostics: []model.CandidateDiagnostic{{Message: "Behavior check still fails."}}}, nil
+		return model.CandidateValidation{AttributionVersion: model.LineAttributionVersion, CandidateID: fmt.Sprintf("C%d", validations), PlanRevision: candidate.PlanRevision, Passed: false, Diagnostics: []model.CandidateDiagnostic{{Message: "Behavior check still fails."}}}, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()

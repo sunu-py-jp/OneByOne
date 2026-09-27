@@ -11,8 +11,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-
-	"onebyone/internal/model"
 )
 
 func gitRuntimeFixture(t *testing.T, directory, platform string, binary []byte) (string, string) {
@@ -243,11 +241,6 @@ func TestBundledGitRuntimeProcessHelper(t *testing.T) {
 	root := t.TempDir()
 	assertOutput(git(ctx, root, "fixture-environment"))
 	assertOutput(command(ctx, root, "git", "fixture-environment"))
-	checks := runChecks(ctx, model.Config{CheckCommands: []model.Command{{Executable: "git", Args: []string{"fixture-environment"}}}}, root)
-	if len(checks) != 1 || checks[0].Status != "passed" {
-		t.Fatalf("validation did not use bundled Git: %+v", checks)
-	}
-	assertOutput(checks[0].Detail, nil)
 	writeTest(t, filepath.Join(root, "tracked.txt"), []byte("source"))
 	files, truncated, err := listTargetFiles(root, 10)
 	if err != nil || truncated || len(files) != 1 || files[0].File != "tracked.txt" {

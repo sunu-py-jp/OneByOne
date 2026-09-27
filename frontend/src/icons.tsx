@@ -37,6 +37,7 @@ const paths = {
   trash: "M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7",
   eye: "M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7ZM15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z",
   cube: "m12 2 9 5v10l-9 5-9-5V7l9-5Zm0 10 9-5M3 7l9 5v10M7.5 4.5l9 5V15",
+  asterisk: "M12 4v16M5.1 8l13.8 8M5.1 16l13.8-8",
 } as const;
 export type IconName = keyof typeof paths;
 export function Icon({

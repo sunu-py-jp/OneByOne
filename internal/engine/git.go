@@ -136,7 +136,7 @@ func (s *Service) prepareWorktree(ctx context.Context, cfg model.Config) error {
 		if _, e = git(ctx, repo, "worktree", "add", "-b", branch, wanted, head); e != nil {
 			return e
 		}
-		m = manifest{Version: 1, Root: cfg.Root, RepoRoot: repo, SourceRelative: rel, BaseCommit: head, Worktree: wanted, Branch: branch, RuleHash: s.cat.Hash, RulePackagePath: m.RulePackagePath}
+		m = manifest{Version: 1, Root: cfg.Root, RepoRoot: repo, SourceRelative: rel, BaseCommit: head, Worktree: wanted, Branch: branch, RuleHash: s.cat.Hash}
 	}
 	s.mu.Lock()
 	s.meta = m
@@ -243,7 +243,7 @@ func (s *Service) recover(ctx context.Context) error {
 		return e
 	}
 	known := map[string]bool{}
-	for i, t := range tasks {
+	for _, t := range tasks {
 		for _, d := range t.Discards {
 			if d.State == "done" && d.Commit != "" {
 				known[d.Commit] = true
@@ -254,6 +254,13 @@ func (s *Service) recover(ctx context.Context) error {
 				known[h.Commit] = true
 			}
 		}
+	}
+	// Only a single event can touch the shared worktree. Reconcile its pending
+	// bytes once, before marking the other parallel readers interrupted.
+	if err := recoverPendingWrite(ctx, m, tasks, head, message, known); err != nil {
+		return err
+	}
+	for i, t := range tasks {
 		if t.Status != "running" {
 			continue
 		}
@@ -264,7 +271,7 @@ func (s *Service) recover(ctx context.Context) error {
 		var reportCheckpoint *repairCheckpoint
 		if strings.Contains(message, "OneByOne-Attempt: "+h.ID) && h.Outcome == "validated" && h.OutputHash != "" {
 			parent, err := git(ctx, m.Worktree, "rev-parse", "HEAD^")
-			if err != nil || trim(parent) != h.BaseCommit {
+			if err != nil || trim(parent) != attemptCommitBase(h) {
 				return fmt.Errorf("中断したコミットの親が一致しません")
 			}
 			files, err := git(ctx, m.Worktree, "diff-tree", "--no-commit-id", "--name-only", "-r", "-z", head)
@@ -292,6 +299,9 @@ func (s *Service) recover(ctx context.Context) error {
 				if checkpoint.State.LastCandidate != nil && !passedIndependentReview(checkpoint.State.LastCandidate, h.InputHash, h.OutputHash, checkpoint.State.Plan) {
 					return fmt.Errorf("中断したコミットに一致する独立レビューの合格記録がありません")
 				}
+				if candidate := checkpoint.State.LastCandidate; candidate != nil {
+					h.Partial = candidate.Review.Verdict == "passed_with_holds"
+				}
 				h.Reviews = copyReviews(checkpoint.State.Reviews)
 				h.Usage = usageSince(checkpoint.State.Usage, checkpoint.PriorUsage)
 			}
@@ -299,39 +309,28 @@ func (s *Service) recover(ctx context.Context) error {
 			h.Outcome = "done"
 			h.FinishedAt = now()
 			t.Status = "done"
+			if h.Partial {
+				h.Outcome, t.Status = "needs_human", "needs_human"
+			}
 			t.RulesApplied = h.RulesApplied
 			t.Note = "コミット済みの変更を回復しました"
+			if h.Partial {
+				t.Note = "修正済みの変更を回復しました。一部に要確認の箇所が残っています"
+			}
 			known[head] = true
 		} else {
-			if head != h.BaseCommit {
-				return fmt.Errorf("中断した作業のHEADが一致しません。手動確認してください")
+			if !isImmutableCommitID(h.BaseCommit) {
+				return fmt.Errorf("中断した作業の参照元が不正です")
 			}
-			files, err := changedFiles(ctx, m.Worktree)
-			if err != nil {
-				return err
+			if _, err := git(ctx, m.Worktree, "merge-base", "--is-ancestor", h.BaseCommit, head); err != nil {
+				return fmt.Errorf("中断した作業の参照元が履歴と一致しません")
 			}
-			target := filepath.ToSlash(filepath.Join(m.SourceRelative, t.File))
-			for _, f := range files {
-				if f != target {
-					return fmt.Errorf("中断後に対象外の変更があります。作業コピーを確認してください: %s", f)
+			if h.InputHash != "" {
+				rel := filepath.ToSlash(filepath.Join(m.SourceRelative, t.File))
+				data, err := readSnapshotFile(ctx, m.Worktree, head, rel, m.Config.EffectiveMaxFileBytes())
+				if err != nil || digest(data) != h.InputHash {
+					return fmt.Errorf("中断後に対象ファイルが変更されています: %s", t.File)
 				}
-			}
-			if len(files) > 0 {
-				p, err := catalog.PathWithin(filepath.Join(m.Worktree, m.SourceRelative), t.File)
-				if err != nil {
-					return err
-				}
-				data, err := os.ReadFile(p)
-				if err != nil {
-					return err
-				}
-				hash := digest(data)
-				if hash != h.InputHash && hash != h.OutputHash {
-					return fmt.Errorf("中断後にファイルが変更されています: %s", t.File)
-				}
-			}
-			if e = rollback(ctx, m.Worktree, head); e != nil {
-				return e
 			}
 			h.Outcome = "interrupted"
 			h.Usage.Uncertain = true
@@ -372,7 +371,7 @@ func (s *Service) recover(ctx context.Context) error {
 			}
 		}
 		if reportCheckpoint != nil {
-			h.Changes = buildChangeReport(h, reportCheckpoint)
+			h.Changes = buildRecordedChangeReport(m.Config, h, reportCheckpoint)
 		}
 		t.History[len(t.History)-1] = h
 		t.UpdatedAt = now()

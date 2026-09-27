@@ -33,9 +33,9 @@ export function RulePackageActions({ disabled, exportDisabled, disabledReason, o
   useEffect(() => { if (disabled) setOpen(false); }, [disabled]);
   return <>
     <HoverTip reason={disabled ? disabledReason || "現在はルールを変更できません。" : ""}><button ref={trigger} className="icon-button" type="button" disabled={disabled}
-      aria-label="ルールパッケージの操作" aria-haspopup="menu" aria-expanded={open} aria-controls={open ? id : undefined}
+      aria-label="ルールの操作" aria-haspopup="menu" aria-expanded={open} aria-controls={open ? id : undefined}
       onClick={() => setOpen(value => !value)}><Icon name="more" size={17} /></button></HoverTip>
-    {open && createPortal(<div ref={menu} id={id} role="menu" aria-label="ルールパッケージ" className="rule-package-menu" style={position}
+    {open && createPortal(<div ref={menu} id={id} role="menu" aria-label="ルール" className="rule-package-menu" style={position}
       onKeyDown={event => {
         if (event.key === "Escape" || event.key === "Tab") { if (event.key === "Escape") event.preventDefault(); close(); }
         else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
@@ -46,7 +46,7 @@ export function RulePackageActions({ disabled, exportDisabled, disabledReason, o
           choices[next]?.focus();
         }
       }}>
-      <button type="button" role="menuitem" onClick={() => { close(); onImport(); }}><Icon name="folder" size={16} />インポート</button>
+      <button type="button" role="menuitem" onClick={() => { close(); onImport(); }}><Icon name="folder" size={16} />JSON・CSVをインポート</button>
       <HoverTip reason={exportDisabled ? "書き出すルールを追加してください。" : ""}><button type="button" role="menuitem" disabled={exportDisabled} onClick={() => { close(); onExport(); }}><Icon name="download" size={16} />書き出す</button></HoverTip>
     </div>, document.body)}
   </>;
@@ -82,11 +82,11 @@ export function RulePackageImportDialog({ path, busy, error, onCancel, onConfirm
       <p className="package-import-filename" title={path}>{path.split(/[\\/]/).at(-1)}</p>
       <label className={`package-import-choice${mode === "merge" ? " selected" : ""}`}>
         <input type="radio" name="package-mode" value="merge" checked={mode === "merge"} disabled={busy} onChange={() => setMode("merge")} />
-        <span><strong>マージ</strong><span>現在のルールに追加します。同じIDは _2、_3… を付けて残します。絞り込み・検証コマンドは現在の設定を使います。</span></span>
+        <span><strong>マージ</strong><span>現在のルールを残し、読み込んだルールを追加します。同じIDには _2、_3… を付けて追加します。</span></span>
       </label>
       <label className={`package-import-choice${mode === "replace" ? " selected" : ""}`}>
         <input type="radio" name="package-mode" value="replace" checked={mode === "replace"} disabled={busy} onChange={() => setMode("replace")} />
-        <span><strong>上書き</strong><span>現在のルールと、絞り込み・検証コマンド・旧シンボル定義をパッケージの内容で置き換えます。</span></span>
+        <span><strong>上書き</strong><span>現在のルールを読み込んだ内容に置き換えます。</span></span>
       </label>
       {error && <div className="inline-error" role="alert">{error}</div>}
       <div className="dialog-actions"><button type="button" className="button" disabled={busy} onClick={onCancel}>キャンセル</button>

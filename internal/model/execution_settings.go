@@ -4,9 +4,20 @@ package model
 // per-response output size still use their application defaults at runtime;
 // these defaults are never written back into workspace settings.
 const (
+	DefaultConcurrency     = 2
+	MaxConcurrency         = 10
 	DefaultMaxOutputTokens = 8192
 	DefaultMaxFileBytes    = 524288
 )
+
+// EffectiveConcurrency returns the runtime worker count. Zero preserves the
+// user's unspecified setting while selecting the application default.
+func (c Config) EffectiveConcurrency() int {
+	if c.Concurrency == 0 {
+		return DefaultConcurrency
+	}
+	return c.Concurrency
+}
 
 func (c Config) EffectiveMaxAttempts() int {
 	return c.MaxAttempts
@@ -37,6 +48,7 @@ func (c Config) EffectiveTimeoutSeconds() int {
 // EffectiveExecutionConfig returns a runtime-only copy. The caller's raw
 // workspace settings and financial settings are unchanged.
 func EffectiveExecutionConfig(c Config) Config {
+	c.Concurrency = c.EffectiveConcurrency()
 	c.MaxAttempts = c.EffectiveMaxAttempts()
 	c.MaxTurns = c.EffectiveMaxTurns()
 	c.MaxOutputTokens = c.EffectiveMaxOutputTokens()

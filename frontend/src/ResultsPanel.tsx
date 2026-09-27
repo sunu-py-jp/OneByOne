@@ -5,15 +5,17 @@ import { HelpTip } from "./HelpTip";
 import { Icon } from "./icons";
 import { filterResults, isResultAttention as isAttention, summarizeResults, type ResultFilter } from "./results-model";
 import { useResultsSplitter } from "./useResultsSplitter";
+import { useResultSnapshot } from "./useResultSnapshot";
 import { RulePreviewPane } from "./RulePreviewPane";
 import { TaskFileList } from "./TaskFileList";
-import { isCompletedTask, taskDisplayStatus, taskStatusLabel } from "./task-state";
-import { changeLineLabel, diffRuleAnnotations, recordedChanges, rulesForLine, ruleOrigins, originLabel } from "./result-line-rules";
+import { attemptStatusLabel, isCompletedTask, isPartialAdoption, taskDisplayStatus, taskStatusLabel } from "./task-state";
+import { diffRuleAnnotations, recordedChanges, rulesForLine, ruleOrigins, originLabel, changeNote, heldSourceTarget, type LineRuleAnnotation } from "./result-line-rules";
 import type { Attempt, ChangeReportItem, Check, FileDetail, IndependentReview, Rule, State, Task, Usage } from "./types";
 import "./results.css";
 
 export type ResultDetailTab = "changes" | "diff" | "checks" | "history";
 type CodeView = "diff" | "before" | "after";
+interface CodeFocus { key: string; view: "before" | "after"; line: number | null; request: number }
 export interface ResultsPanelProps {
   state: State;
   busy: boolean;
@@ -44,7 +46,7 @@ const fullPath = (root: string, file: string) => `${root.replace(/[\\/]$/, "")}/
 const dateTime = (date: string) => date ? new Date(date).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—";
 const failedCheck = (check: Check) => ["failed", "fail", "error"].includes(check.status);
 const reviewLabels: Record<IndependentReview["verdict"], string> = {
-  passed: "合格", needs_changes: "要修正", needs_human: "判断保留", running: "確認中", error: "エラー",
+  passed: "合格", passed_with_holds: "修正部分は合格・要確認あり", needs_changes: "要修正", needs_human: "判断保留", running: "確認中", error: "エラー",
 };
 const assessmentLabels: Record<string, string> = {
   satisfied: "適合", not_applicable: "対象外", violated: "要修正", needs_human: "判断保留",
@@ -53,12 +55,9 @@ const changeLabels: Record<ChangeReportItem["status"], string> = {
   fixed: "修正済み", needs_human: "要確認", not_applied: "未反映", pending: "確認中", unchanged: "変更不要",
 };
 
-// A report may arrive while a running file is open. Reveal it by default, but
-// preserve an explicit tab choice as that file's data continues to refresh.
-export function resolveResultDetailTab(requested: ResultDetailTab, hasReport: boolean, manuallySelected: boolean): ResultDetailTab {
-  if (requested === "changes" && !hasReport) return "diff";
-  if (requested === "diff" && hasReport && !manuallySelected) return "changes";
-  return requested;
+// Old navigation requests for the separate report now open the integrated changes view.
+export function resolveResultDetailTab(requested: ResultDetailTab, _hasReport?: boolean, _manuallySelected?: boolean): ResultDetailTab {
+  return requested === "changes" ? "diff" : requested;
 }
 
 // Existing histories can acquire reports lazily from their saved checkpoints.
@@ -92,9 +91,8 @@ export function ResultsPanel({ state, busy, usable, canSetup, selectedFile, onSe
   const [search, setSearch] = useState("");
   const [completedOpen, setCompletedOpen] = useState(false);
   const [attemptSelection, setAttemptSelection] = useState({ file: "", index: -1 });
-  const [manualTabKey, setManualTabKey] = useState("");
   const [codeViewSelection, setCodeViewSelection] = useState<{ key: string; view: CodeView } | null>(null);
-  const [detailResult, setDetailResult] = useState<{ key: string; data: FileDetail | null; error: string } | null>(null);
+  const [codeFocus, setCodeFocus] = useState<CodeFocus | null>(null);
   const [detailRequest, setDetailRequest] = useState(0);
   const [viewedRule, setViewedRule] = useState<Rule | null>(null);
   const [ruleError, setRuleError] = useState("");
@@ -110,9 +108,15 @@ export function ResultsPanel({ state, busy, usable, canSetup, selectedFile, onSe
   const selectedTask = state.tasks.find(task => task.file === selectedFile);
   const liveSelectedTask = liveState.tasks.find(task => task.file === selectedFile);
   const attemptIndex = attemptSelection.file === selectedFile ? attemptSelection.index : -1;
-  const version = selectedTask ? `${selectedTask.updatedAt}:${selectedTask.status}:${selectedTask.history.length}` : "";
-  const detailKey = `${state.activeWorkspaceId}:${execution?.id || ""}:${selectedFile}:${attemptIndex}:${version}:${detailRequest}`;
-  const detail = detailResult?.key === detailKey ? detailResult.data : null;
+  // In-flight plans, checks and reviews change without updating task.updatedAt.
+  // Keep view identity separate from the selected file's changing contents.
+  const detailKey = JSON.stringify([state.activeWorkspaceId, execution?.id || "", selectedFile, attemptIndex]);
+  const detailRevision = JSON.stringify([selectedTask, state.running, detailRequest]);
+  const detailResult = useResultSnapshot<FileDetail>({ key: detailKey, revision: detailRevision, enabled: Boolean(selectedTask),
+    poll: !historical && state.running && selectedTask?.status === "running",
+    read: () => execution ? api.GetExecutionFileDetail(execution.id, selectedFile, attemptIndex) : api.GetFileDetail(selectedFile, attemptIndex),
+  });
+  const detail = detailResult.data || null;
   const reportedHistory = selectedTask?.history.map(attempt => withChangeReport(attempt, detail?.task)) || [];
   const currentAttempt = reportedHistory[attemptIndex < 0 ? reportedHistory.length - 1 : attemptIndex];
   const viewedBeforeDiscard = Boolean(attemptIndex >= 0 && currentAttempt && selectedTask?.discards?.some(discard => discard.state === "done" && currentAttempt.number <= discard.throughAttempt));
@@ -122,32 +126,17 @@ export function ResultsPanel({ state, busy, usable, canSetup, selectedFile, onSe
   ].sort((a, b) => b.order - a.order);
   const currentReviews = currentAttempt?.reviews || [];
   const latestReview = currentReviews[currentReviews.length - 1];
-  const reviewNeedsAttention = latestReview && ["needs_changes", "needs_human", "error"].includes(latestReview.verdict);
+  const reviewNeedsAttention = latestReview && ["passed_with_holds", "needs_changes", "needs_human", "error"].includes(latestReview.verdict);
   const codeViewKey = `${state.activeWorkspaceId}:${execution?.id || ""}:${selectedFile}:${attemptIndex}`;
   const currentChanges = resultChanges(reportedHistory, attemptIndex, detail, execution?.id);
-  const hasReport = currentChanges.length > 0 || (attemptIndex < 0 && !detail && reportedHistory.some(attempt => recordedChanges(attempt.changes).length > 0));
-  const activeTab = resolveResultDetailTab(detailTab, hasReport, manualTabKey === codeViewKey);
+  const activeTab = resolveResultDetailTab(detailTab);
   const hasDiff = detail ? Boolean(detail.diff.trim()) : attemptIndex < 0 ? Boolean(selectedTask?.canDiscardChanges) : Boolean(currentAttempt?.diffPath);
   // Default from the actual artifact: failed attempts can still have a useful
   // proposed diff. A manual toggle remains selected while this file is polled.
   const codeView = codeViewSelection?.key === codeViewKey
     ? codeViewSelection.view
     : hasDiff ? "diff" : "before";
-  const detailError = detailResult?.key === detailKey ? detailResult.error : "";
-  const detailLoading = Boolean(selectedTask && detailResult?.key !== detailKey);
-
-  useEffect(() => {
-    if (!selectedTask) return;
-    let canceled = false;
-    const request = execution ? api.GetExecutionFileDetail(execution.id, selectedFile, attemptIndex) : api.GetFileDetail(selectedFile, attemptIndex);
-    request.then(data => {
-      if (!canceled) setDetailResult({ key: detailKey, data, error: "" });
-    }).catch(error => {
-      if (!canceled) setDetailResult({ key: detailKey, data: null, error: message(error) });
-    });
-    return () => { canceled = true; };
-    // A live task revision invalidates only that file's detail. Polling other tasks never resets it.
-  }, [detailKey, selectedFile, attemptIndex, Boolean(selectedTask)]);
+  const detailError = detailResult.error || "";
 
   useEffect(() => {
     ruleRequest.current++;
@@ -155,6 +144,7 @@ export function ResultsPanel({ state, busy, usable, canSetup, selectedFile, onSe
     setReadingRule("");
     setRuleError("");
     setCodeViewSelection(null);
+    setCodeFocus(null);
     detailScroll.current?.scrollTo({ top: 0, left: 0 });
   }, [selectedFile, state.activeWorkspaceId]);
   useEffect(() => { setCompletedOpen(false); setFilter("all"); setSearch(""); }, [state.activeWorkspaceId]);
@@ -163,7 +153,8 @@ export function ResultsPanel({ state, busy, usable, canSetup, selectedFile, onSe
   const rulesByID = useMemo(() => new Map(state.rules.map(rule => [rule.id, rule])), [state.rules]);
   const runTasks = useMemo(() => execution ? state.tasks.filter(task => execution.targetFiles.has(task.file)).map(task => ({ ...task, excluded: false })) : state.tasks, [state.tasks, execution?.targetFiles]);
   const { counts, progress, runLabel } = useMemo(() => summarizeResults(runTasks, state.running, state.phase, state.lastError), [runTasks, state.running, state.phase, state.lastError]);
-  const phaseLabel = state.phase === "reviewing" ? "独立レビュー中" : state.phase === "checking" ? "検証中" : state.phase === "preparing" ? "実行環境を準備しています" : state.phase === "finalizing" ? "結果を保存中" : "修正中";
+  const phaseLabel = (phase: string) => phase === "reviewing" ? "独立レビュー中" : phase === "checking" ? "検証中" : phase === "preparing" ? "実行環境を準備しています" : phase === "applying" ? "反映待ち・保存中" : phase === "finalizing" ? "結果を保存中" : "修正中";
+  const currentFiles = [...new Set(state.currentFiles?.length ? state.currentFiles : state.currentFile ? [state.currentFile] : [])];
   const filteredTasks = useMemo(() => {
     const tasks = execution ? state.tasks.filter(task => execution.targetFiles.has(task.file) || (filter === "all" && isCompletedTask(task))).map(task => ({ ...task, excluded: false })) : state.tasks;
     return filterResults(tasks, rulesByID, filter, search);
@@ -185,24 +176,31 @@ export function ResultsPanel({ state, busy, usable, canSetup, selectedFile, onSe
     localSelection.current = file;
     onSelectFile(file);
     onDetailTabChange("diff");
-    setManualTabKey("");
     setAttemptSelection({ file, index: -1 });
     setViewedRule(null);
     setRuleError("");
     setCodeViewSelection(null);
+    setCodeFocus(null);
   }
   function chooseAttempt(index: number, tab?: ResultDetailTab) {
     setAttemptSelection({ file: selectedFile, index });
     setCodeViewSelection(null);
-    setManualTabKey("");
-    const attempt = reportedHistory[index < 0 ? reportedHistory.length - 1 : index];
-    onDetailTabChange(tab || (recordedChanges(attempt?.changes).length ? "changes" : "diff"));
+    setCodeFocus(null);
+    onDetailTabChange(tab || "diff");
   }
-  function showCurrentFile() {
-    if (!state.currentFile) return;
+  function showHeldChange(change: ChangeReportItem) {
+    if (!detail) return;
+    const target = heldChangeDestination(change, detail, codeView, reportedHistory);
+    const view = target?.side || "before";
+    const key = target?.attemptIndex !== undefined ? `${state.activeWorkspaceId}:${execution?.id || ""}:${selectedFile}:${target.attemptIndex}` : codeViewKey;
+    if (target?.attemptIndex !== undefined) setAttemptSelection({ file: selectedFile, index: target.attemptIndex });
+    setCodeViewSelection({ key, view });
+    setCodeFocus(previous => ({ key, view, line: target?.line || null, request: (previous?.request || 0) + 1 }));
+  }
+  function showCurrentFile(file: string) {
     setSearch("");
     setFilter("all");
-    chooseFile(state.currentFile);
+    chooseFile(file);
   }
   function retryFiles(files: string[]) {
     // Retrying can keep the same selection while moving it out of the completed
@@ -226,7 +224,7 @@ export function ResultsPanel({ state, busy, usable, canSetup, selectedFile, onSe
     try {
       const rule = await api.ReadRule(id);
       if (request === ruleRequest.current) {
-        if (!rule) throw new Error(`ルール ${id} は現在のパッケージにありません。`);
+        if (!rule) throw new Error(`ルール ${id} は現在のルール一覧にありません。`);
         setViewedRule(rule);
       }
     } catch (error) {
@@ -243,7 +241,7 @@ export function ResultsPanel({ state, busy, usable, canSetup, selectedFile, onSe
   }
   const rulePaneOpen = Boolean(viewedRule || readingRule || ruleError);
   const appliedIDs = attemptIndex >= 0 ? currentAttempt?.commit ? currentAttempt.rulesApplied : [] : selectedTask?.rulesApplied || [];
-  const proposedIDs = attemptIndex >= 0 && currentAttempt && currentAttempt.outcome !== "done" ? currentAttempt.rulesApplied : [];
+  const proposedIDs = attemptIndex >= 0 && currentAttempt && !currentAttempt.commit ? currentAttempt.rulesApplied : [];
   // An older attempt with no note must never display the latest attempt's explanation.
   const currentHold = attemptIndex < 0 && selectedTask?.status === "needs_human" && selectedTask.note;
   const pendingNote = attemptIndex < 0 && selectedTask?.status === "pending" && selectedTask.note;
@@ -293,7 +291,12 @@ export function ResultsPanel({ state, busy, usable, canSetup, selectedFile, onSe
           <span className="results-filter-dot" />{label}<b>{num(count)}</b>
         </button>)}
       </div>
-      {state.running && <div className="results-current"><span>{phaseLabel}</span>{state.currentFile ? <button onClick={showCurrentFile} title={state.currentFile}><span>{state.currentFile}</span><Icon name="arrow" size={13} /></button> : <span>{state.phase === "checking" ? "修正前のビルド・テストを確認しています" : "しばらくお待ちください"}</span>}</div>}
+      {state.running && <div className="results-current" aria-label="処理中のファイル">
+        {currentFiles.length ? currentFiles.map(file => <div className="results-current-file" key={file}>
+          <span>{phaseLabel(state.filePhases?.[file] || state.phase)}</span>
+          <button onClick={() => showCurrentFile(file)} title={file}><span>{file}</span><Icon name="arrow" size={13} /></button>
+        </div>) : <span>{phaseLabel(state.phase)}</span>}
+      </div>}
       {state.lastError && <details className="results-error-summary"><summary><Icon name="warning" size={14} /><span>{state.lastError.split("\n")[0]}</span><Icon name="down" size={13} /></summary><pre>{state.lastError}</pre></details>}
     </header>
 
@@ -323,27 +326,26 @@ export function ResultsPanel({ state, busy, usable, canSetup, selectedFile, onSe
         {selectedTask ? <>
           <header className="results-detail-heading"><Icon name="file" size={16} /><strong title={fullPath(state.config.root, selectedTask.file)}>{selectedTask.file}</strong>
             {appliedIDs.length > 0 && <RuleChips ids={appliedIDs} rules={rulesByID} origins={ruleOrigins(currentChanges)} onOpen={showRule} />}
-            <ResultStatus status={taskDisplayStatus(selectedTask)} /></header>
+            <ResultStatus status={taskDisplayStatus(selectedTask)} label={taskStatusLabel(selectedTask)} /></header>
           {explanation && <div key={`${selectedFile}:${attemptIndex}:note`} className={`results-explanation${explanationNeedsAttention ? " attention" : ""}`} role="note" aria-label="処理の説明" tabIndex={0}>
             <Icon name={explanationNeedsAttention ? "warning" : "info"} size={14} /><p>{explanation}</p>
           </div>}
           {viewedBeforeDiscard && <div className="results-inline-note" role="note">表示中の試行は変更破棄前の記録です。コード・対応状況は当時の内容を表示しています。</div>}
           <nav className="results-detail-tabs" role="tablist" aria-label="ファイルの結果詳細">
-            {([{ id: "changes", label: "対応状況", icon: "queue" }, { id: "diff", label: "変更内容", icon: "file" }, { id: "checks", label: "検証", icon: "shield" }, { id: "history", label: execution ? "試行履歴" : "履歴", icon: "clock" }] as const).filter(tab => tab.id !== "changes" || hasReport).map(tab => <button key={tab.id} role="tab" id={`results-tab-${tab.id}`} aria-controls="results-detail-content" aria-selected={activeTab === tab.id} className={activeTab === tab.id ? "active" : ""} onClick={() => { setManualTabKey(codeViewKey); onDetailTabChange(tab.id); }}><Icon name={tab.icon} size={14} />{tab.label}{tab.id === "checks" && (currentAttempt?.checks.some(failedCheck) || reviewNeedsAttention) && <i className="results-tab-alert" />}{tab.id === "history" && historyRecords.length > 0 && <small>{historyRecords.length}</small>}</button>)}
+            {([{ id: "diff", label: "変更内容", icon: "file" }, { id: "checks", label: "検証", icon: "shield" }, { id: "history", label: execution ? "試行履歴" : "履歴", icon: "clock" }] as const).map(tab => <button key={tab.id} role="tab" id={`results-tab-${tab.id}`} aria-controls="results-detail-content" aria-selected={activeTab === tab.id} className={activeTab === tab.id ? "active" : ""} onClick={() => onDetailTabChange(tab.id)}><Icon name={tab.icon} size={14} />{tab.label}{tab.id === "checks" && (currentAttempt?.checks.some(failedCheck) || reviewNeedsAttention) && <i className="results-tab-alert" />}{tab.id === "history" && historyRecords.length > 0 && <small>{historyRecords.length}</small>}</button>)}
           </nav>
           <div ref={detailScroll} className="results-detail-scroll" id="results-detail-content" role="tabpanel" aria-labelledby={`results-tab-${activeTab}`}>
-            {activeTab !== "history" && selectedTask.history.length > 0 && (!execution || attemptIndex >= 0) && <div className="results-attempt-selector"><label htmlFor="result-attempt">{activeTab === "checks" ? "検証した試行" : "表示範囲"}</label><select id="result-attempt" value={attemptIndex} onChange={event => chooseAttempt(Number(event.target.value), activeTab === "checks" ? "checks" : undefined)}><option value={-1}>{activeTab === "checks" ? `最新（${selectedTask.history.length} 回目）` : execution ? "全体（開始前 → この実行時点）" : "全体（開始前 → 現在）"}</option>{selectedTask.history.map((attempt, index) => <option value={index} key={attempt.id || index}>{index + 1} 回目 · {labels[attempt.outcome] || attempt.outcome || "処理中"}</option>)}</select></div>}
-            {activeTab === "changes" && (attemptIndex < 0 && !detail ? detailFeedback : <ChangeReport key={codeViewKey} attempt={attemptIndex >= 0 ? currentAttempt : undefined} changes={currentChanges} cumulative={attemptIndex < 0} ruleCaption={execution ? "実行時点のルール" : undefined} onOpenRule={showRule} />)}
+            {activeTab !== "history" && selectedTask.history.length > 0 && (!execution || attemptIndex >= 0) && <div className="results-attempt-selector"><label htmlFor="result-attempt">{activeTab === "checks" ? "検証した試行" : "表示範囲"}</label><select id="result-attempt" value={attemptIndex} onChange={event => chooseAttempt(Number(event.target.value), activeTab === "checks" ? "checks" : undefined)}><option value={-1}>{activeTab === "checks" ? `最新（${selectedTask.history.length} 回目）` : execution ? "全体（開始前 → この実行時点）" : "全体（開始前 → 現在）"}</option>{selectedTask.history.map((attempt, index) => <option value={index} key={attempt.id || index}>{index + 1} 回目 · {attemptStatusLabel(attempt)}</option>)}</select></div>}
             {activeTab === "diff" && <>
               {proposedIDs.length > 0 && <details className="results-note"><summary><Icon name="info" size={14} /><span>この試行で使用したルール（変更は未採用）</span><Icon name="down" size={13} /></summary><div className="results-proposed-rules"><RuleChips ids={proposedIDs} rules={rulesByID} onOpen={showRule} /></div></details>}
-              <div className="results-diff-toolbar"><div className="results-view-toggle" role="group" aria-label="コードの表示方法">{([{ id: "diff", label: "差分" }, { id: "before", label: "変更前" }, { id: "after", label: "変更後" }] as const).map(view => <button key={view.id} className={codeView === view.id ? "active" : ""} aria-pressed={codeView === view.id} onClick={() => setCodeViewSelection({ key: codeViewKey, view: view.id })}>{view.label}</button>)}</div><RuleOriginLegend changes={currentChanges} />{detail?.diff && <span className="results-change-count" aria-label={`${changeStats.added}行追加、${changeStats.removed}行削除`}><b>+{num(changeStats.added)}</b><b>−{num(changeStats.removed)}</b></span>}</div>
-              {detailLoading || detailError ? detailFeedback : detail && (codeView !== "diff" || detail.diff) ? <ResultCode content={codeView === "diff" ? detail.diff : codeView === "before" ? detail.before : detail.after} isDiff={codeView === "diff"} view={codeView} changes={currentChanges} rules={rulesByID} onOpenRule={showRule} /> : <div className="results-empty small"><Icon name={selectedTask.status === "pending" ? "clock" : "file"} size={25} /><span>{selectedTask.status === "pending" ? "処理を開始すると変更内容が表示されます" : selectedTask.status === "running" ? "このファイルを処理しています" : attemptIndex < 0 ? "開始前からの差分はありません" : "この試行の差分はありません"}</span></div>}
+              <div className="results-diff-toolbar"><div className="results-view-toggle" role="group" aria-label="コードの表示方法">{([{ id: "diff", label: "差分" }, { id: "before", label: "変更前" }, { id: "after", label: "変更後" }] as const).map(view => <button key={view.id} className={codeView === view.id ? "active" : ""} aria-pressed={codeView === view.id} onClick={() => { setCodeViewSelection({ key: codeViewKey, view: view.id }); setCodeFocus(null); }}>{view.label}</button>)}</div><HeldChangeMenu changes={currentChanges} detail={detail} view={codeView} history={reportedHistory} onChoose={showHeldChange} /><RuleOriginLegend changes={currentChanges} />{detail?.diff && <span className="results-change-count" aria-label={`${changeStats.added}行追加、${changeStats.removed}行削除`}><b>+{num(changeStats.added)}</b><b>−{num(changeStats.removed)}</b></span>}</div>
+              {detail && detailError && detailFeedback}
+              {!detail ? detailFeedback : (codeView !== "diff" || detail.diff || currentChanges.length > 0) ? <ResultCode content={codeView === "diff" ? detail.diff : codeView === "before" ? detail.before : detail.after} isDiff={codeView === "diff"} view={codeView} changes={currentChanges} rules={rulesByID} onOpenRule={showRule} focus={codeFocus?.key === codeViewKey && codeFocus.view === codeView ? codeFocus : undefined} /> : <div className="results-empty small"><Icon name={selectedTask.status === "pending" ? "clock" : "file"} size={25} /><span>{selectedTask.status === "pending" ? "処理を開始すると変更内容が表示されます" : selectedTask.status === "running" ? "このファイルを処理しています" : attemptIndex < 0 ? "開始前からの差分はありません" : "この試行の差分はありません"}</span></div>}
               {attemptIndex >= 0 && currentAttempt && <details className="results-attempt-facts"><summary>試行の情報<Icon name="down" size={13} /></summary><AttemptFacts attempt={currentAttempt} /></details>}
             </>}
             {activeTab === "checks" && <div className="results-checks">{currentAttempt?.checks.map((check, index) => <CheckInspection key={`${check.name}:${index}`} check={check} />)}
               <ReviewInspections reviews={currentReviews} rules={rulesByID} onOpenRule={showRule} />
               {!currentAttempt?.checks.length && !currentReviews.length && <div className="results-empty small"><Icon name="shield" size={25} /><span>検証結果はまだありません</span></div>}
-              {!state.config.checkCommands.length && <div className="results-inline-note">ビルド・テストコマンドは未設定です。<HelpTip label="検証内容">旧シンボルや編集範囲を検査します。ビルド・テストによる検証を行う場合は、ルールの詳細設定でコマンドを登録してください。</HelpTip></div>}
             </div>}
             {activeTab === "history" && <div className="results-history">{historyRecords.length ? historyRecords.map(record => {
               if (record.kind === "discard") {
@@ -355,15 +357,15 @@ export function ResultsPanel({ state, busy, usable, canSetup, selectedFile, onSe
                 </article>;
               }
               const { attempt, index } = record;
-              return <article className="results-history-item" key={attempt.id || index}><div className="results-history-title"><strong>{index + 1} 回目</strong><ResultStatus status={attempt.outcome || "running"} /><time>{dateTime(attempt.startedAt)}</time></div>
+              return <article className="results-history-item" key={attempt.id || index}><div className="results-history-title"><strong>{index + 1} 回目</strong><ResultStatus status={attempt.outcome || "running"} label={attemptStatusLabel(attempt)} /><time>{dateTime(attempt.startedAt)}</time></div>
                 <details className="results-note"><summary><span>{attempt.note?.split("\n")[0] || "試行の情報"}</span><Icon name="down" size={13} /></summary>{attempt.note && <p>{attempt.note}</p>}<AttemptFacts attempt={attempt} /></details>
                 <ReviewInspections reviews={attempt.reviews || []} rules={rulesByID} onOpenRule={showRule} />
-                <div className="results-history-bottom"><RuleChips ids={attempt.rulesApplied} rules={rulesByID} onOpen={showRule} /><button className="results-text-button" onClick={() => chooseAttempt(index)}>{recordedChanges(attempt.changes).length ? "対応状況を見る" : "変更内容を見る"}<Icon name="arrow" size={13} /></button></div>
+                <div className="results-history-bottom"><RuleChips ids={attempt.rulesApplied} rules={rulesByID} onOpen={showRule} /><button className="results-text-button" onClick={() => chooseAttempt(index)}>変更内容を見る<Icon name="arrow" size={13} /></button></div>
               </article>;
             }) : <div className="results-empty small"><Icon name="clock" size={25} /><span>試行履歴はありません</span></div>}</div>}
           </div>
           <footer className="results-detail-footer">
-            <span>{historical ? "選択した実行時点の記録" : execution && !execution.targetFiles.has(selectedTask.file) ? "この実行より前に完了済み" : execution && liveSelectedTask?.status === "pending" && liveSelectedTask.resumeRequested ? "次の実行の再試行に追加済み" : selectedTask.excluded ? "現在の処理対象から除外" : pendingNote ? selectedTask.resumeRequested ? "再試行に追加済み" : "未修正" : viewedBeforeDiscard ? "変更破棄前の試行記録" : unchangedCompletion ? "追加修正なし・以前の修正を保持して完了" : currentAttempt?.outcome === "done" ? "検証を通過・変更を保存済み" : currentAttempt?.outcome === "skipped" ? "変更不要として終了" : currentAttempt?.outcome && currentAttempt.outcome !== "running" ? "この試行の変更は未採用" : ""}</span>
+            <span>{historical ? "選択した実行時点の記録" : execution && !execution.targetFiles.has(selectedTask.file) ? "この実行より前に完了済み" : execution && liveSelectedTask?.status === "pending" && liveSelectedTask.resumeRequested ? "次の実行の再試行に追加済み" : selectedTask.excluded ? "現在の処理対象から除外" : pendingNote ? selectedTask.resumeRequested ? "再試行に追加済み" : "未修正" : viewedBeforeDiscard ? "変更破棄前の試行記録" : unchangedCompletion ? "追加修正なし・以前の修正を保持して完了" : isPartialAdoption(currentAttempt) ? "確認済みの修正を保存・要確認の箇所は未変更" : currentAttempt?.outcome === "done" ? "検証を通過・変更を保存済み" : currentAttempt?.outcome === "skipped" ? "変更不要として終了" : currentAttempt?.outcome && currentAttempt.outcome !== "running" ? "この試行の変更は未採用" : ""}</span>
             <div className="results-detail-actions">
               <button className="results-text-button" disabled={mutationLocked || liveSelectedTask?.status === "pending" || !liveSelectedTask} title={mutationLockedReason || (liveSelectedTask?.status === "pending" ? "このファイルは次の処理対象です" : "このファイルを再試行に追加")} onClick={() => retryFiles([selectedTask.file])}><Icon name="refresh" size={13} />再試行に追加</button>
               <button className="results-text-button is-danger" disabled={mutationLocked || !liveSelectedTask?.canDiscardChanges} onClick={() => onDiscard(selectedTask.file)}><Icon name="trash" size={13} />変更破棄</button>
@@ -375,8 +377,8 @@ export function ResultsPanel({ state, busy, usable, canSetup, selectedFile, onSe
   </section>;
 }
 
-function ResultStatus({ status }: { status: string }) {
-  return <span className={`results-task-status status-${status}`}><i />{labels[status] || status}</span>;
+function ResultStatus({ status, label }: { status: string; label?: string }) {
+  return <span className={`results-task-status status-${status}`}><i />{label || labels[status] || status}</span>;
 }
 
 export function ChangeReport({ attempt, changes: report, cumulative = false, ruleCaption = "現在のルール", onOpenRule }: { attempt?: Attempt; changes?: ChangeReportItem[]; cumulative?: boolean; ruleCaption?: string; onOpenRule: (id: string) => void }) {
@@ -393,13 +395,12 @@ export function ChangeReport({ attempt, changes: report, cumulative = false, rul
     <div className="results-change-list">{changes.map((item, index) => <details className="results-change-item" key={item.id || index}>
       <summary>
         <code data-change-origin={item.origin} title={[`${item.ruleId} · ${item.ruleTitle || "名称未記録"}`, originLabel(item.origin)].filter(Boolean).join(" · ")}>{item.ruleId || "—"}</code>
-        <span className="results-change-location" title={changeLineLabel(item.lineRanges) || item.location}>{changeLineLabel(item.lineRanges) || item.location || "場所未記録"}</span>
-        <strong title={item.change}>{item.change}</strong>
+        <strong title={changeNote(item)}>{changeNote(item)}</strong>
         <span className={`results-change-status change-${item.status}`}><Icon name={item.status === "fixed" || item.status === "unchanged" ? "check" : item.status === "needs_human" ? "warning" : item.status === "pending" ? "clock" : "pause"} size={12} />{changeLabels[item.status] || item.status}</span>
         <Icon name="down" size={12} />
       </summary>
       <div className="results-change-detail">
-        <div className="results-change-reference">{item.ruleId && <button className="results-text-button" data-change-origin={item.origin} title={[`${ruleCaption}を表示`, originLabel(item.origin)].filter(Boolean).join(" · ")} aria-label={`${item.ruleId} の${ruleCaption}を表示`} onClick={() => onOpenRule(item.ruleId)}><Icon name="rules" size={13} />{item.ruleId} · {item.ruleTitle || "名称未記録"}<Icon name="arrow" size={12} /></button>}<span>{[changeLineLabel(item.lineRanges), item.location].filter(Boolean).join(" · ") || "場所未記録"}</span></div>
+        <div className="results-change-reference">{item.ruleId && <button className="results-text-button" data-change-origin={item.origin} title={[`${ruleCaption}を表示`, originLabel(item.origin)].filter(Boolean).join(" · ")} aria-label={`${item.ruleId} の${ruleCaption}を表示`} onClick={() => onOpenRule(item.ruleId)}><Icon name="rules" size={13} />{item.ruleId} · {item.ruleTitle || "名称未記録"}<Icon name="arrow" size={12} /></button>}</div>
         <dl><div><dt>リスク</dt><dd>{item.risk || "未記録"}</dd></div><div><dt>対応</dt><dd>{item.change || "未記録"}</dd></div><div><dt>期待する結果</dt><dd>{item.expected || "未記録"}</dd></div><div><dt>判断理由</dt><dd>{item.reason || "未記録"}</dd></div></dl>
       </div>
     </details>)}</div>
@@ -432,7 +433,7 @@ function ReviewInspections({ reviews, rules, onOpenRule }: { reviews: Independen
     const attention = ["needs_changes", "needs_human", "error"].includes(review.verdict);
     const issues = review.issues || [];
     const assessments = review.assessments || [];
-    return <details className={`results-check results-review ${review.verdict === "passed" ? "passed" : attention ? "failed" : "unrun"}`} key={review.id || `${review.candidateId}:${index}`}>
+    return <details className={`results-check results-review ${["passed", "passed_with_holds"].includes(review.verdict) ? "passed" : attention ? "failed" : "unrun"}`} key={review.id || `${review.candidateId}:${index}`}>
       <summary><Icon name={review.verdict === "running" ? "clock" : "shield"} size={14} /><strong>独立レビュー {index + 1}</strong><span>{reviewLabels[review.verdict] || review.verdict}</span>{issues.length > 0 && <small>指摘 {issues.length}</small>}<Icon name="down" size={12} /></summary>
       <div className="results-review-content">
         {review.summary && <p className="results-review-summary">{review.summary}</p>}
@@ -442,40 +443,105 @@ function ReviewInspections({ reviews, rules, onOpenRule }: { reviews: Independen
           {issue.requestedChange && <p className="results-review-request"><span>修正方針</span>{issue.requestedChange}</p>}
           {issue.excerpt && <pre>{issue.excerpt}</pre>}
         </li>)}</ol>}
+        {(review.holdAssessments?.length || 0) > 0 && <details className="results-review-assessments"><summary>保留箇所の確認 <small>{review.holdAssessments!.length}</small><Icon name="down" size={12} /></summary><ul>{review.holdAssessments!.map(assessment => <li key={assessment.itemId}><div className="results-review-location"><span>{assessment.status === "preserved" ? "保留箇所を維持・修正との独立性を確認" : "安全性の確認が必要"}</span></div><p>{assessment.reason}</p></li>)}</ul></details>}
         {assessments.length > 0 && <details className="results-review-assessments"><summary>ルールごとの確認 <small>{assessments.length}</small><Icon name="down" size={12} /></summary><ul>{assessments.map(assessment => <li key={assessment.ruleId}><div className="results-review-location"><RuleChips ids={[assessment.ruleId]} rules={rules} onOpen={onOpenRule} /><span>{assessmentLabels[assessment.status] || assessment.status}</span></div><p>{assessment.reason}</p></li>)}</ul></details>}
         <details className="results-review-facts"><summary>レビュー情報<Icon name="down" size={12} /></summary><div className="results-facts"><div><span>候補</span><code title={review.candidateId}>{review.candidateId.slice(0, 12) || "—"}</code></div><div><span>開始</span><span>{dateTime(review.startedAt)}</span></div><div><span>終了</span><span>{dateTime(review.finishedAt)}</span></div><UsageFacts usage={review.usage} /></div></details>
       </div>
     </details>;
   })}</>;
 }
-export function ResultCode({ content, isDiff, view = "diff", changes = [], rules = new Map(), onOpenRule = () => {} }: {
+export function heldChangeDestination(change: ChangeReportItem, detail: FileDetail | null, view: CodeView, history: Attempt[]): { side: "before" | "after"; line: number; attemptIndex?: number } | null {
+  if (!detail) return null;
+  const preferred = view === "before" ? "before" : "after";
+  const direct = heldSourceTarget(change, preferred, { before: detail.before ? detail.before.split(/\r?\n/).length : 0, after: detail.after ? detail.after.split(/\r?\n/).length : 0 });
+  if (direct || !detail.cumulative || !change.sourceAttemptId) return direct;
+  const attemptIndex = history.findIndex(attempt => attempt.id === change.sourceAttemptId);
+  const attempt = history[attemptIndex];
+  if (!attempt) return null;
+  // Cumulative IDs retain the exact original row identity. A held location in
+  // a rejected candidate must open that attempt, never the accepted file.
+  const original = attempt.changes?.find((item, index) => change.id === `attempt:${attempt.id}:${index}:${item.id}` && item.ruleId === change.ruleId);
+  if (!original) return null;
+  const target = heldSourceTarget(original, preferred, { before: Infinity, after: Infinity });
+  return target ? { ...target, attemptIndex } : null;
+}
+
+export function HeldChangeMenu({ changes, detail, view, history = [], onChoose }: { changes: ChangeReportItem[]; detail: FileDetail | null; view: CodeView; history?: Attempt[]; onChoose: (change: ChangeReportItem) => void }) {
+  const held = recordedChanges(changes).filter(change => change.status === "needs_human");
+  if (!held.length) return null;
+  return <details className="results-held-menu" onKeyDown={event => {
+    if (event.key === "Escape") { event.preventDefault(); event.currentTarget.open = false; event.currentTarget.querySelector("summary")?.focus(); }
+  }}>
+    <summary><Icon name="warning" size={13} />要確認 <b>{held.length}</b>件<Icon name="down" size={12} /></summary>
+    <ul aria-label="要確認の箇所">{held.map((change, index) => {
+      const target = heldChangeDestination(change, detail, view, history);
+      return <li key={change.id || index}><button type="button" disabled={!detail} onClick={event => {
+        const menu = event.currentTarget.closest("details");
+        if (menu) menu.open = false;
+        onChoose(change);
+      }}>
+        <span>{change.ruleId && <code>{change.ruleId}：</code>}{changeNote(change)}</span>
+        <small>{target ? `${target.attemptIndex !== undefined ? `試行 ${target.attemptIndex + 1}・` : ""}${target.side === "before" ? "変更前" : "変更後"}の ${target.line} 行目を表示` : "位置未特定・ファイル全体を表示"}<Icon name="arrow" size={12} /></small>
+      </button></li>;
+    })}</ul>
+  </details>;
+}
+
+function CodeChangeNotes({ annotations, rules, onOpenRule }: { annotations: LineRuleAnnotation[]; rules: Map<string, Rule>; onOpenRule: (id: string) => void }) {
+  return <div className="results-line-rule-chips" aria-label="ルールと修正内容">{annotations.map((item, index) => {
+    const title = item.ruleTitle || rules.get(item.ruleId)?.title || "ルールの詳細";
+    return <div className="results-line-rule" data-needs-human={item.changes.some(change => change.status === "needs_human") || undefined} key={`${item.ruleId}:${index}`}>
+      {item.ruleId && <span className="results-line-rule-id"><button type="button" data-change-origin={item.origin} title={[`${item.ruleId} · ${title}`, originLabel(item.origin)].filter(Boolean).join(" · ")} aria-label={[`${item.ruleId} ${title}の詳細`, originLabel(item.origin)].filter(Boolean).join(" · ")} onClick={() => onOpenRule(item.ruleId)}><code>{item.ruleId}</code></button><span>：</span></span>}
+      <div className="results-line-rule-content">{item.changes.map((change, changeIndex) => <div className="results-line-change" key={change.id || changeIndex}>
+        <span className="results-line-change-summary"><strong>{changeNote(change)}</strong><span className={`results-change-status change-${change.status}`}>{changeLabels[change.status]}</span></span>
+      </div>)}</div>
+    </div>;
+  })}</div>;
+}
+
+export function ResultCode({ content, isDiff, view = "diff", changes = [], rules = new Map(), onOpenRule = () => {}, focus }: {
   content: string;
   isDiff: boolean;
   view?: CodeView;
   changes?: ChangeReportItem[];
   rules?: Map<string, Rule>;
   onOpenRule?: (id: string) => void;
+  focus?: Pick<CodeFocus, "line" | "request">;
 }) {
+  const code = useRef<HTMLDivElement>(null);
   const lines = useMemo(() => isDiff ? parseUnifiedDiff(content).filter(line => line.type !== "meta" || line.text.startsWith("\\ No newline")) : content.split(/\r?\n/).map((text, index) => ({ text, type: "source", oldLine: null, newLine: index + 1 })), [content, isDiff]);
+  const start = !isDiff && focus?.line && focus.line > 10000 ? Math.max(0, focus.line - 201) : 0;
+  const visible = lines.slice(start, start + 10000);
   const annotations = isDiff
-    ? diffRuleAnnotations(changes, lines.slice(0, 10000))
-    : lines.slice(0, 10000).map(line => rulesForLine(changes, view === "before" ? "before" : "after", line.newLine));
-  return <div className={`results-code${isDiff ? " is-diff" : ""}`} aria-label={isDiff ? "変更前・変更後の行番号付き差分" : "ソースコード"}>
-    <table>{isDiff && <thead><tr><th scope="col">前</th><th scope="col">後</th><th scope="col">コード</th></tr></thead>}
-      <tbody>{lines.slice(0, 10000).map((line, index) => {
+    ? diffRuleAnnotations(changes, visible)
+    : visible.map(line => rulesForLine(changes, view === "before" ? "before" : "after", line.newLine));
+  const shownChanges = new Set(annotations.flatMap(annotation => annotation.flatMap(item => item.changes)));
+  const unplacedChanges = recordedChanges(changes).filter(change => !shownChanges.has(change));
+  useEffect(() => {
+    if (!focus || isDiff || !code.current) return;
+    const target = focus.line ? code.current.querySelector<HTMLElement>(`[data-source-line="${focus.line}"]`) : code.current;
+    target?.scrollIntoView({ block: focus.line ? "center" : "start", inline: "nearest" });
+    target?.focus({ preventScroll: true });
+    // Only an explicit navigation request scrolls. Live refreshes preserve the view.
+  }, [focus?.request, isDiff, view]);
+  return <div className={`results-code${isDiff ? " is-diff" : ""}`} ref={code} tabIndex={-1} aria-label={isDiff ? "変更前・変更後の行番号付き差分" : "ソースコード"}>
+    <table>
+      <tbody>
+      {unplacedChanges.length > 0 && <tr className="results-code-unplaced-row"><td colSpan={isDiff ? 3 : 2}>
+        <p className="results-code-unplaced-label">{unplacedChanges.every(change => change.attributionVersion === 2 && change.lineRanges?.length) ? "表示範囲外の対応記録" : "位置未特定の対応記録"}</p>
+        <CodeChangeNotes annotations={unplacedChanges.map(change => ({ ruleId: change.ruleId, ruleTitle: change.ruleTitle, origin: change.origin, changes: [change] }))} rules={rules} onOpenRule={onOpenRule} />
+      </td></tr>}
+      {visible.map((line, index) => {
         const badges = annotations[index];
-        const signature = badges.map(item => `${item.ruleId}:${item.origin || ""}`).join("|");
-        const previousSignature = index > 0 ? annotations[index - 1].map(item => `${item.ruleId}:${item.origin || ""}`).join("|") : "";
+        const signature = badges.map(item => `${item.ruleId}:${item.origin || ""}:${item.changes.map(change => change.id).join(",")}`).join("|");
+        const previousSignature = index > 0 ? annotations[index - 1].map(item => `${item.ruleId}:${item.origin || ""}:${item.changes.map(change => change.id).join(",")}`).join("|") : "";
         const showBadges = badges.length > 0 && (isDiff || signature !== previousSignature);
         return <Fragment key={index}>
-          {showBadges && <tr className="results-code-rules-row"><td colSpan={isDiff ? 3 : 2}><span className="results-line-rule-chips" aria-label="この変更に対応するルール">{badges.map(item => {
-            const title = item.ruleTitle || rules.get(item.ruleId)?.title || "ルールの詳細";
-            return <button key={item.ruleId} data-change-origin={item.origin} title={[`${item.ruleId} · ${title}`, originLabel(item.origin)].filter(Boolean).join(" · ")} aria-label={[`${item.ruleId} ${title}の詳細`, originLabel(item.origin)].filter(Boolean).join(" · ")} onClick={() => onOpenRule(item.ruleId)}><code>{item.ruleId}</code></button>;
-          })}</span></td></tr>}
-          <tr className={line.type}>{isDiff && <td className="results-line-number">{line.oldLine}</td>}<td className="results-line-number">{line.newLine}</td><td><pre>{line.text || " "}</pre></td></tr>
+          {showBadges && <tr className="results-code-rules-row"><td colSpan={isDiff ? 3 : 2}><CodeChangeNotes annotations={badges} rules={rules} onOpenRule={onOpenRule} /></td></tr>}
+          <tr className={`${line.type}${!isDiff && focus?.line === line.newLine ? " is-held-target" : ""}`} data-source-line={!isDiff ? line.newLine : undefined} tabIndex={!isDiff && focus?.line === line.newLine ? -1 : undefined}>{isDiff && <td className="results-line-number">{line.oldLine}</td>}<td className="results-line-number">{line.newLine}</td><td><pre>{line.text || " "}</pre></td></tr>
         </Fragment>;
       })}</tbody>
     </table>
-    {lines.length > 10000 && <p className="results-inline-note">先頭10,000行を表示しています。全文は作業コピーで確認できます。</p>}
+    {lines.length > 10000 && <p className="results-inline-note">{start ? `${num(start + 1)}〜${num(Math.min(lines.length, start + 10000))}行目を表示しています。` : "先頭10,000行を表示しています。"}全文は作業コピーで確認できます。</p>}
   </div>;
 }

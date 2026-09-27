@@ -131,12 +131,12 @@ func TestReadRulesPreservesSingleRuleTool(t *testing.T) {
 
 func TestReadRulesTenRequiredRulesUseOneToolTurn(t *testing.T) {
 	ids := []string{"R019"}
-	rules := []model.Rule{{ID: "R019", Pattern: "Legacy"}}
+	rules := []model.Rule{{ID: "R019", ContentPattern: "Legacy"}}
 	plan := testPlan(0)
 	for i := 20; i < 29; i++ {
 		id := fmt.Sprintf("R%03d", i)
 		ids = append(ids, id)
-		rules = append(rules, model.Rule{ID: id, Pattern: "Legacy"})
+		rules = append(rules, model.Rule{ID: id, ContentPattern: "Legacy"})
 		plan.RuleDecisions = append(plan.RuleDecisions, model.PlanDecision{RuleID: id, Decision: "no_change", Reason: "The target does not contain the behavior described by this rule."})
 	}
 	var turn atomic.Int32

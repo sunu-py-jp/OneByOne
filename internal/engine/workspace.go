@@ -28,7 +28,6 @@ type workspaceSetting struct {
 }
 
 // Version 2 uses stable editing leases outside the workspace directory.
-// Older applications only accept version 1 and must not edit migrated data.
 const workspaceSettingVersion = 2
 
 type appSettings struct {
@@ -237,7 +236,7 @@ func (s *Service) readWorkspaceSetting(id string) (model.Workspace, model.Config
 	if err = decodeLocalJSON(path, &saved); err != nil {
 		return model.Workspace{}, c, err
 	}
-	if (saved.Version != 1 && saved.Version != workspaceSettingVersion) || saved.ID != id || saved.Config.Root == "" {
+	if saved.Version != workspaceSettingVersion || saved.ID != id || saved.Config.Root == "" {
 		return model.Workspace{}, c, fmt.Errorf("setting.json の形式を確認してください")
 	}
 	if saved.Config.Provider != "" || saved.Config.Endpoint != "" || saved.Config.Deployment != "" || saved.Config.AuthMode != "" || saved.Config.Credential != "" || saved.Config.CredentialSet {

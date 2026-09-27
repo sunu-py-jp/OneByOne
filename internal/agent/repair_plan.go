@@ -62,6 +62,7 @@ func UpdateRepairPlan(current model.RepairPlan, update model.PlanUpdate, catalog
 	}
 	for i := range plan.Items {
 		item := &plan.Items[i]
+		item.SourceLocations = append([]model.SourceLocation(nil), item.SourceLocations...)
 		item.Location = strings.TrimSpace(item.Location)
 		item.Risk = strings.TrimSpace(item.Risk)
 		item.Change = strings.TrimSpace(item.Change)
@@ -126,15 +127,8 @@ func CheckCandidatePlan(plan model.RepairPlan, request model.CandidateRequest) e
 	if err != nil {
 		return err
 	}
-	for _, decision := range plan.RuleDecisions {
-		if decision.Decision == "blocked" {
-			return fmt.Errorf("rule %q is blocked; resolve the decision or return needs_human", decision.RuleID)
-		}
-	}
-	for _, item := range plan.Items {
-		if item.Status == "blocked" {
-			return fmt.Errorf("item %q is blocked; resolve the item or return needs_human", item.ID)
-		}
+	if _, err := CandidateHolds(plan); err != nil {
+		return err
 	}
 	if len(items) == 0 {
 		return errors.New("plan has no changes; return skipped instead of validating a candidate")
@@ -147,53 +141,111 @@ func CheckCandidatePlan(plan model.RepairPlan, request model.CandidateRequest) e
 		if _, known := items[id]; !known {
 			return fmt.Errorf("candidate addresses unknown item %q", id)
 		}
+		if items[id].Status == "blocked" {
+			return fmt.Errorf("candidate cannot address blocked item %q; preserve its original code", id)
+		}
 		if addressed[id] {
 			return fmt.Errorf("candidate addresses duplicate item %q", id)
 		}
 		addressed[id] = true
 	}
 	for _, item := range plan.Items {
-		if !addressed[item.ID] {
+		if item.Status != "blocked" && !addressed[item.ID] {
 			return fmt.Errorf("candidate must include all original-based edits and address item %q", item.ID)
 		}
 	}
-	// Older persisted candidates have no per-edit links. Do not invent them.
-	// New tool schemas require itemIds; when links are supplied, validate the
-	// whole mapping so partial or unknown attribution never reaches reporting.
-	hasLinks := false
-	for _, edit := range request.Edits {
-		hasLinks = hasLinks || edit.ItemIDs != nil
+	if len(addressed) == 0 {
+		return errors.New("candidate has no safe changes; return needs_human for held-only work")
 	}
-	if hasLinks {
-		linked := map[string]bool{}
-		for index, edit := range request.Edits {
-			if len(edit.ItemIDs) == 0 || len(edit.ItemIDs) > maxRepairPlanItems {
-				return fmt.Errorf("edit %d must identify the plan itemIds it changes", index+1)
-			}
-			seen := map[string]bool{}
-			for _, id := range edit.ItemIDs {
-				if !addressed[id] || seen[id] {
-					return fmt.Errorf("edit %d has an unknown or duplicate plan itemId %q", index+1, id)
-				}
-				seen[id], linked[id] = true, true
-			}
+	// Validate the whole mapping so partial or unknown attribution never
+	// reaches reporting.
+	linked := map[string]bool{}
+	for index, edit := range request.Edits {
+		if len(edit.ItemIDs) == 0 || len(edit.ItemIDs) > maxRepairPlanItems {
+			return fmt.Errorf("edit %d must identify the plan itemIds it changes", index+1)
 		}
-		for id := range addressed {
-			if !linked[id] {
-				return fmt.Errorf("candidate has no exact edit linked to item %q", id)
+		seen := map[string]bool{}
+		for _, id := range edit.ItemIDs {
+			if !addressed[id] || seen[id] {
+				return fmt.Errorf("edit %d has an unknown or duplicate plan itemId %q", index+1, id)
 			}
+			seen[id], linked[id] = true, true
+		}
+		if err := checkEditAttributionShape(index, edit, seen); err != nil {
+			return err
+		}
+	}
+	for id := range addressed {
+		if !linked[id] {
+			return fmt.Errorf("candidate has no exact edit linked to item %q", id)
 		}
 	}
 	return nil
 }
 
-// New tool calls must supply attribution even if a provider ignores the JSON
-// schema. Archived candidates may be inspected/resumed without these newer
-// fields; only the live boundary requires them, before running any checks.
-func requireNewCandidateAttribution(request model.CandidateRequest) error {
+// Check the protocol shape before expensive candidate validation. Exact fragment
+// positions, overlap and replacement completeness are checked by the engine.
+func checkEditAttributionShape(index int, edit model.Edit, items map[string]bool) error {
+	if len(edit.Attributions) == 0 {
+		if len(edit.ItemIDs) > 1 {
+			return fmt.Errorf("edit %d with multiple itemIds requires exact attributions for every item", index+1)
+		}
+		return nil
+	}
+	if len(edit.Attributions) > maxRepairPlanItems*4 {
+		return fmt.Errorf("edit %d exceeds the attribution fragment limit", index+1)
+	}
+	type fragmentKey struct{ itemID, before, after string }
+	seen, covered := map[fragmentKey]bool{}, map[string]bool{}
+	for _, fragment := range edit.Attributions {
+		if !items[fragment.ItemID] {
+			return fmt.Errorf("edit %d attribution has an unknown itemId %q", index+1, fragment.ItemID)
+		}
+		if fragment.BeforeText == "" || fragment.BeforeText == fragment.AfterText || !utf8.ValidString(fragment.BeforeText) || !utf8.ValidString(fragment.AfterText) {
+			return fmt.Errorf("edit %d attribution requires nonempty beforeText and a different UTF-8 afterText", index+1)
+		}
+		key := fragmentKey{fragment.ItemID, fragment.BeforeText, fragment.AfterText}
+		if seen[key] {
+			return fmt.Errorf("edit %d has a duplicate attribution for item %q", index+1, fragment.ItemID)
+		}
+		seen[key], covered[fragment.ItemID] = true, true
+	}
+	for id := range items {
+		if !covered[id] {
+			return fmt.Errorf("edit %d is missing exact attribution for item %q", index+1, id)
+		}
+	}
+	return nil
+}
+
+// Schema requirements are also enforced on the live boundary when providers
+// omit nested fields. Archived candidates are handled by the version gate.
+func requireNewCandidateAttribution(request model.CandidateRequest, arguments string) error {
+	var wire struct {
+		Edits []map[string]json.RawMessage `json:"edits"`
+	}
+	if err := json.Unmarshal([]byte(arguments), &wire); err != nil || len(wire.Edits) != len(request.Edits) {
+		return errors.New("candidate edits are malformed")
+	}
 	for index, edit := range request.Edits {
 		if len(edit.ItemIDs) == 0 {
 			return fmt.Errorf("edit %d requires nonempty itemIds linking its exact change to the current plan", index+1)
+		}
+		value := strings.TrimSpace(string(wire.Edits[index]["attributions"]))
+		if value == "" || value == "null" {
+			return fmt.Errorf("edit %d requires an attributions array; use [] only for a single-item edit", index+1)
+		}
+		var fragments []map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(value), &fragments); err != nil {
+			return fmt.Errorf("edit %d requires an attributions array", index+1)
+		}
+		for _, fragment := range fragments {
+			for _, field := range []string{"itemId", "beforeText", "afterText"} {
+				value, exists := fragment[field]
+				if !exists || strings.TrimSpace(string(value)) == "null" {
+					return fmt.Errorf("edit %d attribution requires itemId, beforeText and afterText", index+1)
+				}
+			}
 		}
 	}
 	return nil

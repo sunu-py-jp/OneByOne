@@ -11,9 +11,11 @@ export function hasReadyLLMConnection(state: Pick<State, "llmConnections" | "sel
   return Boolean(connection.credentialSet);
 }
 
+// Confirming the selection requeues checked needs_human tasks before Start.
+// Count them here so that the confirmation action itself remains reachable.
 export function countReadyTargets(tasks: Task[], selectedFiles?: ReadonlySet<string>): number {
-  return tasks.filter(item => (selectedFiles ? selectedFiles.has(item.file) : !item.excluded)
-    && (item.status === "pending" || item.status === "failed")).length;
+  return tasks.filter(item => item.rules?.length > 0 && (selectedFiles ? selectedFiles.has(item.file) : !item.excluded)
+    && (item.status === "pending" || item.status === "failed" || item.status === "needs_human")).length;
 }
 
 export interface WorkflowNavigationState {
@@ -27,6 +29,7 @@ export interface WorkflowNavigationState {
   selectionCurrent: boolean;
   readyCount: number;
   selectedCount?: number;
+  selectedRuleCount?: number;
   targetError?: string;
   setupError?: string;
 }
@@ -44,6 +47,7 @@ export function workflowBlockReasons(state: WorkflowNavigationState): Record<Wor
   const target = idle || (!state.targetReady ? state.targetError || "対象フォルダを設定し、エラーを解消してください。" : "");
   const setup = target || (!state.setupReady ? state.setupError || "ルールを設定し、エラーを解消してください。" : "");
   const review = setup || (state.readOnly ? "閲覧専用です。編集権限を取得してから実行してください。" : "")
+    || (state.selectedRuleCount === 0 ? "適用するルールを1件以上選択してください。" : "")
     || (!state.connectionReady ? "使用するLLM接続を選び、モデルと認証情報を設定してください。" : "")
     || (!state.selectionCurrent ? "設定が変更されています。対象ファイルを更新してください。" : "")
     || (state.selectedCount === 0 ? "処理するファイルを1つ以上選択してください。" : "")

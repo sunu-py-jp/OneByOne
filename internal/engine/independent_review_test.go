@@ -27,7 +27,7 @@ func independentReviewReply(t *testing.T, w http.ResponseWriter, original string
 	verdict, commonStatus := "needs_changes", "violated"
 	modified := "Modern.Save()\nModern.Load()\n"
 	summary := "REVIEW_FIRST_ONLY: unrelated flush behavior was removed."
-	issues := []any{map[string]string{"ruleId": "R001", "location": "End of workflow", "lineBasis": "before", "excerpt": "flush()", "reason": "REVIEW_FIRST_ONLY: the original workflow flushed after both calls.", "requestedChange": "Retain flush() after the supported SDK calls."}}
+	issues := []any{map[string]any{"ruleId": "R001", "location": "End of workflow", "lineBasis": "before", "startLine": 3, "endLine": 3, "excerpt": "flush()", "reason": "REVIEW_FIRST_ONLY: the original workflow flushed after both calls.", "requestedChange": "Retain flush() after the supported SDK calls."}}
 	if passed {
 		verdict, commonStatus = "passed", "satisfied"
 		modified += "flush()\n"
@@ -51,6 +51,25 @@ func independentReviewAcceptedFixture(candidate model.CandidateValidation, baseH
 	}
 }
 
+func reviewedNoChangeProposal(t *testing.T, in agent.Input, note string) (model.Proposal, error) {
+	t.Helper()
+	state := *in.RepairState
+	state.Plan = model.RepairPlan{Revision: 1, Items: []model.PlanItem{}}
+	assessments := []model.ReviewAssessment{}
+	for _, rule := range in.Rules {
+		state.Plan.RuleDecisions = append(state.Plan.RuleDecisions, model.PlanDecision{RuleID: rule.ID, Decision: "no_change", Reason: note})
+		assessments = append(assessments, model.ReviewAssessment{RuleID: rule.ID, Status: "satisfied", Reason: note})
+	}
+	identity := uid()
+	review := model.IndependentReview{ID: "00000000" + uid(), CandidateID: identity, BaseHash: in.BaseHash, CandidateHash: in.BaseHash, PlanRevision: 1, Verdict: "passed", Summary: note, Assessments: assessments, Issues: []model.ReviewIssue{}, StartedAt: now(), FinishedAt: now()}
+	state.LastCandidate = &model.CandidateRecord{NoChange: true, Request: model.CandidateRequest{PlanRevision: 1, BaseHash: in.BaseHash}, Result: model.CandidateValidation{CandidateID: identity, CandidateHash: in.BaseHash, PlanRevision: 1, Passed: true}, ReviewRequested: true, ReviewNote: note, Review: &review}
+	state.Reviews = append(state.Reviews, review)
+	if err := in.SaveRepairState(state); err != nil {
+		return model.Proposal{}, err
+	}
+	return model.Proposal{Outcome: "skipped", CandidateID: identity, Note: note}, nil
+}
+
 func independentReviewPlan() model.PlanUpdate {
 	plan := engineRepairPlan()
 	plan.RuleDecisions[0].Reason = "EDITOR_ONLY_PLAN_MARKER: unrelated flushing should stay unchanged"
@@ -58,9 +77,9 @@ func independentReviewPlan() model.PlanUpdate {
 }
 
 func independentReviewCandidate(original string, complete, preserveFlush bool) model.CandidateRequest {
-	request := model.CandidateRequest{PlanRevision: 1, BaseHash: digest([]byte(original)), AddressedItemIDs: []string{"P1", "P2"}, Edits: []model.Edit{{OldText: "Legacy.Save()", NewText: "Modern.Save()", ItemIDs: []string{"P1", "P2"}}}}
+	request := model.CandidateRequest{PlanRevision: 1, BaseHash: digest([]byte(original)), AddressedItemIDs: []string{"P1"}, Edits: []model.Edit{{OldText: "Legacy.Save()", NewText: "Modern.Save()", ItemIDs: []string{"P1"}}}}
 	if complete {
-		request.Edits[0].ItemIDs = []string{"P1"}
+		request.AddressedItemIDs = append(request.AddressedItemIDs, "P2")
 		request.Edits = append(request.Edits, model.Edit{OldText: "Legacy.Load()", NewText: "Modern.Load()", ItemIDs: []string{"P2"}})
 	}
 	if !preserveFlush {
@@ -75,12 +94,11 @@ func independentReviewCandidate(original string, complete, preserveFlush bool) m
 func TestIndependentReviewRepairsSemanticFailureInSameEditorConversation(t *testing.T) {
 	original := "Legacy.Save()\nLegacy.Load()\nflush()\n"
 	s, cfg := fixture(t, map[string]string{"A.txt": original})
-	writeTest(t, filepath.Join(cfg.RulesPath, "R001", "rule.json"), fixtureRuleJSON(t, "Preserve behavior", "", "Preserve unrelated code and formatting.", "", "", "COMMON_RULE_REVIEW_MARKER: existing flush calls must be retained.", ""))
+	writeFixtureRule(t, cfg.RulesPath, "R001", fixtureRuleJSON(t, "Preserve behavior", "", "Preserve unrelated code and formatting.", "", "", "COMMON_RULE_REVIEW_MARKER: existing flush calls must be retained.", ""))
 	if _, err := s.Scan(); err != nil {
 		t.Fatal(err)
 	}
-	counter := filepath.Join(t.TempDir(), "checks.txt")
-	cfg.CheckCommands = []model.Command{{Name: "count checks", Executable: os.Args[0], Args: []string{"-test.run=^TestRepairCheckpointCheckCounterProcess$", "--", "repair-check-counter", counter}}}
+	cfg.MaxFileBytes = 1024
 	if _, err := s.SaveConfig(cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +170,9 @@ func TestIndependentReviewRepairsSemanticFailureInSameEditorConversation(t *test
 		case 2:
 			engineRepairResponse(w, engineRepairCall("plan", "update_state", independentReviewPlan()))
 		case 3:
-			engineRepairResponse(w, engineRepairCall("bad-symbols", "validate_candidate", independentReviewCandidate(original, false, true)))
+			oversized := independentReviewCandidate(original, true, true)
+			oversized.Edits[0].NewText = strings.Repeat("x", cfg.MaxFileBytes+1)
+			engineRepairResponse(w, engineRepairCall("oversize", "validate_candidate", oversized))
 		case 4:
 			if reviewRequests.Load() != 0 || checkpoint.State.LastCandidate == nil || checkpoint.State.LastCandidate.Result.Passed {
 				t.Error("mechanical failure was reviewed or accepted")
@@ -201,9 +221,7 @@ func TestIndependentReviewRepairsSemanticFailureInSameEditorConversation(t *test
 	if err != nil || checkpoint.State.ValidationCount != 3 || checkpoint.State.ReviewCount != 2 || checkpoint.State.RequestPending || checkpoint.State.Usage.Turns != 9 || task.History[0].Usage.InputTokens != 900 || len(task.History[0].Reviews) != 2 {
 		t.Fatalf("review reset/dropped the shared validation/request budget: %+v, %v", checkpoint, err)
 	}
-	if got := readTest(t, counter); got != "check\ncheck\ncheck\n" {
-		t.Fatalf("expected baseline plus two mechanically passing candidates, without duplicate adoption checks: %q", got)
-	}
+
 	if got := readTest(t, filepath.Join(state.Worktree, "A.txt")); got != "Modern.Save()\nModern.Load()\nflush()\n" {
 		t.Fatalf("wrong reviewed candidate committed: %q", got)
 	}

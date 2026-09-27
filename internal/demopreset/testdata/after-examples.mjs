@@ -13,6 +13,116 @@ import { reconcilePayment } from './src/jobs/reconcile-payments.js';
 import { reserveOrderLines } from './src/orders/bulk-reserve.js';
 import { settleInvoice } from './src/billing/settle-invoice.js';
 import { resolveRuntimeOptions } from './src/shared/runtime-options.js';
+import { saveLocalDraft, beginHostEdit } from './src/shared/host-transaction.js';
+import { saveLocalDraft as saveInputDraft, beginHostEdit as beginInputHostEdit } from './src/shared/host-transaction.before.js';
+
+async function observeTransactions(run) {
+  const begin = transactions.begin;
+  const calls = [];
+  transactions.begin = namespace => {
+    calls.push([namespace, 'begin']);
+    const transaction = begin(namespace);
+    for (const method of ['put', 'commit', 'rollback', 'close']) {
+      const original = transaction[method];
+      transaction[method] = (...args) => {
+        calls.push([namespace, method]);
+        return original(...args);
+      };
+    }
+    return transaction;
+  };
+  try {
+    await run(calls);
+  } finally {
+    transactions.begin = begin;
+    demoState.failNextCommit = false;
+  }
+}
+
+// The input and partially migrated versions must share observable behavior.
+// The reference changes local ownership only; external host lifetime is held.
+for (const [label, saveDraft, openHost] of [
+  ['input', saveInputDraft, beginInputHostEdit],
+  ['partial reference', saveLocalDraft, beginHostEdit],
+]) {
+  test(`${label}: a local draft persists before notification and closes exactly once`, async () => {
+    demoState.records.clear();
+    await observeTransactions(async calls => {
+      const fields = [{ field: 'address', value: { city: 'Kyoto' } }, { field: 'meta', value: 'user field' }];
+      const result = await saveDraft('draft-order', fields, async summary => {
+        assert.deepEqual(summary, { orderId: 'draft-order', count: 2 });
+        assert.deepEqual(demoState.records.get('local-drafts:draft:draft-order:meta'), summary);
+        assert.equal(calls.filter(([, method]) => method === 'close').length, 1);
+        fields[0].value.city = 'changed by observer';
+      });
+      assert.deepEqual(result, { orderId: 'draft-order', count: 2 });
+      assert.deepEqual(demoState.records.get('local-drafts:draft:draft-order:field:address'), {
+        field: 'address', value: { city: 'Kyoto' },
+      });
+      assert.equal(demoState.records.get('local-drafts:draft:draft-order:field:meta').value, 'user field');
+      assert.deepEqual(calls.map(([, method]) => method), ['begin', 'put', 'put', 'put', 'commit', 'close']);
+    });
+  });
+
+  test(`${label}: commit failure rolls back, closes once, and never notifies`, async () => {
+    demoState.records.clear();
+    demoState.failNextCommit = true;
+    await observeTransactions(async calls => {
+      let notifications = 0;
+      await assert.rejects(saveDraft('failed-order', [{ field: 'note', value: 'draft' }], async () => {
+        notifications += 1;
+      }), /Commit unavailable/);
+      assert.equal(notifications, 0);
+      assert.equal(demoState.records.size, 0);
+      assert.deepEqual(calls.map(([, method]) => method), ['begin', 'put', 'put', 'commit', 'rollback', 'close']);
+    });
+  });
+
+  test(`${label}: notification failure preserves committed data without rollback`, async () => {
+    demoState.records.clear();
+    await observeTransactions(async calls => {
+      await assert.rejects(saveDraft('notified-order', [{ field: 'note', value: 'saved' }], async () => {
+        throw new Error('Observer unavailable');
+      }), /Observer unavailable/);
+      assert.equal(demoState.records.get('local-drafts:draft:notified-order:field:note').value, 'saved');
+      assert.equal(demoState.records.size, 2);
+      assert.equal(calls.filter(([, method]) => method === 'close').length, 1);
+      assert.equal(calls.some(([, method]) => method === 'rollback'), false);
+    });
+  });
+
+  test(`${label}: invalid local input cannot acquire a transaction`, async () => {
+    await observeTransactions(async calls => {
+      await assert.rejects(saveDraft(' ', [{ field: 'note', value: 'draft' }], async () => {}), /Order ID/);
+      await assert.rejects(saveDraft('order', [], async () => {}), /Draft fields/);
+      await assert.rejects(saveDraft('order', [{ field: 'note' }, { field: '' }], async () => {}), /field name/);
+      assert.deepEqual(calls, []);
+    });
+  });
+
+  test(`${label}: local autosave leaves the external host edit open for later commit or rollback`, async () => {
+    demoState.records.clear();
+    await observeTransactions(async calls => {
+      const host = openHost('host-order');
+      host.setField('note', 'first interaction');
+      await Promise.resolve();
+      await saveDraft('host-order', [{ field: 'note', value: 'autosaved separately' }], async () => {});
+      assert.equal(demoState.records.has('host-edit:edit:host-order:note'), false);
+      assert.equal(calls.some(([namespace, method]) => namespace === 'host-edit' && method === 'close'), false);
+      host.setField('address', 'second interaction');
+      assert.deepEqual(host.changes().map(change => change.field), ['note', 'address']);
+      await host.commit();
+      assert.equal(demoState.records.get('host-edit:edit:host-order:address').value, 'second interaction');
+      assert.equal(calls.filter(([namespace, method]) => namespace === 'host-edit' && method === 'close').length, 1);
+      const cancelled = openHost('cancelled-order');
+      cancelled.setField('note', 'discarded');
+      await Promise.resolve();
+      await cancelled.rollback();
+      assert.equal(demoState.records.has('host-edit:edit:cancelled-order:note'), false);
+      assert.equal(demoState.records.get('local-drafts:draft:host-order:field:note').value, 'autosaved separately');
+    });
+  });
+}
 
 function shipment() {
   return { id: 'job-1', orderId: 'order-1', parcels: [{ code: 'a', weightGrams: 10 }], state: 'ready' };

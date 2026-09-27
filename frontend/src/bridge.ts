@@ -1,6 +1,6 @@
 import type { Backend } from "./types";
 import { normalizeState, normalizeExecutionRunResult } from "./types";
-import { createPreviewWorkspace, deletePreviewWorkspace, deletePreviewRule, previewDetail, previewState, selectPreviewTasks, selectPreviewWorkspace, savePreviewLLMConnection, deletePreviewLLMConnection, selectPreviewLLMConnection, clearPreviewLLMCredential, previewTargetFiles, previewTargetContent, previewExecutionContent, previewExecutionRun, previewExecutionFileDetail, previewResultPublication } from "./preview";
+import { createPreviewWorkspace, deletePreviewWorkspace, deletePreviewRule, previewDetail, previewState, selectPreviewTasks, selectPreviewWorkspace, savePreviewLLMConnection, deletePreviewLLMConnection, selectPreviewLLMConnection, clearPreviewLLMCredential, previewTargetFiles, previewTargetContent, previewExecutionContent, previewExecutionRun, previewExecutionFileDetail, previewResultPublication, savePreviewConfig, scanPreviewTasks } from "./preview";
 
 declare global {
   interface Window {
@@ -48,13 +48,12 @@ export const api: Backend = {
       isPreview ? structuredClone(previewState) : await native().GetState(),
     ),
   SaveConfig: async (config) =>
-    normalizeState(await native().SaveConfig(config)),
+    normalizeState(isPreview ? savePreviewConfig(config) : await native().SaveConfig(config)),
   ChooseDirectory: (kind) =>
     isPreview && kind === "root"
       ? Promise.resolve("/workspace/sample-project")
       : native().ChooseDirectory(kind),
-  ChooseLegacy: () => native().ChooseLegacy(),
-  Scan: async () => normalizeState(await native().Scan()),
+  Scan: async () => normalizeState(isPreview ? scanPreviewTasks() : await native().Scan()),
   Start: (limit) => native().Start(limit),
   Stop: () => native().Stop(),
   RetryTasks: async (files) => normalizeState(await native().RetryTasks(files)),

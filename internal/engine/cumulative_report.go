@@ -11,20 +11,21 @@ import (
 // initial file and its accepted contents. Attempt reports remain immutable: the
 // returned IDs and line coordinates belong to this cumulative view only.
 func cumulativeChangeReports(task model.Task, before, after string, readAttempt func(model.Attempt) (string, string, error)) ([]model.ChangeReportItem, error) {
+	before, after = normalizedReportText(before), normalizedReportText(after)
 	history := repairHistory(task)
 	rows := []model.ChangeReportItem{}
 	comparison := cumulativeLineMapping(before, after)
 	fixedRules := map[string]bool{}
 	for _, h := range history {
-		if before == after || h.Outcome != "done" || h.Commit == "" {
+		if before == after || !h.AdoptedChanges() {
 			continue
 		}
 		var oldMap, newMap cumulativeLines
 		mapped := false
 		if readAttempt != nil {
 			if oldText, newText, err := readAttempt(h); err == nil {
-				oldMap = cumulativeLineMapping(oldText, before)
-				newMap = cumulativeLineMapping(newText, after)
+				oldMap = cumulativeLineMapping(normalizedReportText(oldText), before)
+				newMap = cumulativeLineMapping(normalizedReportText(newText), after)
 				mapped = true
 			}
 		}
@@ -37,8 +38,9 @@ func cumulativeChangeReports(task model.Task, before, after string, readAttempt 
 				row.Location = "修正時の位置: " + row.Location
 			}
 			row.LineRanges = nil
-			allRemoved := len(recorded.LineRanges) > 0 && mapped
-			if mapped {
+			verified := recorded.AttributionVersion == model.LineAttributionVersion
+			allRemoved := verified && len(recorded.LineRanges) > 0 && mapped
+			if mapped && verified {
 				for _, span := range recorded.LineRanges {
 					ranges, removed := cumulativeReportRange(span, oldMap, newMap, comparison)
 					row.LineRanges = append(row.LineRanges, ranges...)
@@ -57,6 +59,17 @@ func cumulativeChangeReports(task model.Task, before, after string, readAttempt 
 	// earlier failures disappear once a later attempt resolves them.
 	if len(history) > 0 {
 		h := history[len(history)-1]
+		var heldMappings *heldLineMappings
+		if readAttempt != nil {
+			for _, recorded := range h.Changes {
+				if recorded.Status == "needs_human" && recorded.AttributionVersion == model.LineAttributionVersion && len(recorded.LineRanges) > 0 {
+					if sourceBefore, sourceAfter, err := readAttempt(h); err == nil {
+						heldMappings = newHeldLineMappings(normalizedReportText(sourceBefore), normalizedReportText(sourceAfter), before, after)
+					}
+					break
+				}
+			}
+		}
 		for index, recorded := range h.Changes {
 			if recorded.Status == "fixed" {
 				continue
@@ -68,7 +81,13 @@ func cumulativeChangeReports(task model.Task, before, after string, readAttempt 
 				continue
 			}
 			row := cumulativeReportRow(h, index, recorded)
-			row.LineRanges = nil // An unaccepted candidate has no cumulative coordinates.
+			row.LineRanges = nil
+			// Held locations are evidence about source which still requires a
+			// decision, not adopted changes. Rebase them only through exact,
+			// unambiguous unchanged lines of the attempt's original input.
+			if recorded.Status == "needs_human" && recorded.AttributionVersion == model.LineAttributionVersion && heldMappings != nil {
+				row.LineRanges = heldMappings.ranges(recorded.LineRanges)
+			}
 			rows = append(rows, row)
 		}
 	}
@@ -77,8 +96,8 @@ func cumulativeChangeReports(task model.Task, before, after string, readAttempt 
 
 func cumulativeReportRow(h model.Attempt, index int, recorded model.ChangeReportItem) model.ChangeReportItem {
 	row := recorded
-	// Include the row position as well: old reports can have empty or duplicate
-	// item IDs, and independently planned attempts routinely reuse item IDs.
+	// Include the row position as well: independently planned attempts
+	// routinely reuse item IDs.
 	row.ID = fmt.Sprintf("attempt:%s:%d:%s", h.ID, index, recorded.ID)
 	row.SourceAttemptID = h.ID
 	return row
@@ -255,4 +274,94 @@ func cumulativeChangedLines(lines []int, changed map[int]bool, unchanged map[int
 		}
 	}
 	return selected, certain
+}
+
+func normalizedReportText(text string) string {
+	return strings.ReplaceAll(strings.TrimPrefix(text, "\ufeff"), "\r\n", "\n")
+}
+
+type heldLineMappings struct {
+	toBaseline, toAccepted, candidateToOriginal cumulativeLines
+	candidateAvailable                          bool
+}
+
+func newHeldLineMappings(original, candidate, baseline, accepted string) *heldLineMappings {
+	return &heldLineMappings{
+		toBaseline:          cumulativeLineMapping(original, baseline),
+		toAccepted:          cumulativeLineMapping(original, accepted),
+		candidateToOriginal: cumulativeLineMapping(candidate, original),
+		candidateAvailable:  candidate != "",
+	}
+}
+
+func (m *heldLineMappings) ranges(spans []model.ChangeLineRange) []model.ChangeLineRange {
+	ranges := []model.ChangeLineRange{}
+	seen := map[model.ChangeLineRange]bool{}
+	appendRange := func(span model.ChangeLineRange) {
+		if !seen[span] {
+			ranges = append(ranges, span)
+			seen[span] = true
+		}
+	}
+	for _, span := range spans {
+		originalSets := [][]int{}
+		if original, ok := exactSourceLines(span.BeforeStart, span.BeforeEnd, m.toBaseline.sourceLines); ok {
+			originalSets = append(originalSets, original)
+		}
+		if m.candidateAvailable {
+			if candidate, ok := exactSourceLines(span.AfterStart, span.AfterEnd, m.candidateToOriginal.sourceLines); ok {
+				if original, ok := unchangedMappedLines(candidate, m.candidateToOriginal); ok {
+					originalSets = append(originalSets, original)
+				}
+			}
+		}
+		for _, original := range originalSets {
+			if lines, ok := unchangedMappedLines(original, m.toBaseline); ok {
+				for _, group := range contiguousReportLines(lines) {
+					appendRange(model.ChangeLineRange{BeforeStart: group[0], BeforeEnd: group[1]})
+				}
+			}
+			if lines, ok := unchangedMappedLines(original, m.toAccepted); ok {
+				for _, group := range contiguousReportLines(lines) {
+					appendRange(model.ChangeLineRange{AfterStart: group[0], AfterEnd: group[1]})
+				}
+			}
+		}
+	}
+	return ranges
+}
+
+func exactSourceLines(start, end, total int) ([]int, bool) {
+	if start < 1 || end < start || end > total {
+		return nil, false
+	}
+	lines := make([]int, 0, end-start+1)
+	for line := start; line <= end; line++ {
+		lines = append(lines, line)
+	}
+	return lines, true
+}
+
+func unchangedMappedLines(lines []int, mapping cumulativeLines) ([]int, bool) {
+	mapped := make([]int, 0, len(lines))
+	for _, line := range lines {
+		position, ok := mapping.forward[line]
+		if !ok {
+			return nil, false
+		}
+		mapped = append(mapped, position)
+	}
+	return mapped, len(mapped) > 0
+}
+
+func contiguousReportLines(lines []int) [][2]int {
+	groups := [][2]int{}
+	for _, line := range lines {
+		if len(groups) > 0 && groups[len(groups)-1][1]+1 == line {
+			groups[len(groups)-1][1] = line
+		} else {
+			groups = append(groups, [2]int{line, line})
+		}
+	}
+	return groups
 }

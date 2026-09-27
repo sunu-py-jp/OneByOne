@@ -2,6 +2,8 @@ import {
   defaultConfig,
   emptyState,
   emptyUsage,
+  type Config,
+  type Attempt,
   type FileDetail,
   type LLMConnection,
   type Rule,
@@ -17,61 +19,49 @@ import {
 
 const rules: Rule[] = [
   {
-    id: "R001",
-    title: "既存の振る舞いとコードスタイルを保持する",
-    summary: "公開インターフェース、例外処理、コメントの意図を維持する",
-    pattern: "",
-    always: true,
-    candidateCount: 0,
-    appliedCount: 3,
-    overview: "既存の公開インターフェースと、呼び出し元から見た振る舞いを保持してください。",
-    before: "",
-    after: "",
-    notes: "無関係なリファクタリングをしない\n既存の例外処理とログを維持する\n編集対象は指定された1ファイルに限定する",
-    holdConditions: "複数ファイルの同時変更が必要な場合は needs_human とする。",
+    "id": "R001",
+    "title": "既存の振る舞いとコードスタイルを保持する",
+    "summary": "公開インターフェース、例外処理、コメントの意図を維持する",
+    "always": true,
+    "candidateCount": 0,
+    "appliedCount": 3,
+    "pathPattern": "",
+    "contentPattern": "",
+    "body": "# 変更概要\n\n既存の公開インターフェースと、呼び出し元から見た振る舞いを保持してください。\n\n# 補足\n\n無関係なリファクタリングをしない\n既存の例外処理とログを維持する\n編集対象は指定された1ファイルに限定する\n\n# 変換を保留にすべきケース\n\n複数ファイルの同時変更が必要な場合は needs_human とする。"
   },
   {
-    id: "R019",
-    title: "保存処理をストレージクライアントAPIへ移す",
-    summary: "StorageSession.save を StorageClient.write に変更する",
-    pattern: "StorageSession|\\.save\\s*\\(",
-    always: false,
-    candidateCount: 6,
-    appliedCount: 3,
-    overview: "StorageSession.save を StorageClient.write に移行します。",
-    before: "const store = new StorageSession(config);\nstore.save(key, value);",
-    after: "const store = new StorageClient(config);\nstore.write({ key, value });",
-    notes: "引数のキー名を省略せず、既存のエラー処理を維持する。",
-    holdConditions: "saveの返り値に依存している場合は、互換性を確認するまで修正しない。",
+    "id": "R019",
+    "title": "保存処理をストレージクライアントAPIへ移す",
+    "summary": "StorageSession.save を StorageClient.write に変更する",
+    "always": false,
+    "candidateCount": 6,
+    "appliedCount": 3,
+    "pathPattern": "",
+    "contentPattern": "StorageSession|\\.save\\s*\\(",
+    "body": "# 変更概要\n\nStorageSession.save を StorageClient.write に移行します。\n\n# 変換前\n\n```js\nconst store = new StorageSession(config);\nstore.save(key, value);\n```\n\n# 変換後\n\n```js\nconst store = new StorageClient(config);\nstore.write({ key, value });\n```\n\n# 補足\n\n引数のキー名を省略せず、既存のエラー処理を維持する。\n\n# 変換を保留にすべきケース\n\nsaveの返り値に依存している場合は、互換性を確認するまで修正しない。"
   },
   {
-    id: "R025",
-    title: "設定オブジェクトの引数構成を変更",
-    summary: "StorageOptions の timeout を request.timeoutMs へ移動する",
-    pattern: "StorageOptions",
-    always: false,
-    candidateCount: 3,
-    appliedCount: 1,
-    overview: "StorageOptions の timeout を、新しい request.timeoutMs に移します。",
-    before: "const options = new StorageOptions({ timeout: 3000 });",
-    after: "const options = { request: { timeoutMs: 3000 } };",
-    notes: "",
-    holdConditions: "オプションが動的に組み立てられ、型を特定できない場合。",
+    "id": "R025",
+    "title": "設定オブジェクトの引数構成を変更",
+    "summary": "StorageOptions の timeout を request.timeoutMs へ移動する",
+    "always": false,
+    "candidateCount": 3,
+    "appliedCount": 1,
+    "pathPattern": "src/config/**",
+    "contentPattern": "StorageOptions",
+    "body": "# 変更概要\n\nStorageOptions の timeout を、新しい request.timeoutMs に移します。\n\n# 変換前\n\n```js\nconst options = new StorageOptions({ timeout: 3000 });\n```\n\n# 変換後\n\n```js\nconst options = { request: { timeoutMs: 3000 } };\n```\n\n# 変換を保留にすべきケース\n\nオプションが動的に組み立てられ、型を特定できない場合。"
   },
   {
-    id: "R032",
-    title: "同期リクエストを非同期処理へ変更",
-    summary: "HttpRequest.send の同期処理を httpClient.send の Promise に変更する",
-    pattern: "HttpRequest",
-    always: false,
-    candidateCount: 1,
-    appliedCount: 0,
-    overview: "HttpRequest.send の同期処理を httpClient.send の Promise に変更します。",
-    before: "const response = HttpRequest.send(url);",
-    after: "const response = await httpClient.send(url);",
-    notes: "",
-    holdConditions: "呼び出し元の関数シグネチャまで変更する必要がある場合。",
-  },
+    "id": "R032",
+    "title": "同期リクエストを非同期処理へ変更",
+    "summary": "HttpRequest.send の同期処理を httpClient.send の Promise に変更する",
+    "always": false,
+    "candidateCount": 1,
+    "appliedCount": 0,
+    "pathPattern": "src/services/**/*.ts",
+    "contentPattern": "",
+    "body": "# 変更概要\n\nHttpRequest.send の同期処理を httpClient.send の Promise に変更します。\n\n# 変換前\n\n```js\nconst response = HttpRequest.send(url);\n```\n\n# 変換後\n\n```js\nconst response = await httpClient.send(url);\n```\n\n# 変換を保留にすべきケース\n\n呼び出し元の関数シグネチャまで変更する必要がある場合。"
+  }
 ];
 const sampleDiff =
   'diff --git a/src/services/storage.ts b/src/services/storage.ts\n--- a/src/services/storage.ts\n+++ b/src/services/storage.ts\n@@ -1,10 +1,10 @@\n-import { StorageSession } from "vault-storage";\n+import { StorageClient } from "vault-client";\n \n export function saveDocument(key: string, value: string) {\n-  const store = new StorageSession(config);\n+  const store = new StorageClient(config);\n   try {\n-    store.save(key, value);\n+    store.write({ key, value });\n     logger.info("Document saved", { key });\n   } catch (error) {\n     logger.error("Save failed", error);\n     throw error;\n';
@@ -104,7 +94,7 @@ const taskSpecs = [
     "src/adapters/cache.ts",
     "failed",
     ["R019", "R025"],
-    "旧シンボル残存チェックに失敗しました。次の試行に検証結果を引き継ぎます。",
+    "独立レビューで修正漏れが見つかりました。次の試行に指摘を引き継ぎます。",
   ],
   ["src/commands/export.ts", "pending", ["R019"], ""],
   ["src/config/defaults.ts", "pending", ["R025"], ""],
@@ -119,7 +109,7 @@ const taskSpecs = [
 const tasks: Task[] = taskSpecs.map(([file, status, candidates, note], i) => ({
   file,
   status,
-  rules: [...candidates],
+  rules: ["R001", ...candidates],
   note,
   attempts: status === "pending" ? 0 : 1,
   inputHash: "",
@@ -141,9 +131,9 @@ const tasks: Task[] = taskSpecs.map(([file, status, candidates, note], i) => ({
               status === "done"
                 ? [
                     {
-                      name: "旧シンボル残存チェック",
+                      name: "独立レビュー",
                       status: "passed",
-                      detail: "旧ライブラリ由来の識別子は残っていません。",
+                      detail: "候補の変更が各ルールの要件を満たすことを確認しました。",
                       durationMs: 28,
                     },
                     {
@@ -153,16 +143,16 @@ const tasks: Task[] = taskSpecs.map(([file, status, candidates, note], i) => ({
                       durationMs: 14,
                     },
                     {
-                      name: "TypeScript build",
+                      name: "ファイル整合性",
                       status: "passed",
-                      detail: "> tsc --noEmit\nProcess exited with code 0.",
+                      detail: "対象ファイルの更新内容を確認しました。",
                       durationMs: 2413,
                     },
                   ]
                 : status === "failed"
                   ? [
                       {
-                        name: "旧シンボル残存チェック",
+                        name: "独立レビュー",
                         status: "failed",
                         detail:
                           "src/adapters/cache.ts:42: StorageOptions が残っています。",
@@ -180,7 +170,7 @@ const tasks: Task[] = taskSpecs.map(([file, status, candidates, note], i) => ({
             diffPath: "",
             commit: status === "done" ? "e29b7a18f4607b0" : "",
             changes: (status === "done" || status === "failed") && candidates.some(id => id === "R019") ? [{
-              id: "P01", ruleId: "R019", ruleTitle: "保存処理をストレージクライアントAPIへ移す",
+              id: "P01", attributionVersion: 2, ruleId: "R019", ruleTitle: "保存処理をストレージクライアントAPIへ移す",
               location: `${file}:1,4,6`,
               risk: "保存APIの引数形式を変える際に、保存先のキー・値や既存の例外処理が失われる可能性があります。",
               change: "インポートと生成するクライアントを変更し、save(key, value) を write({ key, value }) に置き換えました。",
@@ -222,8 +212,8 @@ export const previewState: State = {
       name: "フレームワーク更新",
       root: "/workspace/web-project",
       issues: [
-        { id: "catalog:R001", page: "rules", ruleId: "R001", message: "rule R001: 旧形式のname.txtは使用できません。rule.jsonに項目を保存してください" },
-        { id: "catalog:R019", page: "rules", ruleId: "R019", message: "rule R019: rule.jsonの変更概要を文字列で指定してください" },
+        { id: "catalog:R001", page: "rules", ruleId: "R001", message: "rule R001: 名称を入力してください。" },
+        { id: "catalog:R019", page: "rules", ruleId: "R019", message: "rule R019: 説明を入力してください。" },
       ],
     },
   ],
@@ -231,22 +221,12 @@ export const previewState: State = {
   config: {
     ...defaultConfig,
     root: "/workspace/sample-project",
-    rulesPath: "/app/OneByOne/workspaces/storage-api/rule-packages/sample/rules",
-    rulePackageName: "storage-api.oborules",
-    legacyPath: "/app/OneByOne/workspaces/storage-api/rule-packages/sample/patterns/legacy-symbols.txt",
+    rulesPath: "/app/OneByOne/workspaces/storage-api/rules.json",
     queuePath:
       "/app/OneByOne/workspaces/storage-api/runs/queue.jsonl",
     endpoint: "https://example.openai.azure.com/openai/v1/",
     deployment: "code-model",
     credentialSet: true,
-    includeGlobs: ["**/*.ts"],
-    checkCommands: [
-      {
-        name: "TypeScript build",
-        executable: "npm",
-        args: ["run", "typecheck"],
-      },
-    ],
   },
   tasks,
   rules,
@@ -277,6 +257,8 @@ export const previewState: State = {
   running: false,
   phase: "idle",
   currentFile: "",
+  currentFiles: [],
+  filePhases: {},
   worktree: "/workspace/run/worktree",
   branch: "onebyone/20260912-134000",
   scannedCount: tasks.length,
@@ -305,9 +287,21 @@ Object.assign(previewState, structuredClone(previewWorkspaceStates.get(previewSt
 const invalidPreviewWorkspace = previewWorkspaceStates.get("framework-upgrade")!;
 invalidPreviewWorkspace.rules = [];
 invalidPreviewWorkspace.lastError = previewState.workspaces.find((workspace) => workspace.id === "framework-upgrade")!.issues![0].message;
+// Keep the full fixture matches independently from the filtered queue, so a
+// later scan can restore a rule which the user had temporarily excluded.
+const previewRuleCandidates = new Map<string, Map<string, { ruleIds: string[]; excluded: boolean }>>(
+  [...previewWorkspaceStates].map(([workspaceId, state]) => [workspaceId,
+    new Map(state.tasks.map(task => [task.file, { ruleIds: [...task.rules], excluded: Boolean(task.excluded) }])),
+  ]),
+);
+
 const previewWorkspaceLocks: Record<string, State["workspaceLock"]> = {
   "storage-api-canary": { owner: "佐藤", host: "DESIGN-PC", openedAt: "2026-09-12T13:40:00Z" },
 };
+
+function previewAttemptAdopted(attempt: Attempt): boolean {
+  return Boolean(attempt.commit && (attempt.outcome === "done" || (attempt.outcome === "needs_human" && attempt.partial)));
+}
 
 function preparePreviewExecutionRuns(state: State) {
   const first: ExecutionRun = { id: `preview-${state.activeWorkspaceId}-run-1`, startedAt: "2026-09-12T13:40:00Z", finishedAt: "2026-09-12T13:43:10Z", status: "completed", targetCount: state.tasks.filter(task => task.attempts > 0).length, error: "" };
@@ -317,7 +311,7 @@ function preparePreviewExecutionRuns(state: State) {
       attempt.executionId = first.id;
       attempt.changes = (attempt.changes || []).map(item => ({ ...item, sourceAttemptId: attempt.id }));
     }
-    task.canDiscardChanges = task.history.some(attempt => attempt.outcome === "done" && Boolean(attempt.commit));
+    task.canDiscardChanges = task.history.some(previewAttemptAdopted);
   }
   state.executionRuns = [first];
   refreshPreviewExecutionSummary(state);
@@ -385,7 +379,7 @@ function previewCumulativeChanges(task: Task, contentChanged: boolean): ChangeRe
   const fixed = new Map<string, ChangeReportItem>();
   const key = (item: ChangeReportItem) => `${item.ruleId}\0${item.location}\0${item.change}`;
   for (const attempt of history) {
-    if (!contentChanged || attempt.outcome !== "done" || !attempt.commit) continue;
+    if (!contentChanged || !previewAttemptAdopted(attempt)) continue;
     for (const [index, item] of (attempt.changes || []).entries()) {
       if (item.status === "fixed") fixed.set(key(item), {
         ...item, sourceAttemptId: attempt.id, id: `attempt:${attempt.id || attempt.number}:${index}:${item.id}`,
@@ -410,13 +404,17 @@ export function previewResultPublication(): ResultPublicationPreview {
     const detail = previewDetail(task.file);
     if (!detail.diff) return [];
     const fixed = (detail.changes || []).filter(change => change.status === "fixed");
-    return [{ file: task.file, rulesApplied: [...new Set(fixed.map(change => change.ruleId))],
+    return [{ file: task.file, linkPath: task.file, rulesApplied: [...new Set(fixed.map(change => change.ruleId))],
       summary: fixed.map(change => change.change).filter(Boolean).join("\n") || task.note, diff: "" }];
   });
   return {
     workspaceId: previewState.activeWorkspaceId, revision: "preview-publication", baseCommit: "4e87db28ca00000000000000000000000000000000",
     sourceCommit: "f17c92c87000000000000000000000000000000000", suggestedBranch: "onebyone-result/storage-api",
-    message: `${files.length}ファイルの修正を反映\n\n` + files.map(file => `${file.file}\n${file.rulesApplied.join(", ")}\n${file.summary}`).join("\n\n"),
+    message: `# 全体サマリー\n\n対象ファイル数：${previewState.tasks.length}\n修正済みファイル数：${files.length}\n修正不要ファイル数：${previewState.tasks.filter(task => task.status === "skipped").length}\n\n# 修正一覧\n` + files.map(file => {
+      const label = file.file.replace(/[\\\[\]]/g, "\\$&");
+      const destination = file.linkPath.split("/").map(encodeURIComponent).join("/");
+      return `\n---\n\n## 修正ファイル\n\n[${label}](<${destination}>)\n\n### 修正概要\n\n${file.summary}\n\n### 適用ルール一覧\n\n` + file.rulesApplied.map(id => `#### ${id}：${previewState.rules.find(rule => rule.id === id)?.title || id}`).join("\n\n");
+    }).join("\n"),
     files, publications: [],
   };
 }
@@ -431,15 +429,15 @@ function previewDetailForState(state: State, file: string, attemptIndex = -1): F
   let after = before;
   let changes: ChangeReportItem[];
   if (attemptIndex < 0) {
-    const accepted = task.history.some(attempt => attempt.outcome === "done" && Boolean(attempt.commit) && attempt.number > previewLastDiscard(task));
+    const accepted = task.history.some(attempt => previewAttemptAdopted(attempt) && attempt.number > previewLastDiscard(task));
     if (accepted) after = versions.after;
     changes = previewCumulativeChanges(task, before !== after);
   } else {
     const attempt = task.history[attemptIndex];
     const lastDiscard = previewLastDiscard(task, attempt.number);
-    const acceptedBefore = task.history.slice(0, attemptIndex).some(item => item.outcome === "done" && Boolean(item.commit) && item.number > lastDiscard);
+    const acceptedBefore = task.history.slice(0, attemptIndex).some(item => previewAttemptAdopted(item) && item.number > lastDiscard);
     if (acceptedBefore) before = versions.after;
-    after = attempt.outcome === "done" || attempt.outcome === "failed" ? versions.after : before;
+    after = previewAttemptAdopted(attempt) || attempt.outcome === "failed" ? versions.after : before;
     changes = (attempt.changes || []).map(item => ({ ...structuredClone(item), sourceAttemptId: attempt.id }));
   }
   return {
@@ -494,12 +492,57 @@ export function previewExecutionContent(workspaceId: string, root: string, file:
   return { ...original, content, size: new TextEncoder().encode(content).length };
 }
 
+export function savePreviewConfig(config: Config): State {
+  if (previewState.readOnly || previewState.running) throw new Error("現在は設定を変更できません。");
+  if (config.root !== previewState.config.root) throw new Error("対象フォルダはフォルダ選択から変更してください。");
+  previewState.config = { ...structuredClone(config), credential: "",
+    excludedRuleIds: [...new Set(config.excludedRuleIds || [])].sort(),
+  };
+  applyPreviewLLMSelection();
+  return structuredClone(previewState);
+}
+
+export function scanPreviewTasks(): State {
+  if (previewState.readOnly || previewState.running) throw new Error("現在は対象ファイルを更新できません。");
+  if (!previewState.rules.length) throw new Error("ルールを1件以上登録してください。");
+  let candidates = previewRuleCandidates.get(previewState.activeWorkspaceId);
+  if (!candidates) {
+    candidates = new Map();
+    previewRuleCandidates.set(previewState.activeWorkspaceId, candidates);
+  }
+  const excludedRules = new Set(previewState.config.excludedRuleIds || []);
+  const activeRules = new Set(previewState.rules.filter(rule => !excludedRules.has(rule.id)).map(rule => rule.id));
+  previewState.tasks = previewState.tasks.map(task => {
+    let candidate = candidates!.get(task.file);
+    if (!candidate) {
+      candidate = { ruleIds: [...task.rules], excluded: Boolean(task.excluded) };
+      candidates!.set(task.file, candidate);
+    } else if (task.rules.length) {
+      // Preserve an explicit checkbox choice, not the forced out-of-scope flag.
+      candidate.excluded = Boolean(task.excluded);
+    }
+    const matchingRules = candidate.ruleIds.filter(id => activeRules.has(id));
+    return { ...task, rules: matchingRules, excluded: matchingRules.length ? candidate.excluded : true };
+  });
+  previewState.scannedCount = candidates.size;
+  previewState.excludedCount = previewState.tasks.filter(task => !task.rules.length).length;
+  for (const rule of previewState.rules) {
+    rule.candidateCount = previewState.tasks.filter(task => !task.excluded && task.rules.includes(rule.id)).length;
+  }
+  return structuredClone(previewState);
+}
+
 export function selectPreviewTasks(files: string[]): State {
   if (previewState.readOnly || previewState.running) throw new Error("現在は対象ファイルを変更できません。");
-  const known = new Set(previewState.tasks.map((task) => task.file));
-  if (files.some((file) => !known.has(file))) throw new Error("対象一覧にないファイルは選択できません。");
+  const known = new Set(previewState.tasks.filter(task => task.rules?.length).map((task) => task.file));
+  if (files.some((file) => !known.has(file))) throw new Error("現在のルールの対象外のファイルは選択できません。");
   const selected = new Set(files);
-  previewState.tasks = previewState.tasks.map((task) => ({ ...task, excluded: !selected.has(task.file) }));
+  previewState.tasks = previewState.tasks.map((task) => ({ ...task, excluded: !selected.has(task.file),
+    ...(selected.has(task.file) && task.status === "needs_human" ? {
+      status: "pending", resumeRequested: true,
+      note: "再試行に追加しました（計画・履歴を引き継ぎ、次の実行はターン数0から開始します）",
+    } : {}),
+  }));
   return structuredClone(previewState);
 }
 
@@ -532,6 +575,7 @@ export function deletePreviewWorkspace(id: string): State {
     Object.assign(previewState, structuredClone(emptyState), { llmConnections: connections });
   }
   previewWorkspaceStates.delete(id);
+  previewRuleCandidates.delete(id);
   previewExecutionSnapshots.delete(id);
   return structuredClone(previewState);
 }
@@ -555,7 +599,7 @@ export function createPreviewWorkspace(name: string, root: string): State {
     ...structuredClone(previewState),
     selectedLLMConnectionId: "",
     config: { ...structuredClone(defaultConfig), root },
-    tasks: [], rules: [], logs: [], executionRuns: [], worktree: "", branch: "", currentFile: "",
+    tasks: [], rules: [], logs: [], executionRuns: [], worktree: "", branch: "", currentFile: "", currentFiles: [], filePhases: {},
     phase: "idle", scannedCount: 0, excludedCount: 0, usage: { ...emptyUsage }, lastError: "",
   });
   return selectPreviewWorkspace(id);

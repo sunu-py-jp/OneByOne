@@ -12,6 +12,20 @@ const typesURL = url(await compile('types'));
 const previewURL = url((await compile('preview')).replace('"./types"', JSON.stringify(typesURL)));
 const preview = await import(previewURL);
 
+test('saving parallelism preserves the checked preview files and all existing run results', () => {
+  const original = structuredClone(preview.previewState);
+  try {
+    assert.equal(original.config.concurrency, 2);
+    const selected = preview.selectPreviewTasks([original.tasks[0].file]);
+    const saved = preview.savePreviewConfig({ ...selected.config, concurrency: 6 });
+    assert.equal(saved.config.concurrency, 6);
+    assert.deepEqual(saved.tasks, selected.tasks);
+    assert.deepEqual(saved.executionRuns, selected.executionRuns);
+  } finally {
+    Object.assign(preview.previewState, original);
+  }
+});
+
 test('preview OAuth settings cannot claim authentication or reuse an API key', () => {
   const original = structuredClone(preview.previewState);
   try {
@@ -183,7 +197,7 @@ test('preview historical results are independent of current state and returned o
   try {
     preview.previewState.tasks[0].status = 'failed';
     preview.previewState.tasks[0].history[0].note = 'later edited note';
-    preview.previewState.rules[0].overview = 'later edited rule';
+    preview.previewState.rules[0].body = 'later edited rule';
     preview.previewState.config.deployment = 'later-model';
     assert.deepEqual(preview.previewExecutionRun(runId), frozen);
     const returned = preview.previewExecutionRun(runId);
@@ -240,5 +254,137 @@ test('preview bridge serves frozen runs while rejecting native execution and exp
     assert.throws(() => api.CancelLLMSignIn(), /画面プレビュー/);
   } finally {
     globalThis.window = originalWindow;
+  }
+});
+
+test('confirming a held preview file requests retry while preserving its history', () => {
+  const original = structuredClone(preview.previewState);
+  try {
+    const held = preview.previewState.tasks.find(task => task.status === 'needs_human');
+    assert.ok(held);
+    const history = structuredClone(held.history);
+    const selected = preview.selectPreviewTasks([held.file]);
+    const retried = selected.tasks.find(task => task.file === held.file);
+    assert.equal(retried.status, 'pending');
+    assert.equal(retried.resumeRequested, true);
+    assert.equal(retried.excluded, false);
+    assert.deepEqual(retried.history, history);
+    for (const task of original.tasks.filter(task => task.file !== held.file)) {
+      assert.equal(selected.tasks.find(item => item.file === task.file).status, task.status);
+    }
+    const snapshot = structuredClone(preview.previewState);
+    preview.previewState.tasks.find(task => task.file === held.file).rules = [];
+    assert.throws(() => preview.selectPreviewTasks([held.file]), /対象外/);
+    assert.equal(preview.previewState.tasks.find(task => task.file === held.file).status, snapshot.tasks.find(task => task.file === held.file).status);
+  } finally {
+    Object.assign(preview.previewState, original);
+  }
+});
+
+test('preview scans selected rules from original matches and restores scope without losing results', () => {
+  const original = structuredClone(preview.previewState);
+  try {
+    preview.previewState.readOnly = false;
+    for (const task of preview.previewState.tasks) task.excluded = false;
+    const all = preview.scanPreviewTasks();
+    const originalMatches = new Map(all.tasks.map(task => [task.file, [...task.rules]]));
+    const preserved = all.tasks.map(({ rules, excluded, ...task }) => task);
+    const chosen = all.rules.find(rule => !rule.always).id;
+    preview.savePreviewConfig({ ...all.config, excludedRuleIds: all.rules.filter(rule => rule.id !== chosen).map(rule => rule.id) });
+    const filtered = preview.scanPreviewTasks();
+    for (const task of filtered.tasks) {
+      const expected = originalMatches.get(task.file).filter(id => id === chosen);
+      assert.deepEqual(task.rules, expected);
+      assert.equal(task.excluded, expected.length === 0);
+    }
+    assert.deepEqual(filtered.tasks.map(({ rules, excluded, ...task }) => task), preserved);
+    for (const rule of filtered.rules) {
+      assert.equal(rule.candidateCount, rule.id === chosen ? filtered.tasks.filter(task => task.rules.length).length : 0);
+    }
+    preview.savePreviewConfig({ ...filtered.config, excludedRuleIds: all.rules.map(rule => rule.id) });
+    const none = preview.scanPreviewTasks();
+    assert.ok(none.tasks.every(task => task.excluded && !task.rules.length));
+    assert.ok(none.rules.every(rule => rule.candidateCount === 0));
+    preview.savePreviewConfig({ ...none.config, excludedRuleIds: [] });
+    const restored = preview.scanPreviewTasks();
+    for (const task of restored.tasks) {
+      assert.deepEqual(task.rules, originalMatches.get(task.file));
+      assert.equal(task.excluded, false, task.file);
+    }
+    assert.deepEqual(restored.tasks.map(({ rules, excluded, ...task }) => task), preserved);
+    assert.equal(restored.tasks.filter(task => task.status === 'done').length, all.tasks.filter(task => task.status === 'done').length);
+  } finally {
+    Object.assign(preview.previewState, original);
+  }
+});
+
+test('preview rescan restores explicit file exclusions and respects workspace locks', () => {
+  const original = structuredClone(preview.previewState);
+  try {
+    preview.previewState.readOnly = false;
+    preview.previewState.config.excludedRuleIds = [];
+    const baseline = preview.scanPreviewTasks();
+    const file = baseline.tasks[0].file;
+    preview.selectPreviewTasks(baseline.tasks.filter(task => task.file !== file && task.rules.length).map(task => task.file));
+    preview.savePreviewConfig({ ...preview.previewState.config, excludedRuleIds: baseline.rules.map(rule => rule.id) });
+    preview.scanPreviewTasks();
+    preview.savePreviewConfig({ ...preview.previewState.config, excludedRuleIds: [] });
+    const restored = preview.scanPreviewTasks();
+    assert.equal(restored.tasks.find(task => task.file === file).excluded, true);
+    for (const guard of ['readOnly', 'running']) {
+      preview.previewState[guard] = true;
+      const snapshot = structuredClone(preview.previewState);
+      assert.throws(() => preview.scanPreviewTasks());
+      assert.throws(() => preview.savePreviewConfig({ ...preview.previewState.config, excludedRuleIds: [] }));
+      assert.deepEqual(preview.previewState, snapshot);
+      preview.previewState[guard] = false;
+    }
+  } finally {
+    Object.assign(preview.previewState, original);
+  }
+});
+
+test('preview bridge persists selected rules and rescans only the in-memory samples', async () => {
+  const originalWindow = globalThis.window;
+  const original = structuredClone(preview.previewState);
+  globalThis.window = { location: { search: '?demo=1' } };
+  try {
+    preview.previewState.readOnly = false;
+    const source = (await compile('bridge')).replace('"./types"', JSON.stringify(typesURL)).replace('"./preview"', JSON.stringify(previewURL));
+    const { api } = await import(url(source));
+    const config = { ...preview.previewState.config, excludedRuleIds: preview.previewState.rules.map(rule => rule.id) };
+    const saved = await api.SaveConfig(config);
+    assert.deepEqual(saved.config.excludedRuleIds, [...config.excludedRuleIds].sort());
+    const filtered = await api.Scan();
+    assert.ok(filtered.tasks.every(task => !task.rules.length && task.excluded));
+    await api.SaveConfig({ ...saved.config, excludedRuleIds: [] });
+    const restored = await api.Scan();
+    assert.ok(restored.tasks.every(task => task.rules.includes('R001')));
+    assert.throws(() => api.Start(0), /画面プレビュー/);
+  } finally {
+    Object.assign(preview.previewState, original);
+    globalThis.window = originalWindow;
+  }
+});
+
+test('preview partial attempts retain the accepted diff and distinct fixed and held report items', () => {
+  const original = structuredClone(preview.previewState);
+  try {
+    const task = preview.previewState.tasks.find(task => task.history.some(attempt => attempt.commit));
+    const accepted = task.history.find(attempt => attempt.commit);
+    task.history = [{ ...accepted, outcome: 'needs_human', partial: true, changes: [
+      { id: 'fixed', ruleId: 'R019', status: 'fixed', location: 'write', change: '保存処理を更新した' },
+      { id: 'held', ruleId: 'R019', status: 'needs_human', location: 'release', change: '', reason: '共有接続の所有者を確認する' },
+    ] }];
+    task.status = 'needs_human';
+    task.canDiscardChanges = true;
+    const detail = preview.previewDetail(task.file);
+    assert.notEqual(detail.before, detail.after);
+    assert.ok(detail.diff);
+    assert.deepEqual(detail.changes.map(item => item.status), ['fixed', 'needs_human']);
+    const attemptDetail = preview.previewDetail(task.file, 0);
+    assert.notEqual(attemptDetail.before, attemptDetail.after);
+  } finally {
+    Object.assign(preview.previewState, original);
   }
 });

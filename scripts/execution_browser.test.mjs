@@ -21,7 +21,7 @@ const bundle = await build({
 const module = { exports: {} };
 new Function('require', 'module', 'exports', bundle.outputFiles[0].text)(requireFrontend, module, module.exports);
 const { TargetFilesPanel, TaskFileList, partitionTaskFiles, RulePreviewPane } = module.exports;
-const rule = (id, always = false) => ({ id, always, title: `Title ${id}`, summary: '', overview: 'Preserve the outcome', before: 'before()', after: 'after()', notes: '', holdConditions: '', pattern: always ? '' : 'before', candidateCount: 1, appliedCount: 0 });
+const rule = (id, always = false) => ({ id, always, title: `Title ${id}`, summary: 'Preserve the outcome', body: '# 変更概要\n\nPreserve the outcome', pathPattern: '', contentPattern: always ? '' : 'before', candidateCount: 1, appliedCount: 0 });
 const task = (file, status, rules) => ({ file, status, rules, attempts: 0, rulesApplied: [], note: '', inputHash: '', updatedAt: '', history: [] });
 const files = [task('src/a.js', 'pending', ['R002', 'R001']), task('src/deep/b.js', 'done', [])];
 const props = { tasks: files, rules: [rule('R001', true), rule('R002')], workspaceId: 'ws', root: '/project', selected: new Set(['src/a.js']), onSelection() {}, disabled: false };
@@ -195,14 +195,39 @@ test('selection lock explains the reason while file and rule previews remain usa
   assert.doesNotMatch(html, /<button[^>]*task-candidate-chip[^>]*disabled/);
 });
 
-test('inline rule preview preserves structured text safely and hides empty optional sections', () => {
-  const html = renderToStaticMarkup(createElement(RulePreviewPane, { rule: { ...rule('R001', true), overview: '<script>rule content</script>' }, onClose() {} }));
-  assert.match(html, /変更概要/);
-  assert.match(html, /変更前/);
-  assert.match(html, /変更後/);
-  assert.match(html, /すべてのファイルに適用/);
+test('inline rule preview renders arbitrary Markdown safely without hidden fixed sections', () => {
+  const body = '# 独自の手順\n\n**大切なこと**\n\n- 項目\n\n```js\nbefore();\n```\n\n<script>rule content</script>\n\n![private image](https://example.com/private.png)\n\n[unsafe](javascript:alert%281%29)';
+  const html = renderToStaticMarkup(createElement(RulePreviewPane, { rule: { ...rule('R001', true), body }, onClose() {} }));
+  assert.match(html, /<h1>独自の手順<\/h1>/);
+  assert.match(html, /<strong>大切なこと<\/strong>/);
+  assert.match(html, /<li>項目<\/li>/);
+  assert.match(html, /<code class="language-js">before\(\);/);
+  assert.match(html, /全ファイル/);
   assert.match(html, /&lt;script&gt;/);
-  assert.doesNotMatch(html, /<script>/);
-  assert.doesNotMatch(html, /<h3>備考<\/h3>/);
-  assert.doesNotMatch(html, /<h3>修正を保留すべきケース<\/h3>/);
+  assert.doesNotMatch(html, /<script>|<img|src="https:|href="javascript:/);
+  assert.doesNotMatch(html, /<h3>備考<\/h3>|<h3>修正を保留すべきケース<\/h3>/);
+});
+
+test('a path-scoped rule with no content pattern is not added to every file', () => {
+  // The scan freezes each file's complete rule set, including rules without conditions.
+  const html = render({ tasks: [task('lib/other.js', 'pending', ['R001'])], rules: [
+    rule('R001', true), { ...rule('R002'), pathPattern: 'src/**/*.tsx', contentPattern: '' },
+  ] });
+  assert.match(html, /R001 Title R001の詳細/);
+  assert.doesNotMatch(html, /R002 Title R002の詳細/);
+});
+
+test('rule ids are shown verbatim with their pattern state', () => {
+  const html = render({ tasks: [task('src/a.js', 'pending', ['12'])], rules: [{ ...rule('12'), pathPattern: 'src/**/*.js' }] });
+  assert.match(html, />12<\/button>/);
+  assert.match(html, /aria-label="12 Title 12の詳細"/);
+  assert.match(html, /title="12 · パス＋内容 · Title 12"/);
+});
+
+test('rule preview icon and color follow the path and content patterns', () => {
+  const cases = [['', '', 'common', '共通'], ['src/**', '', 'path', 'パス'], ['', 'save', 'content', '内容'], ['src/**', 'save', 'both', 'パス＋内容']];
+  for (const [pathPattern, contentPattern, scope, label] of cases) {
+    const html = renderToStaticMarkup(createElement(RulePreviewPane, { rule: { ...rule('7'), pathPattern, contentPattern }, onClose() {} }));
+    assert.match(html, new RegExp(`class="rule-scope-icon scope-${scope}" role="img" aria-label="${label}のルール" title=""`));
+  }
 });

@@ -62,8 +62,8 @@ func TestCumulativeFileDetailPreservesAdoptedChangesAcrossRetriesAndDiscard(t *t
 	if _, err = s.RetryTasks([]string{"src/A.txt"}); err != nil {
 		t.Fatal(err)
 	}
-	s.propose = func(context.Context, agent.Input) (model.Proposal, error) {
-		return model.Proposal{Outcome: "skipped", Note: "no additional changes", RulesApplied: []string{"R001", "R019"}}, nil
+	s.propose = func(_ context.Context, in agent.Input) (model.Proposal, error) {
+		return reviewedNoChangeProposal(t, in, "no additional changes")
 	}
 	st = runTest(t, s, 0)
 	assertCumulative(s, "Modern.Save()\n")
@@ -74,7 +74,7 @@ func TestCumulativeFileDetailPreservesAdoptedChangesAcrossRetriesAndDiscard(t *t
 	if _, err = s.RetryTasks([]string{"src/A.txt"}); err != nil {
 		t.Fatal(err)
 	}
-	s.propose = func(context.Context, agent.Input) (model.Proposal, error) {
+	s.propose = func(_ context.Context, in agent.Input) (model.Proposal, error) {
 		return model.Proposal{Outcome: "modified", Edits: []model.Edit{{OldText: "Modern.Save()", NewText: "Modern.Send()"}}, RulesApplied: []string{"R001"}, Note: "second update"}, nil
 	}
 	st = runTest(t, s, 0)
@@ -95,8 +95,11 @@ func TestCumulativeFileDetailPreservesAdoptedChangesAcrossRetriesAndDiscard(t *t
 	if _, err = s.RetryTasks([]string{"src/A.txt"}); err != nil {
 		t.Fatal(err)
 	}
-	s.propose = func(context.Context, agent.Input) (model.Proposal, error) {
-		return model.Proposal{Outcome: "modified", Edits: []model.Edit{{OldText: "Modern.Send()", NewText: "Legacy.Send()"}}, RulesApplied: []string{"R019"}, Note: "this candidate must fail the legacy check"}, nil
+	worktree := st.Worktree
+	s.propose = func(ctx context.Context, in agent.Input) (model.Proposal, error) {
+		// A stray worktree change makes this candidate fail the edit-scope check.
+		writeTest(t, filepath.Join(worktree, "src", "stray.txt"), []byte("outside the target\n"))
+		return parallelReviewedEdit(ctx, in, "Modern.Send()", "Legacy.Send()")
 	}
 	st = runTest(t, s, 0)
 	if st.LastError != "" || st.Tasks[0].Status != "needs_human" {
@@ -107,8 +110,16 @@ func TestCumulativeFileDetailPreservesAdoptedChangesAcrossRetriesAndDiscard(t *t
 	if err != nil || individual.Cumulative || individual.Before != "Modern.Send()\n" || individual.After != "Legacy.Send()\n" {
 		t.Fatalf("failed candidate is not available in its own history: %+v %v", individual, err)
 	}
-	// A validator may write a proposal into the worktree temporarily. It must
-	// never leak into a cumulative detail request made during that attempt.
+	// Unknown changes must survive rejection; only this test removes its own fixture.
+	stray := filepath.Join(worktree, "src", "stray.txt")
+	if readTest(t, stray) != "outside the target\n" {
+		t.Fatal("rejection erased an unknown file")
+	}
+	if err := os.Remove(stray); err != nil {
+		t.Fatal(err)
+	}
+	// Adoption may briefly write a proposal into the worktree. It must never
+	// leak into a cumulative detail request made during that attempt.
 	worktreeFile := filepath.Join(st.Worktree, "src", "A.txt")
 	writeTest(t, worktreeFile, []byte("candidate currently under validation\n"))
 	s.mu.Lock()

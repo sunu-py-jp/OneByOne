@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -38,8 +39,8 @@ func TestResultPublicationSquashesCumulativeChangesWithoutCheckout(t *testing.T)
 	if _, err := s.RetryTasks([]string{"src/A.txt"}); err != nil {
 		t.Fatal(err)
 	}
-	s.propose = func(context.Context, agent.Input) (model.Proposal, error) {
-		return model.Proposal{Outcome: "skipped", Note: "already updated", RulesApplied: []string{"R001", "R019"}}, nil
+	s.propose = func(_ context.Context, in agent.Input) (model.Proposal, error) {
+		return reviewedNoChangeProposal(t, in, "already updated")
 	}
 	st = runTest(t, s, 0)
 	if st.LastError != "" {
@@ -59,7 +60,10 @@ func TestResultPublicationSquashesCumulativeChangesWithoutCheckout(t *testing.T)
 		t.Fatalf("preview: %+v", preview)
 	}
 	for _, f := range preview.Files {
-		if !reflect.DeepEqual(f.RulesApplied, []string{"R019"}) || f.Diff != "" || !strings.Contains(f.Summary, "Replace the obsolete save call") {
+		if f.LinkPath != f.File || !strings.Contains(preview.Message, "](<"+f.LinkPath+">)") {
+			t.Fatalf("preview link is not the generated message destination: %+v", f)
+		}
+		if !reflect.DeepEqual(f.RulesApplied, []string{"R019"}) || f.Diff != "" || (f.Summary != "migrated" && f.Summary != "already updated") {
 			t.Fatalf("wrong attribution: %+v", f)
 		}
 	}
@@ -362,12 +366,12 @@ func TestResultPublicationUTF8LargeMessageRecovery(t *testing.T) {
 	}
 	req := publicationRequest(preview)
 	req.Title = "日本語の修正結果"
-	req.Message = strings.Repeat("x", (2<<20)+1024) + "\nファイルごとの変更概要"
+	req.Message = strings.Repeat("x", (4<<20)+1024) + "\nファイルごとの変更概要"
 	pub, err := s.PublishResults(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, err := publicationGitInputLimit(context.Background(), cfg.Root, "", 4<<20, "cat-file", "commit", pub.Commit)
+	raw, err := publicationGitInputLimit(context.Background(), cfg.Root, "", 6<<20, "cat-file", "commit", pub.Commit)
 	if err != nil || strings.Contains(raw, "encoding Shift_JIS") || !strings.Contains(raw, req.Title+"\n\n"+req.Message) {
 		t.Fatalf("wrong raw UTF-8 commit encoding: %v", err)
 	}
@@ -381,21 +385,73 @@ func TestResultPublicationUTF8LargeMessageRecovery(t *testing.T) {
 	}
 }
 
-func TestResultPublicationCompactSummaryPreservesEveryFileAndRule(t *testing.T) {
+func TestResultPublicationFullSummaryPreservesEveryFileAndRule(t *testing.T) {
 	files := []model.ResultPublicationFile{}
+	summary := strings.Repeat("長い説明", 300) + "末尾まで保存"
 	for i := 0; i < 10000; i++ {
-		files = append(files, model.ResultPublicationFile{File: fmt.Sprintf("src/deep/component%05d.js", i), RulesApplied: []string{"R001", "R019"}, Summary: strings.Repeat("長い説明", 300)})
+		files = append(files, model.ResultPublicationFile{File: fmt.Sprintf("src/deep/component%05d.js", i), RulesApplied: []string{"R001", "R019"}, Summary: summary})
 	}
-	message, err := publicationCommitMessage(files)
-	if err != nil || len(message) > 4<<20 {
-		t.Fatalf("summary exceeds limit: %d %v", len(message), err)
+	message, err := publicationCommitMessage(files, publicationReport{})
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, file := range files {
-		if !strings.Contains(message, file.File+"\n- R001, R019") {
-			t.Fatalf("lost file or IDs: %s", file.File)
+	if strings.Count(message, "\n---\n\n## 修正ファイル\n") != len(files) || strings.Count(message, "修正内容の記録なし") != len(files)*2 || strings.Count(message, summary) != len(files) || strings.Count(message, "#### R001：") != len(files) || strings.Count(message, "#### R019：") != len(files) {
+		t.Fatal("large report silently dropped descriptions or rules")
+	}
+	for _, index := range []int{0, 4999, 9999} {
+		if !strings.Contains(message, "["+files[index].File+"](<"+files[index].File+">)") {
+			t.Fatalf("lost file link: %s", files[index].File)
 		}
 	}
-	if strings.Contains(message, "長い説明") {
-		t.Fatal("large default summary should omit descriptions before identifiers")
+}
+
+func TestResultPublicationMarkdownIncludesSummaryTitlesReviewsAndCounts(t *testing.T) {
+	const note = "複数行の修正概要\n次の行も保持する"
+	const description = "見出しには表示しないDescription"
+	const title = "旧APIを移行し\n契約を維持する"
+	const reason = "呼び出し順序と戻り値を確認した。\n追加の削除は不要。"
+	task := model.Task{File: "src/file (a)#1.ts", Status: "done", History: []model.Attempt{{Outcome: "done", Commit: "commit", Note: note, InputHash: "before", OutputHash: "after", RulesApplied: []string{"R001"}, Reviews: []model.IndependentReview{
+		{Verdict: "passed", BaseHash: "before", CandidateHash: "after", Assessments: []model.ReviewAssessment{{RuleID: "R001", Status: "satisfied", Reason: reason}}},
+		{Verdict: "needs_changes", BaseHash: "before", CandidateHash: "rejected", Assessments: []model.ReviewAssessment{{RuleID: "R001", Status: "needs_changes", Reason: "採用してはいけないレビュー"}}},
+	}}}}
+	task.History[0].Changes = []model.ChangeReportItem{
+		{RuleID: "R001", Status: "fixed", Change: "古いReportWriterのimportを削除する。\n既存のreports importとの重複を避ける。"},
+		{RuleID: "R001", Status: "fixed", Change: "出力成功後だけ完了イベントを送信する。"},
+		{RuleID: "R001", Status: "unapplied", Change: "未反映なので記載しない修正"},
+	}
+	task.History = append(task.History,
+		model.Attempt{Outcome: "done", Commit: "later-commit", Changes: []model.ChangeReportItem{{RuleID: "R001", Status: "fixed", Change: "例外時もリソースを解放する。"}}},
+		model.Attempt{Outcome: "failed", Commit: "failed-commit", Changes: []model.ChangeReportItem{{RuleID: "R001", Status: "fixed", Change: "失敗案なので記載しない修正"}}},
+		model.Attempt{Outcome: "done", Changes: []model.ChangeReportItem{{RuleID: "R001", Status: "fixed", Change: "未コミットなので記載しない修正"}}},
+		model.Attempt{Outcome: "skipped", Changes: []model.ChangeReportItem{{RuleID: "R001", Status: "fixed", Change: "変更不要なので記載しない修正"}}},
+	)
+	snapshot := resultPublicationSnapshot{meta: manifest{SourceRelative: "project"}, tasks: []model.Task{task, {File: "unchanged.ts", Status: "skipped"}, {File: "held.ts", Status: "needs_human"}, {File: "excluded.ts", Status: "pending", Excluded: true}}, rules: []model.Rule{{ID: "R001", Title: title, Summary: description}}}
+	// Editing the current rule must not rewrite the title of an adopted result.
+	snapshot.config.QueuePath = filepath.Join(t.TempDir(), "queue.jsonl")
+	snapshot.tasks[0].History[0].ExecutionID = strings.Repeat("a", 24)
+	snapshot.tasks[0].History[1].ExecutionID = snapshot.tasks[0].History[0].ExecutionID
+	record := executionRecord{Version: 1, Run: model.ExecutionRun{ID: snapshot.tasks[0].History[0].ExecutionID}, State: model.State{Config: snapshot.config, Rules: snapshot.rules}}
+	data, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory, err := executionDirectory(snapshot.config.QueuePath, record.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTest(t, filepath.Join(directory, "snapshot.json"), data)
+	snapshot.rules = []model.Rule{{ID: "R001", Title: "後から編集された名称", Summary: "後から編集された説明"}}
+	file := publicationFileSummary(task)
+	message, err := publicationCommitMessage([]model.ResultPublicationFile{file}, publicationReportContext(snapshot))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"# 全体サマリー", "対象ファイル数：3", "修正済みファイル数：1", "修正不要ファイル数：1", "未完了・要確認ファイル数：1", "# 修正一覧", "[project/src/file (a)#1.ts](<project/src/file%20%28a%29%231.ts>)", "### 修正概要\n\n" + note, "\n---\n\n## 修正ファイル\n", "#### R001：旧APIを移行し 契約を維持する\n", "\n**修正の内容**\n\n", "古いReportWriterのimportを削除する。", "既存のreports importとの重複を避ける。", "出力成功後だけ完了イベントを送信する。", "例外時もリソースを解放する。", "\n**修正後レビュー結果**\n\n" + reason} {
+		if !strings.Contains(message, expected) {
+			t.Fatalf("missing %q in %s", expected, message)
+		}
+	}
+	if strings.Contains(message, "記載しない修正") || strings.Contains(message, "採用してはいけないレビュー") || strings.Contains(message, "後から編集された説明") || strings.Contains(message, "後から編集された名称") || strings.Contains(message, description) || strings.Contains(message, "satisfied：") {
+		t.Fatal("rejected candidate review entered commit report")
 	}
 }

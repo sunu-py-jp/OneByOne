@@ -2,22 +2,15 @@ package model
 
 import "context"
 
-type Command struct {
-	Name       string   `json:"name"`
-	Executable string   `json:"executable"`
-	Args       []string `json:"args"`
-}
-
 type Config struct {
 	// AcquireToken exists only during a local execution. Never serialize an
 	// OAuth token provider into workspaces, reports, or the frontend bridge.
 	AcquireToken               func(context.Context) (string, error) `json:"-"`
 	LLMConnectionID            string                                `json:"llmConnectionId,omitempty"`
-	RulePackageName            string                                `json:"rulePackageName,omitempty"`
 	Provider                   string                                `json:"provider,omitempty"`
 	Root                       string                                `json:"root"`
 	RulesPath                  string                                `json:"rulesPath"`
-	LegacyPath                 string                                `json:"legacyPath"`
+	ExcludedRuleIDs            []string                              `json:"excludedRuleIds,omitempty"`
 	QueuePath                  string                                `json:"queuePath"`
 	RGPath                     string                                `json:"rgPath"`
 	Endpoint                   string                                `json:"endpoint,omitempty"`
@@ -25,9 +18,7 @@ type Config struct {
 	AuthMode                   string                                `json:"authMode,omitempty"`
 	Credential                 string                                `json:"credential,omitempty"`
 	CredentialSet              bool                                  `json:"credentialSet,omitempty"`
-	IncludeGlobs               []string                              `json:"includeGlobs"`
-	ExcludeGlobs               []string                              `json:"excludeGlobs"`
-	CheckCommands              []Command                             `json:"checkCommands"`
+	Concurrency                int                                   `json:"concurrency,omitempty"`
 	MaxAttempts                int                                   `json:"maxAttempts"`
 	MaxTurns                   int                                   `json:"maxTurns"`
 	MaxOutputTokens            int                                   `json:"maxOutputTokens"`
@@ -43,23 +34,19 @@ type RuleEdit struct {
 	ExpectedRevision string `json:"expectedRevision,omitempty"`
 	ID               string `json:"id"`
 	Name             string `json:"name"`
-	Overview         string `json:"overview"`
-	Before           string `json:"before"`
-	After            string `json:"after"`
-	Notes            string `json:"notes"`
-	HoldConditions   string `json:"holdConditions"`
-	Pattern          string `json:"pattern"`
+	Description      string `json:"description"`
+	PathPattern      string `json:"pathPattern"`
+	ContentPattern   string `json:"contentPattern"`
+	Body             string `json:"body"`
 }
 
 type RuleDefinition struct {
-	Version        int    `json:"version"`
-	Name           string `json:"name"`
-	Overview       string `json:"overview"`
-	Before         string `json:"before"`
-	After          string `json:"after"`
-	Notes          string `json:"notes"`
-	HoldConditions string `json:"holdConditions"`
-	Pattern        string `json:"pattern"`
+	ID             string `json:"id" yaml:"id"`
+	Name           string `json:"name" yaml:"name"`
+	Description    string `json:"description" yaml:"description"`
+	PathPattern    string `json:"pathPattern" yaml:"path_pattern"`
+	ContentPattern string `json:"contentPattern" yaml:"content_pattern"`
+	Body           string `json:"body" yaml:"-"`
 }
 
 type RuleEditor struct {
@@ -74,12 +61,9 @@ type Rule struct {
 	ID             string `json:"id"`
 	Title          string `json:"title"`
 	Summary        string `json:"summary"`
-	Pattern        string `json:"pattern"`
-	Overview       string `json:"overview"`
-	Before         string `json:"before"`
-	After          string `json:"after"`
-	Notes          string `json:"notes"`
-	HoldConditions string `json:"holdConditions"`
+	PathPattern    string `json:"pathPattern"`
+	ContentPattern string `json:"contentPattern"`
+	Body           string `json:"body"`
 	Always         bool   `json:"always"`
 	CandidateCount int    `json:"candidateCount"`
 	AppliedCount   int    `json:"appliedCount"`
@@ -108,6 +92,7 @@ type Attempt struct {
 	StartedAt    string              `json:"startedAt"`
 	FinishedAt   string              `json:"finishedAt"`
 	Outcome      string              `json:"outcome"`
+	Partial      bool                `json:"partial,omitempty"`
 	Note         string              `json:"note"`
 	RulesApplied []string            `json:"rulesApplied"`
 	Checks       []Check             `json:"checks"`
@@ -115,6 +100,7 @@ type Attempt struct {
 	DiffPath     string              `json:"diffPath"`
 	Commit       string              `json:"commit"`
 	BaseCommit   string              `json:"baseCommit"`
+	CommitBase   string              `json:"commitBase,omitempty"`
 	InputHash    string              `json:"inputHash"`
 	OutputHash   string              `json:"outputHash"`
 	RepairPath   string              `json:"repairPath,omitempty"`
@@ -122,20 +108,27 @@ type Attempt struct {
 	Changes      []ChangeReportItem  `json:"changes,omitempty"`
 }
 
+// AdoptedChanges identifies committed output, including a safe subset whose
+// unresolved items keep the file in needs_human. It is not an adoption gate.
+func (a Attempt) AdoptedChanges() bool {
+	return a.Commit != "" && (a.Outcome == "done" || (a.Outcome == "needs_human" && a.Partial))
+}
+
 type Task struct {
-	CanDiscardChanges bool            `json:"canDiscardChanges"`
-	Discards          []DiscardChange `json:"discards,omitempty"`
-	File              string          `json:"file"`
-	Excluded          bool            `json:"excluded,omitempty"`
-	Rules             []string        `json:"rules"`
-	Status            string          `json:"status"`
-	Attempts          int             `json:"attempts"`
-	RulesApplied      []string        `json:"rulesApplied"`
-	Note              string          `json:"note"`
-	InputHash         string          `json:"inputHash"`
-	UpdatedAt         string          `json:"updatedAt"`
-	History           []Attempt       `json:"history"`
-	ResumeRequested   bool            `json:"resumeRequested,omitempty"`
+	CanDiscardChanges   bool            `json:"canDiscardChanges"`
+	Discards            []DiscardChange `json:"discards,omitempty"`
+	File                string          `json:"file"`
+	Excluded            bool            `json:"excluded,omitempty"`
+	ExcludedBeforeScope *bool           `json:"excludedBeforeScope,omitempty"`
+	Rules               []string        `json:"rules"`
+	Status              string          `json:"status"`
+	Attempts            int             `json:"attempts"`
+	RulesApplied        []string        `json:"rulesApplied"`
+	Note                string          `json:"note"`
+	InputHash           string          `json:"inputHash"`
+	UpdatedAt           string          `json:"updatedAt"`
+	History             []Attempt       `json:"history"`
+	ResumeRequested     bool            `json:"resumeRequested,omitempty"`
 }
 
 // DiscardChange journals an explicit single-file return to the session baseline.
@@ -201,27 +194,29 @@ type LLMConnection struct {
 }
 
 type State struct {
-	ExecutionRuns           []ExecutionRun  `json:"executionRuns"`
-	LLMConnections          []LLMConnection `json:"llmConnections,omitempty"`
-	SelectedLLMConnectionID string          `json:"selectedLLMConnectionId,omitempty"`
-	ReadOnly                bool            `json:"readOnly"`
-	WorkspaceLock           *WorkspaceLock  `json:"workspaceLock,omitempty"`
-	LLMSettingsPath         string          `json:"llmSettingsPath"`
-	Workspaces              []Workspace     `json:"workspaces"`
-	ActiveWorkspaceID       string          `json:"activeWorkspaceId"`
-	Config                  Config          `json:"config"`
-	Tasks                   []Task          `json:"tasks"`
-	Rules                   []Rule          `json:"rules"`
-	Logs                    []LogEntry      `json:"logs"`
-	Running                 bool            `json:"running"`
-	Phase                   string          `json:"phase"`
-	CurrentFile             string          `json:"currentFile"`
-	Worktree                string          `json:"worktree"`
-	Branch                  string          `json:"branch"`
-	ScannedCount            int             `json:"scannedCount"`
-	ExcludedCount           int             `json:"excludedCount"`
-	Usage                   Usage           `json:"usage"`
-	LastError               string          `json:"lastError"`
+	ExecutionRuns           []ExecutionRun    `json:"executionRuns"`
+	LLMConnections          []LLMConnection   `json:"llmConnections,omitempty"`
+	SelectedLLMConnectionID string            `json:"selectedLLMConnectionId,omitempty"`
+	ReadOnly                bool              `json:"readOnly"`
+	WorkspaceLock           *WorkspaceLock    `json:"workspaceLock,omitempty"`
+	LLMSettingsPath         string            `json:"llmSettingsPath"`
+	Workspaces              []Workspace       `json:"workspaces"`
+	ActiveWorkspaceID       string            `json:"activeWorkspaceId"`
+	Config                  Config            `json:"config"`
+	Tasks                   []Task            `json:"tasks"`
+	Rules                   []Rule            `json:"rules"`
+	Logs                    []LogEntry        `json:"logs"`
+	Running                 bool              `json:"running"`
+	Phase                   string            `json:"phase"`
+	CurrentFile             string            `json:"currentFile"`
+	CurrentFiles            []string          `json:"currentFiles"`
+	FilePhases              map[string]string `json:"filePhases"`
+	Worktree                string            `json:"worktree"`
+	Branch                  string            `json:"branch"`
+	ScannedCount            int               `json:"scannedCount"`
+	ExcludedCount           int               `json:"excludedCount"`
+	Usage                   Usage             `json:"usage"`
+	LastError               string            `json:"lastError"`
 }
 
 // ExecutionRun groups all file attempts started by one press of Execute.
@@ -231,6 +226,7 @@ type ExecutionRun struct {
 	FinishedAt  string `json:"finishedAt,omitempty"`
 	Status      string `json:"status"`
 	TargetCount int    `json:"targetCount"`
+	Concurrency int    `json:"concurrency,omitempty"`
 	Error       string `json:"error,omitempty"`
 }
 
@@ -250,9 +246,19 @@ type FileDetail struct {
 }
 
 type Edit struct {
-	ItemIDs []string `json:"itemIds,omitempty"`
-	OldText string   `json:"oldText"`
-	NewText string   `json:"newText"`
+	ItemIDs      []string          `json:"itemIds,omitempty"`
+	OldText      string            `json:"oldText"`
+	NewText      string            `json:"newText"`
+	Attributions []EditAttribution `json:"attributions"`
+}
+
+// EditAttribution identifies one item's exact sub-replacement within an Edit.
+// BeforeText must be a unique, nonempty anchor in OldText; insertion proposals
+// include unchanged context. AfterText may be empty for deletion.
+type EditAttribution struct {
+	ItemID     string `json:"itemId"`
+	BeforeText string `json:"beforeText"`
+	AfterText  string `json:"afterText"`
 }
 
 type Proposal struct {

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"onebyone/internal/model"
@@ -14,14 +13,12 @@ import (
 )
 
 func editDefinition(edit model.RuleEdit) model.RuleDefinition {
-	return model.RuleDefinition{Version: 1, Name: edit.Name, Overview: edit.Overview, Before: edit.Before, After: edit.After, Notes: edit.Notes, HoldConditions: edit.HoldConditions, Pattern: edit.Pattern}
+	return model.RuleDefinition{ID: edit.ID, Name: edit.Name, Description: edit.Description, PathPattern: edit.PathPattern, ContentPattern: edit.ContentPattern, Body: edit.Body}
 }
 
 func ruleRevision(rule model.Rule) string {
-	return ruleformat.Revision(model.RuleDefinition{Version: 1, Name: rule.Title, Overview: rule.Overview, Before: rule.Before, After: rule.After, Notes: rule.Notes, HoldConditions: rule.HoldConditions, Pattern: rule.Pattern})
+	return ruleformat.Revision(model.RuleDefinition{ID: rule.ID, Name: rule.Title, Description: rule.Summary, PathPattern: rule.PathPattern, ContentPattern: rule.ContentPattern, Body: rule.Body})
 }
-
-var editableRuleID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
 
 // Caller owns op. Lock files remain stable and are outside exported rule assets.
 func (s *Service) releaseRuleLease() {
@@ -39,7 +36,7 @@ func (s *Service) CloseRule() error {
 }
 
 func (s *Service) ruleLockPath(workspaceID, ruleID string) (string, error) {
-	if !editableRuleID.MatchString(ruleID) {
+	if !ruleformat.ValidID(ruleID) {
 		return "", fmt.Errorf("ルールIDは英数字で始まる64文字以内の英数字・ハイフン・アンダースコアにしてください")
 	}
 	return s.workspaceLockPath(workspaceID, "rule-locks/"+strings.ToLower(ruleID)+".lock")
@@ -69,15 +66,16 @@ func (s *Service) acquireRuleLease(workspaceID, ruleID string) (*store.Workspace
 }
 
 func ruleFromPackage(pkg *rulepack.Package, id string) (model.Rule, error) {
-	data, found := pkg.Files["rules/"+id+"/rule.json"]
-	if !found {
-		return model.Rule{}, fmt.Errorf("ルールが見つかりません: %s", id)
+	for _, entry := range pkg.Rules {
+		if entry.ID == id {
+			d, err := ruleformat.Decode([]byte(entry.Markdown))
+			if err != nil {
+				return model.Rule{}, fmt.Errorf("rule %s: %w", id, err)
+			}
+			return ruleformat.ToRule(id, d), nil
+		}
 	}
-	definition, err := ruleformat.Decode(data)
-	if err != nil {
-		return model.Rule{}, fmt.Errorf("%s/rule.json: %w", id, err)
-	}
-	return ruleformat.ToRule(id, definition), nil
+	return model.Rule{}, fmt.Errorf("ルールが見つかりません: %s", id)
 }
 
 func (s *Service) ruleFromCurrentPackage(workspaceID, id string) (model.Rule, error) {
@@ -88,7 +86,7 @@ func (s *Service) ruleFromCurrentPackage(workspaceID, id string) (model.Rule, er
 	if cfg.RulesPath == "" {
 		return model.Rule{}, fmt.Errorf("ルールが見つかりません: %s", id)
 	}
-	pkg, err := rulepack.Snapshot(cfg.RulesPath, cfg.LegacyPath, rulepack.FromConfig(cfg))
+	pkg, err := rulepack.Snapshot(cfg.RulesPath)
 	if err != nil {
 		return model.Rule{}, err
 	}
@@ -116,7 +114,7 @@ func (s *Service) OpenRule(id string) (model.RuleEditor, error) {
 	if err := s.idle(); err != nil {
 		return model.RuleEditor{}, err
 	}
-	if !editableRuleID.MatchString(id) {
+	if !ruleformat.ValidID(id) {
 		return model.RuleEditor{}, fmt.Errorf("ルールIDが不正です")
 	}
 	s.mu.Lock()
@@ -161,91 +159,29 @@ func (s *Service) OpenRule(id string) (model.RuleEditor, error) {
 }
 
 func validateRuleEdit(edit model.RuleEdit) error {
-	if !editableRuleID.MatchString(edit.ID) {
-		return fmt.Errorf("ルールIDは英数字で始まる64文字以内の英数字・ハイフン・アンダースコアにしてください")
-	}
 	return ruleformat.Validate(editDefinition(edit))
 }
 
 func (s *Service) SaveRule(edit model.RuleEdit) (model.State, error) {
 	s.op.Lock()
 	defer s.op.Unlock()
-	return s.writeRule(edit, false)
+	s.mu.Lock()
+	workspaceID := s.state.ActiveWorkspaceID
+	s.mu.Unlock()
+	if s.ruleLease == nil || s.ruleLeaseWorkspaceID != workspaceID || s.ruleLeaseID != edit.ID {
+		return s.Snapshot(), fmt.Errorf("ルールの編集権限がありません。ルールを開き直してください")
+	}
+	if edit.ExpectedRevision == "" {
+		return s.Snapshot(), fmt.Errorf("保存にはexpectedRevisionが必要です")
+	}
+	return s.saveRules([]model.RuleEdit{edit})
 }
-
 func (s *Service) CreateRule(edit model.RuleEdit) (model.State, error) {
 	s.op.Lock()
 	defer s.op.Unlock()
-	return s.writeRule(edit, true)
-}
-
-func (s *Service) writeRule(edit model.RuleEdit, create bool) (model.State, error) {
-	if err := s.editable(); err != nil {
-		return s.Snapshot(), err
+	// An omitted ID receives the next number in saveRules.
+	if edit.ExpectedRevision != "" {
+		return s.Snapshot(), fmt.Errorf("新規ルールにexpectedRevisionは指定できません")
 	}
-	if err := validateRuleEdit(edit); err != nil {
-		return s.Snapshot(), err
-	}
-	s.mu.Lock()
-	cfg := s.state.Config
-	w := model.Workspace{ID: s.state.ActiveWorkspaceID, Root: cfg.Root}
-	for _, candidate := range s.workspaces {
-		if candidate.ID == w.ID {
-			w.Name = candidate.Name
-			break
-		}
-	}
-	s.mu.Unlock()
-	if w.ID == "" || w.Root == "" {
-		return s.Snapshot(), fmt.Errorf("先にワークスペースを選択してください")
-	}
-	pkg := &rulepack.Package{Settings: rulepack.FromConfig(cfg), Files: map[string][]byte{}}
-	var err error
-	if cfg.RulesPath != "" {
-		pkg, err = rulepack.Snapshot(cfg.RulesPath, cfg.LegacyPath, rulepack.FromConfig(cfg))
-		if err != nil {
-			return s.Snapshot(), err
-		}
-	}
-	prefix := "rules/" + edit.ID + "/"
-	_, exists := pkg.Files[prefix+"rule.json"]
-	if create {
-		for path := range pkg.Files {
-			parts := strings.Split(path, "/")
-			if len(parts) >= 3 && parts[0] == "rules" && strings.EqualFold(parts[1], edit.ID) {
-				return s.Snapshot(), fmt.Errorf("同じIDのルールが既にあります: %s", edit.ID)
-			}
-		}
-		owner, lockErr := s.acquireRuleLease(w.ID, edit.ID)
-		if lockErr != nil {
-			return s.Snapshot(), lockErr
-		}
-		if owner != nil {
-			return s.Snapshot(), fmt.Errorf("他のユーザーがこのルールを編集中です（%s / %s）", owner.Owner, owner.Host)
-		}
-	} else {
-		if !exists {
-			return s.Snapshot(), fmt.Errorf("ルールが見つかりません: %s", edit.ID)
-		}
-		if s.ruleLease == nil || s.ruleLeaseWorkspaceID != w.ID || s.ruleLeaseID != edit.ID {
-			return s.Snapshot(), fmt.Errorf("ルールの編集権限がありません。ルールを開き直してください")
-		}
-		current, readErr := ruleFromPackage(pkg, edit.ID)
-		if readErr != nil {
-			return s.Snapshot(), readErr
-		}
-		currentRevision := ruleRevision(current)
-		if edit.ExpectedRevision == "" || edit.ExpectedRevision != currentRevision {
-			return s.Snapshot(), fmt.Errorf("このルールは他の編集で更新されています。最新の内容を開き直し、変更を確認してから保存してください")
-		}
-	}
-	data, err := ruleformat.Encode(editDefinition(edit))
-	if err != nil {
-		return s.Snapshot(), err
-	}
-	pkg.Files[prefix+"rule.json"] = data
-	if cfg.RulePackageName == "" {
-		cfg.RulePackageName = "rules.oborules"
-	}
-	return s.installRulePackage(w, cfg, pkg)
+	return s.saveRules([]model.RuleEdit{edit})
 }

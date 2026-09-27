@@ -23,8 +23,8 @@ func TestDiscardChangesIsolatedHistoryAndFreshRetry(t *testing.T) {
 	if _, err := s.RetryTasks([]string{"src/A.txt"}); err != nil {
 		t.Fatal(err)
 	}
-	s.propose = func(context.Context, agent.Input) (model.Proposal, error) {
-		return model.Proposal{Outcome: "skipped", Note: "already updated", RulesApplied: []string{"R001", "R019"}}, nil
+	s.propose = func(_ context.Context, in agent.Input) (model.Proposal, error) {
+		return reviewedNoChangeProposal(t, in, "already updated")
 	}
 	st = runTest(t, s, 0)
 	if st.LastError != "" || st.Tasks[0].Status != "done" || st.Tasks[0].History[1].Outcome != "skipped" || !st.Tasks[0].CanDiscardChanges {

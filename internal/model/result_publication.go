@@ -15,6 +15,7 @@ type ResultPublicationPreview struct {
 
 type ResultPublicationFile struct {
 	File         string   `json:"file"`
+	LinkPath     string   `json:"linkPath"`
 	RulesApplied []string `json:"rulesApplied"`
 	Summary      string   `json:"summary"`
 	Diff         string   `json:"diff"`

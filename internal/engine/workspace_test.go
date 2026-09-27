@@ -167,9 +167,6 @@ func TestWorkspaceRestoresAllSettingsWithoutPlaintextConnection(t *testing.T) {
 	}
 	cfg := created.Config
 	cfg.RGPath = filepath.Join(t.TempDir(), "custom-rg") // Restoration must not execute this path.
-	cfg.RulePackageName = "team.oborules"
-	cfg.IncludeGlobs, cfg.ExcludeGlobs = []string{"**/*.go", "**/*.ts"}, []string{"vendor/**", "generated/**"}
-	cfg.CheckCommands = []model.Command{{Name: "validation", Executable: "git", Args: []string{"diff", "--check"}}}
 	cfg.MaxAttempts, cfg.MaxTurns, cfg.MaxOutputTokens, cfg.MaxFileBytes, cfg.TimeoutSeconds = 2, 8, 4096, 65536, 120
 	cfg.MaxCostUSD, cfg.InputPricePerMillion, cfg.CachedInputPricePerMillion, cfg.OutputPricePerMillion = 0.5, 2.5, 0.25, 10
 	saved, err := s.SaveConfig(cfg)
@@ -230,16 +227,12 @@ func TestWorkspaceDuplicateSeparatesLocalPackageAssetsAndHistory(t *testing.T) {
 	gitTest(t, root, "add", ".")
 	gitTest(t, root, "commit", "-qm", "source fixture")
 	before := workspaceTree(t, root)
-	st, err := s.CreateWorkspace("original", root)
+	_, err := s.CreateWorkspace("original", root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	pack := &rulepack.Package{Settings: rulepack.FromConfig(st.Config), Files: map[string][]byte{
-		"rules/R001/rule.json":        fixtureRuleJSON(t, "Keep behavior", "", "Preserve behavior.", "", "", "", ""),
-		"rules/R001/examples.txt":     []byte("independent auxiliary asset\n"),
-		"patterns/legacy-symbols.txt": []byte("Legacy\n"),
-	}}
-	archive := filepath.Join(t.TempDir(), "base.oborules")
+	pack := &rulepack.Package{Rules: []rulepack.Entry{{ID: "R001", Markdown: string(withFixtureID("R001", fixtureRuleJSON(t, "Keep behavior", "", "Preserve behavior.", "", "", "", "")))}}}
+	archive := filepath.Join(t.TempDir(), "base.json")
 	if err := rulepack.Write(archive, pack); err != nil {
 		t.Fatal(err)
 	}
@@ -263,21 +256,18 @@ func TestWorkspaceDuplicateSeparatesLocalPackageAssetsAndHistory(t *testing.T) {
 		t.Fatal("duplicate did not isolate identity, history, and rules")
 	}
 	dir := filepath.Dir(workspaceSettingPath(t, s, duplicate.ActiveWorkspaceID))
-	for _, path := range []string{duplicate.Config.RulesPath, duplicate.Config.LegacyPath, duplicate.Config.QueuePath} {
+	for _, path := range []string{duplicate.Config.RulesPath, duplicate.Config.QueuePath} {
 		relative, err := filepath.Rel(dir, path)
 		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
 			t.Fatal("duplicate still references another workspace's assets")
 		}
 	}
-	if duplicate.Config.RulesPath == original.Config.RulesPath || duplicate.Config.LegacyPath == original.Config.LegacyPath {
+	if duplicate.Config.RulesPath == original.Config.RulesPath {
 		t.Fatal("rule asset paths were shared")
 	}
-	copyAsset := filepath.Join(duplicate.Config.RulesPath, "R001", "examples.txt")
-	if readTest(t, copyAsset) != "independent auxiliary asset\n" {
-		t.Fatal("auxiliary rule asset not copied")
-	}
-	writeTest(t, copyAsset, []byte("copy-only change\n"))
-	if readTest(t, filepath.Join(original.Config.RulesPath, "R001", "examples.txt")) != "independent auxiliary asset\n" {
+	originalRules := readTest(t, original.Config.RulesPath)
+	writeFixtureRule(t, duplicate.Config.RulesPath, duplicate.Rules[0].ID, fixtureRuleJSON(t, "Copy only", "", "Changed description.", "", "", "", ""))
+	if readTest(t, original.Config.RulesPath) != originalRules {
 		t.Fatal("editing duplicate mutated original rules")
 	}
 	firstAgain, err := s.SelectWorkspace(original.ActiveWorkspaceID)
@@ -632,5 +622,35 @@ func TestWorkspaceQueueImportCannotChangeTargetRoot(t *testing.T) {
 	}
 	if after := s.Snapshot(); after.ActiveWorkspaceID != st.ActiveWorkspaceID || after.Config.Root != st.Config.Root || after.Config.QueuePath != st.Config.QueuePath {
 		t.Fatal("rejected import changed active config")
+	}
+}
+
+func TestWorkspaceSettingAcceptsOnlyTheCurrentFormat(t *testing.T) {
+	s, root := workspaceTestService(t)
+	st, err := s.CreateWorkspace("current format", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := workspaceSettingPath(t, s, st.ActiveWorkspaceID)
+	original := readTest(t, path)
+	for _, tc := range []struct {
+		name   string
+		change func(map[string]any)
+	}{
+		{"version 1", func(saved map[string]any) { saved["version"] = 1 }},
+		{"removed setting", func(saved map[string]any) {
+			saved["config"].(map[string]any)["legacyPath"] = "patterns/legacy-symbols.txt"
+		}},
+	} {
+		var saved map[string]any
+		if err := json.Unmarshal([]byte(original), &saved); err != nil {
+			t.Fatal(err)
+		}
+		tc.change(saved)
+		data, _ := json.Marshal(saved)
+		writeTest(t, path, data)
+		if _, _, err := s.readWorkspaceSetting(st.ActiveWorkspaceID); err == nil {
+			t.Fatalf("%s was accepted", tc.name)
+		}
 	}
 }

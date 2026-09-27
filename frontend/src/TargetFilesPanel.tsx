@@ -5,8 +5,9 @@ import { HelpTip } from "./HelpTip";
 import { HoverTip } from "./HoverTip";
 import { TargetFilePath, TargetFileSource } from "./TargetFolderBrowser";
 import { RulePreviewPane } from "./RulePreviewPane";
+import { ruleScope, ruleScopeLabels } from "./rule-scope";
 import { TaskFileList, TaskListStatus } from "./TaskFileList";
-import { compareTaskStatus, isCompletedTask } from "./task-state";
+import { compareTaskStatus, hasRuleCandidates, isCompletedTask } from "./task-state";
 import { useResultsSplitter } from "./useResultsSplitter";
 import type { Rule, TargetFileContent, Task } from "./types";
 import "./target-files-panel.css";
@@ -47,9 +48,8 @@ export function TargetFilesPanel({ tasks, rules, workspaceId, root, selected, on
   const taskKey = tasks.map(task => task.file).join("\0");
   const splitter = useResultsSplitter(context, tasks.map(task => task.file), { extraWidth: selectionEnabled ? 115 : 120, sampleSelector: ".task-file-open" });
   const mappedTasks = useMemo(() => {
-    const common = rules.filter(rule => rule.always).map(rule => rule.id);
     const byId = new Map(rules.map(rule => [rule.id, rule]));
-    return tasks.map(task => ({ task, candidates: [...new Set([...common, ...task.rules])].map(id => ({ id, rule: byId.get(id) })) }));
+    return tasks.map(task => ({ task, candidates: [...new Set(task.rules)].map(id => ({ id, rule: byId.get(id) })) }));
   }, [tasks, rules]);
   const filtered = useMemo(() => {
     const query = search.toLocaleLowerCase().trim();
@@ -58,10 +58,10 @@ export function TargetFilesPanel({ tasks, rules, workspaceId, root, selected, on
   }, [mappedTasks, search, onlySelected, selected, selectionEnabled]);
   const active = mappedTasks.find(({ task }) => task.file === activeFile);
   const visibleDetail = detail?.workspaceId === workspaceId && detail.root === root && detail.file === activeFile ? detail : null;
-  const selectable = filtered.filter(({ task }) => !isCompletedTask(task));
+  const selectable = filtered.filter(({ task }) => !isCompletedTask(task) && hasRuleCandidates(task));
   const allChecked = selectable.length > 0 && selectable.every(({ task }) => selected.has(task.file));
   const someChecked = selectable.some(({ task }) => selected.has(task.file));
-  const selectedCount = tasks.filter(task => !isCompletedTask(task) && selected.has(task.file)).length;
+  const selectedCount = tasks.filter(task => !isCompletedTask(task) && hasRuleCandidates(task) && selected.has(task.file)).length;
   const selectionBlocked = disabled ? disabledReason || "現在は処理対象を変更できません" : "";
   const ruleVersion = JSON.stringify(rules.find(rule => rule.id === ruleId));
 
@@ -115,7 +115,7 @@ export function TargetFilesPanel({ tasks, rules, workspaceId, root, selected, on
   return <section className="review-file-panel task-file-panel" aria-label={selectionEnabled ? "処理対象ファイルの選択" : "確定した処理対象"}>
     <div className="task-files-heading">
       <h2>{selectionEnabled ? "対象ファイル" : "確定した処理対象"} <span>{selectionEnabled ? `${selectedCount.toLocaleString()} / ` : ""}{tasks.length.toLocaleString()}</span></h2>
-      <div className="target-file-actions">{action}<HelpTip label="対象ファイルと候補ルール">チェックしたファイルのうち、未修正・再試行・失敗を処理します。共通ルールはすべての対象に渡し、個別ルールは候補をもとにAIが内容を判断します。完了済みのファイルは一覧下部の再試行アイコンから処理対象へ戻せます。</HelpTip></div>
+      <div className="target-file-actions">{action}<HelpTip label="対象ファイルと候補ルール">チェックしたファイルのうち、未修正・再試行・失敗・要確認を処理します。選択した適用ルールの条件からファイルごとの候補を決定し、AIが内容を判断します。要確認は計画と履歴を引き継いで再試行します。完了済みのファイルは一覧下部の再試行アイコンから処理対象へ戻せます。</HelpTip></div>
     </div>
     <div ref={splitter.ref} className="target-browser task-files-browser" style={splitter.ready ? { gridTemplateColumns: `${splitter.width}px 9px minmax(0, 1fr)` } : undefined}>
       <div className="target-browser-list">
@@ -158,5 +158,5 @@ function initialFile(tasks: Task[], selected: Set<string>) {
 }
 
 function CandidateChips({ candidates, activeId, onOpen }: { candidates: Candidate[]; activeId: string; onOpen: (id: string) => void }) {
-  return <>{candidates.map(({ id, rule }) => <button key={id} className={`rule-tag task-candidate-chip${activeId === id ? " is-active" : ""}`} title={`${rule?.always ? "共通" : "個別"} · ${rule?.title || id}`} aria-label={`${id} ${rule?.title || ""}の詳細`} aria-pressed={activeId === id} onClick={() => onOpen(id)}>{id}</button>)}</>;
+  return <>{candidates.map(({ id, rule }) => <button key={id} className={`rule-tag task-candidate-chip${activeId === id ? " is-active" : ""}`} title={`${id} · ${rule ? ruleScopeLabels[ruleScope(rule)] : "ルール"} · ${rule?.title || ""}`} aria-label={`${id} ${rule?.title || ""}の詳細`} aria-pressed={activeId === id} onClick={() => onOpen(id)}>{id}</button>)}</>;
 }

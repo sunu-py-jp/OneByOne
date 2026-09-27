@@ -23,18 +23,17 @@ import (
 )
 
 type manifest struct {
-	RulePackagePath string       `json:"rulePackagePath,omitempty"`
-	Version         int          `json:"version"`
-	Root            string       `json:"root"`
-	RepoRoot        string       `json:"repoRoot"`
-	SourceRelative  string       `json:"sourceRelative"`
-	BaseCommit      string       `json:"baseCommit"`
-	Worktree        string       `json:"worktree"`
-	Branch          string       `json:"branch"`
-	RuleHash        string       `json:"ruleHash"`
-	Config          model.Config `json:"config"`
-	Scanned         int          `json:"scanned"`
-	Excluded        int          `json:"excluded"`
+	Version        int          `json:"version"`
+	Root           string       `json:"root"`
+	RepoRoot       string       `json:"repoRoot"`
+	SourceRelative string       `json:"sourceRelative"`
+	BaseCommit     string       `json:"baseCommit"`
+	Worktree       string       `json:"worktree"`
+	Branch         string       `json:"branch"`
+	RuleHash       string       `json:"ruleHash"`
+	Config         model.Config `json:"config"`
+	Scanned        int          `json:"scanned"`
+	Excluded       int          `json:"excluded"`
 }
 
 type Service struct {
@@ -42,6 +41,7 @@ type Service struct {
 	ruleLeaseWorkspaceID string
 	ruleLeaseID          string
 	mu                   sync.Mutex
+	persistMu            sync.Mutex
 	executionMu          sync.Mutex
 	activeExecution      *executionRecord
 	op                   sync.Mutex
@@ -66,7 +66,7 @@ type Service struct {
 }
 
 func DefaultConfig() model.Config {
-	return model.Config{Provider: "azure", AuthMode: "api_key", IncludeGlobs: []string{}, ExcludeGlobs: []string{}, CheckCommands: []model.Command{}}
+	return model.Config{Provider: "azure", AuthMode: "api_key", Concurrency: 2}
 }
 
 func New(configPath string) *Service {
@@ -184,11 +184,8 @@ func (s *Service) idle() error {
 }
 
 func normalizeConfig(c model.Config) (model.Config, error) {
-	if c.RulePackageName != "" {
-		c.RulePackageName = filepath.Base(strings.ReplaceAll(c.RulePackageName, "\\", "/"))
-		if len(c.RulePackageName) > 255 || strings.ContainsAny(c.RulePackageName, "\r\n\x00") {
-			return c, fmt.Errorf("ルールパッケージ名が不正です")
-		}
+	if c.Concurrency < 0 || c.Concurrency > 10 {
+		return c, fmt.Errorf("並列数は1〜10です（未指定は2）")
 	}
 	if c.Provider == "" {
 		c.Provider = "azure"
@@ -199,7 +196,7 @@ func normalizeConfig(c model.Config) (model.Config, error) {
 	if c.Provider != "azure" && c.Provider != "openai" && c.Provider != "claude" {
 		return c, fmt.Errorf("LLMプロバイダーが不正です")
 	}
-	for _, p := range []*string{&c.Root, &c.RulesPath, &c.LegacyPath, &c.QueuePath} {
+	for _, p := range []*string{&c.Root, &c.RulesPath, &c.QueuePath} {
 		if *p != "" {
 			a, e := filepath.Abs(*p)
 			if e != nil {
@@ -234,20 +231,7 @@ func normalizeConfig(c model.Config) (model.Config, error) {
 	if c.AuthMode != "api_key" && c.AuthMode != "bearer" && !(c.Provider == "azure" && c.AuthMode == "oauth") {
 		return c, fmt.Errorf("認証方式が不正です")
 	}
-	for _, cmd := range c.CheckCommands {
-		if strings.TrimSpace(cmd.Executable) == "" {
-			return c, fmt.Errorf("検証コマンドの実行ファイルが空です")
-		}
-	}
-	if c.IncludeGlobs == nil {
-		c.IncludeGlobs = []string{}
-	}
-	if c.ExcludeGlobs == nil {
-		c.ExcludeGlobs = []string{}
-	}
-	if c.CheckCommands == nil {
-		c.CheckCommands = []model.Command{}
-	}
+	c.ExcludedRuleIDs = normalizedWorkspaceRuleSelection(c)
 	return c, nil
 }
 
@@ -348,6 +332,8 @@ func (s *Service) load(path string) error {
 			c.AuthMode = connection.AuthMode
 			c.Credential = connection.Credential
 			c.LLMConnectionID = connection.LLMConnectionID
+			c.ExcludedRuleIDs = append([]string(nil), connection.ExcludedRuleIDs...)
+			c.Concurrency = connection.Concurrency
 			c.MaxAttempts = connection.MaxAttempts
 			c.MaxTurns = connection.MaxTurns
 			c.MaxOutputTokens = connection.MaxOutputTokens
@@ -431,6 +417,8 @@ func (s *Service) LoadQueue(path string) (model.State, error) {
 }
 
 func (s *Service) persist() error {
+	s.persistMu.Lock()
+	defer s.persistMu.Unlock()
 	s.mu.Lock()
 	tasks := copyTasks(s.state.Tasks)
 	m := s.meta
@@ -561,6 +549,10 @@ func (s *Service) Scan() (state model.State, err error) {
 	for i, t := range tasks {
 		included[t.File] = true
 		if p, ok := old[t.File]; ok {
+			if p.ExcludedBeforeScope != nil {
+				p.Excluded = *p.ExcludedBeforeScope
+				p.ExcludedBeforeScope = nil
+			}
 			tasks[i].Excluded = p.Excluded
 			if p.InputHash == t.InputHash || hasWorktree || len(p.History) > 0 || p.Status == "done" || p.Status == "skipped" {
 				p.Rules = t.Rules
@@ -581,6 +573,10 @@ func (s *Service) Scan() (state model.State, err error) {
 				previous.Note = "今回の抽出範囲から除外されました。履歴を保持し、自動実行の対象から外しています"
 				previous.UpdatedAt = now()
 			}
+			if previous.ExcludedBeforeScope == nil {
+				wasExcluded := previous.Excluded
+				previous.ExcludedBeforeScope = &wasExcluded
+			}
 			previous.Rules = []string{}
 			previous.Excluded = true
 			tasks = append(tasks, previous)
@@ -596,10 +592,6 @@ func (s *Service) Scan() (state model.State, err error) {
 	s.cat = cat
 	s.meta.Version = 1
 	s.meta.RuleHash = cat.Hash
-	s.meta.RulePackagePath = ""
-	if cfg.RulePackageName != "" {
-		s.meta.RulePackagePath = cfg.RulesPath
-	}
 	s.state.Tasks = tasks
 	s.state.Rules = cat.Rules
 	s.state.ScannedCount = scanned
@@ -636,6 +628,28 @@ func (s *Service) Start(limit int) error {
 		return fmt.Errorf("実行に使用するLLM接続を選択してください")
 	}
 	s.mu.Lock()
+	cfg, extractedHash := s.state.Config, s.meta.RuleHash
+	hasTasks := len(s.state.Tasks) > 0
+	s.mu.Unlock()
+	if hasTasks {
+		validationContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		fresh, err := catalog.Load(validationContext, cfg)
+		cancel()
+		if err != nil {
+			s.mu.Lock()
+			s.setWorkspaceIssueLocked(s.state.ActiveWorkspaceID, "catalog", err, "rules", "")
+			s.publishWorkspacesLocked()
+			s.mu.Unlock()
+			return err
+		}
+		if fresh.SelectedRuleCount() == 0 {
+			return fmt.Errorf("実行するルールが選択されていません。実行設定でルールを選択してください")
+		}
+		if extractedHash == "" || fresh.Hash != extractedHash {
+			return fmt.Errorf("ルールが変更されています。対象抽出を再実行してください")
+		}
+	}
+	s.mu.Lock()
 	if len(s.state.Tasks) == 0 {
 		s.mu.Unlock()
 		return fmt.Errorf("対象ファイルがありません。実行設定でファイルを抽出してください")
@@ -654,10 +668,6 @@ func (s *Service) Start(limit int) error {
 	if !runnable {
 		s.mu.Unlock()
 		return fmt.Errorf("選択したファイルに未処理または再試行可能な対象がありません")
-	}
-	if s.state.Config.RulePackageName != "" && s.meta.RulePackagePath != s.state.Config.RulesPath {
-		s.mu.Unlock()
-		return fmt.Errorf("ルールパッケージが変更されています。対象抽出を再実行してください")
 	}
 	if s.closed {
 		s.mu.Unlock()
@@ -697,6 +707,8 @@ func (s *Service) Start(limit int) error {
 		s.setWorkspaceIssueLocked(s.state.ActiveWorkspaceID, source, err, "results", file)
 		s.publishWorkspacesLocked()
 		s.state.CurrentFile = ""
+		s.state.CurrentFiles = nil
+		s.state.FilePhases = nil
 		s.state.Phase = "finalizing"
 		s.cancel = nil
 		if err != nil {
@@ -759,6 +771,16 @@ func (s *Service) RetryTasks(files []string) (model.State, error) {
 		wanted[f] = true
 	}
 	s.mu.Lock()
+	known := map[string]bool{}
+	for _, task := range s.state.Tasks {
+		known[task.File] = len(task.Rules) > 0
+	}
+	for file := range wanted {
+		if !known[file] {
+			s.mu.Unlock()
+			return s.Snapshot(), fmt.Errorf("%s は現在のルールの対象外です。ルール条件を変更して対象を再抽出してください", file)
+		}
+	}
 	for i := range s.state.Tasks {
 		t := &s.state.Tasks[i]
 		if wanted[t.File] {

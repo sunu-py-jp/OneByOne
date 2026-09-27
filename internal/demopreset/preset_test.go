@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -40,15 +41,15 @@ func TestProjectAndRulesAreIndependentSnapshots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(pack.Files) != CommonRuleCount+IndividualRuleCount+1 {
-		t.Fatal("expected thirteen definitions and the legacy-symbol list")
+	if len(pack.Rules) != CommonRuleCount+IndividualRuleCount {
+		t.Fatal("expected thirteen rules")
 	}
-	pack.Files["rules/R101/rule.json"][0] = 'X'
-	pack.Settings.IncludeGlobs[0] = "changed"
+	pack.Rules[0].Markdown = "changed"
 	second, err := Rules()
-	if err != nil || second.Files["rules/R101/rule.json"][0] == 'X' || second.Settings.IncludeGlobs[0] != "src/**/*.js" {
-		t.Fatal("rule snapshots share mutable data")
+	if err != nil || second.Rules[0].Markdown == "changed" {
+		t.Fatal("rules share mutable data")
 	}
+
 }
 
 // These checks validate test-only reference implementations, never model output.
@@ -64,12 +65,13 @@ func TestReferenceAfterExamples(t *testing.T) {
 		t.Fatal(err)
 	}
 	references := readReferenceSolutions(t)
-	if len(references) != IndividualRuleCount+1 {
-		t.Fatalf("expected %d test-only reference workflows, got %d", IndividualRuleCount+1, len(references))
+	if len(references) != IndividualRuleCount+2 {
+		t.Fatalf("expected %d test-only reference workflows, got %d", IndividualRuleCount+2, len(references))
 	}
 	// Keep an executable copy of the input to catch broken SDK imports or source
 	// contracts separately from the reference solution. This copy is test-only.
 	files["src/workflows/dispatch-cycle.before.js"] = files["src/workflows/dispatch-cycle.js"]
+	files["src/shared/host-transaction.before.js"] = files["src/shared/host-transaction.js"]
 	for path, content := range references {
 		if _, exists := files[path]; !exists || !strings.HasPrefix(path, "src/") {
 			t.Fatalf("reference solution has no source target: %s", path)
@@ -101,6 +103,50 @@ func TestReferenceAfterExamples(t *testing.T) {
 	}
 }
 
+func TestMixedTransactionReferencePreservesHeldHostContract(t *testing.T) {
+	files, err := ProjectFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const path = "src/shared/host-transaction.js"
+	before := string(files[path])
+	after := readReferenceSolutions(t)[path]
+	const boundary = "// Ownership crosses the plugin boundary:"
+	beforeLocal, beforeHost, okBefore := strings.Cut(before, boundary)
+	afterLocal, afterHost, okAfter := strings.Cut(after, boundary)
+	if !okBefore || !okAfter || beforeHost != afterHost {
+		t.Fatal("the externally owned host transaction must remain byte-identical in the partial reference solution")
+	}
+	if !strings.Contains(beforeLocal, "TransactionManager.open('local-drafts')") ||
+		!strings.Contains(afterLocal, "transactions.begin('local-drafts')") ||
+		strings.Contains(afterLocal, "transaction.save(") ||
+		!strings.Contains(afterLocal, "finally {\n    transaction.close();") {
+		t.Fatal("the locally owned transaction must require and receive a real lifetime migration")
+	}
+	if !strings.Contains(after, "import { TransactionManager } from '../../lib/parcel-kit.js';") ||
+		strings.Count(after, "TransactionManager.open(") != 1 ||
+		!strings.Contains(afterHost, "TransactionManager.open('host-edit')") {
+		t.Fatal("partial adoption must keep the required old import and the unresolved host implementation")
+	}
+	pack, err := Rules()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range pack.Rules[:CommonRuleCount+1] {
+		rule, err := ruleformat.Decode([]byte(entry.Markdown))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rule.PathPattern != "src/**/*.js" {
+			t.Errorf("rule %s no longer covers the shared JavaScript scenario", rule.ID)
+		}
+		if rule.ContentPattern != "" && (!regexp.MustCompile(rule.ContentPattern).MatchString(beforeLocal) ||
+			!regexp.MustCompile(rule.ContentPattern).MatchString(beforeHost)) {
+			t.Errorf("rule %s must reach both the fixable and held regions", rule.ID)
+		}
+	}
+}
+
 func TestDispatchCycleRequiresAllRules(t *testing.T) {
 	files, err := ProjectFiles()
 	if err != nil {
@@ -122,15 +168,14 @@ func TestDispatchCycleRequiresAllRules(t *testing.T) {
 	// Match the executable body as well as the full file, so importing all names
 	// cannot masquerade as ten actual migration scenarios.
 	body := before[strings.Index(before, "// A dispatch cycle"):]
-	for name, raw := range pack.Files {
-		if !strings.HasSuffix(name, "/rule.json") {
-			continue
-		}
+	for index, entry := range pack.Rules {
+		name := strconv.Itoa(index)
+		raw := []byte(entry.Markdown)
 		rule, err := ruleformat.Decode(raw)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if rule.Pattern != "" && !regexp.MustCompile(rule.Pattern).MatchString(body) {
+		if rule.ContentPattern != "" && !regexp.MustCompile(rule.ContentPattern).MatchString(body) {
 			t.Errorf("%s has no applicable operation in the combined workflow body", name)
 		}
 	}
@@ -143,7 +188,7 @@ func TestDispatchCycleRequiresAllRules(t *testing.T) {
 			t.Errorf("%s must require an actual change in the combined workflow", id)
 		}
 	}
-	for _, pattern := range strings.Split(strings.TrimSpace(string(pack.Files["patterns/legacy-symbols.txt"])), "\n") {
+	for _, pattern := range []string{`\b(TransactionManager|EventBus|RecordDirectory|ReportWriter|WorkQueue|RequestTelemetry|PaymentGateway|InventoryReservations|InvoiceService|ClientOptions)\b`, `lib/parcel-kit\.js`} {
 		if regexp.MustCompile(pattern).MatchString(after) {
 			t.Errorf("reference solution leaves a retired SDK reference matching %s", pattern)
 		}
@@ -193,15 +238,14 @@ func TestRulesDoNotContainTargetSolutions(t *testing.T) {
 	for path, source := range readReferenceSolutions(t) {
 		fullSources[normalize(source)] = "test-only solution for " + path
 	}
-	for name, raw := range pack.Files {
-		if !strings.HasSuffix(name, "/rule.json") {
-			continue
-		}
+	for index, entry := range pack.Rules {
+		name := strconv.Itoa(index)
+		raw := []byte(entry.Markdown)
 		rule, err := ruleformat.Decode(raw)
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
-		for section, example := range map[string]string{"before": rule.Before, "after": rule.After} {
+		for section, example := range map[string]string{"before": demoExample(t, rule.Body, "変換前"), "after": demoExample(t, rule.Body, "変換後")} {
 			if target, exact := fullSources[normalize(example)]; exact {
 				t.Errorf("%s %s reproduces the complete %s", name, section, target)
 			}
@@ -238,14 +282,15 @@ func TestIndividualRulePatternsStillReachDemoScenarios(t *testing.T) {
 		"R110": {"src/shared/runtime-options.js", "src/billing/opaque-config.js"},
 	}
 	for id, paths := range scenarios {
-		rule, err := ruleformat.Decode(pack.Files["rules/"+id+"/rule.json"])
+		number, _ := strconv.Atoi(strings.TrimPrefix(id, "R"))
+		rule, err := ruleformat.Decode([]byte(pack.Rules[number-101+3].Markdown))
 		if err != nil {
 			t.Fatalf("%s: %v", id, err)
 		}
-		if strings.TrimSpace(rule.Pattern) == "" {
+		if strings.TrimSpace(rule.ContentPattern) == "" {
 			t.Fatalf("%s must keep an individual applicability pattern", id)
 		}
-		pattern, err := regexp.Compile(rule.Pattern)
+		pattern, err := regexp.Compile(rule.ContentPattern)
 		if err != nil {
 			t.Fatalf("%s pattern: %v", id, err)
 		}
@@ -276,16 +321,15 @@ func TestDemoJavaScriptSyntax(t *testing.T) {
 			scripts[path] = string(content)
 		}
 	}
-	for path, raw := range pack.Files {
-		if !strings.HasSuffix(path, "/rule.json") {
-			continue
-		}
+	for index, entry := range pack.Rules {
+		path := strconv.Itoa(index)
+		raw := []byte(entry.Markdown)
 		rule, err := ruleformat.Decode(raw)
 		if err != nil {
 			t.Fatalf("%s: %v", path, err)
 		}
-		scripts[path+"/before"] = rule.Before
-		scripts[path+"/after"] = rule.After
+		scripts[path+"/before"] = demoExample(t, rule.Body, "変換前")
+		scripts[path+"/after"] = demoExample(t, rule.Body, "変換後")
 	}
 	for path, script := range scripts {
 		t.Run(path, func(t *testing.T) {
@@ -296,4 +340,14 @@ func TestDemoJavaScriptSyntax(t *testing.T) {
 			}
 		})
 	}
+}
+
+func demoExample(t *testing.T, body, heading string) string {
+	t.Helper()
+	re := regexp.MustCompile("(?s)# " + heading + "\n\n````javascript\n(.*?)\n````")
+	match := re.FindStringSubmatch(body)
+	if len(match) != 2 {
+		t.Fatalf("missing example: %s", heading)
+	}
+	return match[1]
 }

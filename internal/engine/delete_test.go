@@ -1,12 +1,14 @@
 package engine
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
 
 	"onebyone/internal/model"
+	"onebyone/internal/rulepack"
 	"onebyone/internal/store"
 )
 
@@ -25,7 +27,7 @@ func TestDeleteWorkspaceRetainsManagedResultsAndNeverTouchesExternalData(t *test
 	if _, err = s.OpenRule("R001"); err != nil {
 		t.Fatal(err)
 	}
-	sourceBefore, rulesBefore := workspaceTree(t, cfg.Root), workspaceTree(t, cfg.RulesPath)
+	sourceBefore, rulesBefore := workspaceTree(t, cfg.Root), workspaceTree(t, filepath.Dir(cfg.RulesPath))
 	queueBefore := workspaceTree(t, filepath.Dir(cfg.QueuePath))
 	managedBefore := workspaceTree(t, managed)
 	deleted, err := s.DeleteWorkspace(first.ActiveWorkspaceID)
@@ -45,7 +47,7 @@ func TestDeleteWorkspaceRetainsManagedResultsAndNeverTouchesExternalData(t *test
 	}
 	assertWorkspaceTree(t, filepath.Join(trash, entries[0].Name()), managedBefore)
 	assertWorkspaceTree(t, cfg.Root, sourceBefore)
-	assertWorkspaceTree(t, cfg.RulesPath, rulesBefore)
+	assertWorkspaceTree(t, filepath.Dir(cfg.RulesPath), rulesBefore)
 	assertWorkspaceTree(t, filepath.Dir(cfg.QueuePath), queueBefore)
 	if _, err = s.SelectWorkspace(first.ActiveWorkspaceID); err == nil {
 		t.Fatal("deleted workspace could be selected again")
@@ -251,9 +253,8 @@ func TestDeleteWorkspaceRejectsManagedDirectoryUsedAsSource(t *testing.T) {
 
 func TestDeleteRuleCopiesRemainingRulesAndKeepsRunHistory(t *testing.T) {
 	s, cfg := fixture(t, map[string]string{"A.txt": "Legacy.Save()\n"})
-	writeTest(t, filepath.Join(cfg.RulesPath, "R019", "examples.txt"), []byte("unchanged auxiliary asset"))
 	before := s.Snapshot()
-	rulesBefore, sourceBefore := workspaceTree(t, cfg.RulesPath), workspaceTree(t, cfg.Root)
+	rulesBefore, sourceBefore := workspaceTree(t, filepath.Dir(cfg.RulesPath)), workspaceTree(t, cfg.Root)
 	queueBefore := workspaceTree(t, filepath.Dir(cfg.QueuePath))
 	deleted, err := s.DeleteRule("R001")
 	if err != nil {
@@ -262,13 +263,12 @@ func TestDeleteRuleCopiesRemainingRulesAndKeepsRunHistory(t *testing.T) {
 	if len(deleted.Rules) != 1 || deleted.Rules[0].ID != "R019" || deleted.Config.RulesPath == cfg.RulesPath || !reflect.DeepEqual(before.Tasks, deleted.Tasks) {
 		t.Fatal("rule removal changed history or failed to publish an independent remaining rule")
 	}
-	if readTest(t, filepath.Join(deleted.Config.RulesPath, "R019", "examples.txt")) != "unchanged auxiliary asset" {
-		t.Fatal("remaining rule auxiliary asset was not preserved")
+	pack, err := rulepack.Snapshot(deleted.Config.RulesPath)
+	if err != nil || len(pack.Rules) != 1 || pack.Rules[0].ID != "R019" {
+		t.Fatal("remaining rule not preserved")
 	}
-	if _, err = os.Stat(filepath.Join(deleted.Config.RulesPath, "R001")); !os.IsNotExist(err) {
-		t.Fatal("deleted ID remains in the new rule package")
-	}
-	assertWorkspaceTree(t, cfg.RulesPath, rulesBefore)
+
+	assertWorkspaceTree(t, filepath.Dir(cfg.RulesPath), rulesBefore)
 	assertWorkspaceTree(t, cfg.Root, sourceBefore)
 	assertWorkspaceTree(t, filepath.Dir(cfg.QueuePath), queueBefore)
 	if err = s.Start(1); err == nil {
@@ -285,31 +285,33 @@ func TestDeleteInvalidRulesOneAtATimeAndCreateAfterLastDeletion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	archive := filepath.Join(base, "original.oborules")
+	archive := filepath.Join(base, "original.json")
 	if _, err = s.ExportRulePackage(archive); err != nil {
 		t.Fatal(err)
 	}
 	archiveBefore := readTest(t, archive)
-	for _, id := range []string{"R001", "R019"} {
-		writeTest(t, filepath.Join(initial.Config.RulesPath, id, "name.txt"), []byte("old "+id))
-	}
-	original := workspaceTree(t, initial.Config.RulesPath)
+	raw, _ := json.Marshal(map[string]any{"rules": []string{"---\nid: R001\nname: First\ndescription: \n---\n", "---\nid: R019\nname: Second\ndescription: \n---\n"}})
+	writeTest(t, initial.Config.RulesPath, raw)
+	original := workspaceTree(t, filepath.Dir(initial.Config.RulesPath))
+
 	if _, err = s.GetState(); err != nil {
 		t.Fatal(err)
 	}
 	firstRemoved, err := s.DeleteRule("R001")
 	issues := workspaceIssues(t, firstRemoved, initial.ActiveWorkspaceID)
-	if err != nil || len(issues) != 1 || issues[0].RuleID != "R019" || len(firstRemoved.Rules) != 0 {
+	if err != nil || len(issues) != 1 || issues[0].RuleID != "R019" || len(firstRemoved.Rules) != 1 {
 		t.Fatalf("another invalid rule blocked selected removal or was silently repaired: %#v / %v", issues, err)
 	}
-	if readTest(t, filepath.Join(firstRemoved.Config.RulesPath, "R019", "name.txt")) != "old R019" {
-		t.Fatal("deleting first invalid rule changed the remaining legacy asset")
+	remaining, err := rulepack.Snapshot(firstRemoved.Config.RulesPath)
+	if err != nil || len(remaining.Rules) != 1 || remaining.Rules[0].ID != "R019" {
+		t.Fatal("remaining invalid rule was lost")
 	}
+
 	lastRemoved, err := s.DeleteRule("R019")
 	if err != nil || len(lastRemoved.Rules) != 0 || lastRemoved.Config.RulesPath != "" || len(workspaceIssues(t, lastRemoved, initial.ActiveWorkspaceID)) != 0 || lastRemoved.LastError != "" {
 		t.Fatalf("last-rule removal did not leave a clean empty rule list: %v", err)
 	}
-	assertWorkspaceTree(t, initial.Config.RulesPath, original)
+	assertWorkspaceTree(t, filepath.Dir(initial.Config.RulesPath), original)
 	if readTest(t, archive) != archiveBefore {
 		t.Fatal("deleting rules modified the original archive")
 	}
@@ -341,11 +343,11 @@ func TestDeleteRuleHonorsIndependentRuleLease(t *testing.T) {
 		t.Fatalf("could not lock fixture rule: %v", err)
 	}
 	defer lease.Release()
-	before := workspaceTree(t, initial.Config.RulesPath)
+	before := workspaceTree(t, filepath.Dir(initial.Config.RulesPath))
 	if _, err = s.DeleteRule("R001"); err == nil {
 		t.Fatal("deletion bypassed another editor's rule lease")
 	}
-	assertWorkspaceTree(t, initial.Config.RulesPath, before)
+	assertWorkspaceTree(t, filepath.Dir(initial.Config.RulesPath), before)
 	if s.Snapshot().Config.RulesPath != initial.Config.RulesPath {
 		t.Fatal("failed deletion published a new rule package")
 	}

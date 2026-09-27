@@ -10,7 +10,7 @@ const { createElement } = requireFrontend('react');
 const { renderToStaticMarkup } = requireFrontend('react-dom/server');
 const bundle = await build({
   absWorkingDir: frontend,
-  stdin: { contents: 'export { ResultsPanel, ChangeReport, ResultCode, resolveResultDetailTab, withChangeReport, resultChanges } from "./src/ResultsPanel"; export { recordedChanges, rulesForLine, changeLineLabel, ruleOrigins } from "./src/result-line-rules"; export { emptyState, emptyUsage, normalizeState } from "./src/types";', resolveDir: frontend },
+  stdin: { contents: 'export { ResultsPanel, ChangeReport, ResultCode, resolveResultDetailTab, withChangeReport, resultChanges, HeldChangeMenu, heldChangeDestination } from "./src/ResultsPanel"; export { recordedChanges, rulesForLine, changeLineLabel, ruleOrigins, heldSourceTarget, changeNote } from "./src/result-line-rules"; export { emptyState, emptyUsage, normalizeState } from "./src/types";', resolveDir: frontend },
   bundle: true, write: false, platform: 'node', format: 'cjs', jsx: 'automatic',
   external: ['react', 'react/*', 'react-dom', 'react-dom/*'], loader: { '.css': 'empty' },
   plugins: [{ name: 'no-native-connection', setup(plugin) {
@@ -20,10 +20,10 @@ const bundle = await build({
 });
 const module = { exports: {} };
 new Function('require', 'module', 'exports', bundle.outputFiles[0].text)(requireFrontend, module, module.exports);
-const { ResultsPanel, ChangeReport, ResultCode, resolveResultDetailTab, withChangeReport, resultChanges, recordedChanges, rulesForLine, changeLineLabel, ruleOrigins, emptyState, emptyUsage, normalizeState } = module.exports;
+const { ResultsPanel, ChangeReport, ResultCode, resolveResultDetailTab, withChangeReport, resultChanges, recordedChanges, rulesForLine, changeLineLabel, ruleOrigins, HeldChangeMenu, heldChangeDestination, heldSourceTarget, changeNote, emptyState, emptyUsage, normalizeState } = module.exports;
 const noOp = () => {};
 const item = (id, status, extra = {}) => ({
-  id, ruleId: 'R101', ruleTitle: '保存後に通知する', location: 'notifyCustomer()',
+  id, attributionVersion: 2, ruleId: 'R101', ruleTitle: '保存後に通知する', location: 'notifyCustomer()',
   risk: '保存失敗時に通知だけ届く', change: '保存成功後に通知を移動する', expected: '通知前に保存が完了する',
   status, reason: '検証結果に基づく判定', ...extra,
 });
@@ -61,17 +61,17 @@ test('committed per-change results keep the supplied statuses and the recorded r
   assert.match(html, /要確認/);
   assert.doesNotMatch(html, /この試行の修正は未採用です。/);
   assert.match(html, /R101 · 保存後に通知する/);
-  assert.match(html, /notifyCustomer\(\)/);
+  assert.doesNotMatch(html, /前 \d|後 \d/);
 });
 
-test('live report arrival changes only the default tab and never a manual selection', () => {
+test('reports stay in changes view without switching the current tab', () => {
   assert.equal(resolveResultDetailTab('diff', false, false), 'diff');
-  assert.equal(resolveResultDetailTab('diff', true, false), 'changes');
+  assert.equal(resolveResultDetailTab('diff', true, false), 'diff');
   assert.equal(resolveResultDetailTab('diff', true, true), 'diff');
   assert.equal(resolveResultDetailTab('checks', true, true), 'checks');
   assert.equal(resolveResultDetailTab('history', true, false), 'history');
   assert.equal(resolveResultDetailTab('changes', false, false), 'diff');
-  assert.equal(resolveResultDetailTab('changes', true, true), 'changes');
+  assert.equal(resolveResultDetailTab('changes', true, true), 'diff');
 });
 
 test('default scope waits for the cumulative report without showing latest-only ranges', () => {
@@ -80,7 +80,8 @@ test('default scope waits for the cumulative report without showing latest-only 
   const history = [old, latest];
   const currentHTML = render(history);
   assert.match(currentHTML, /全体（開始前 → 現在）/);
-  assert.match(currentHTML, /id="results-tab-changes"[^>]*aria-selected="true"/);
+  assert.match(currentHTML, /id="results-tab-diff"[^>]*aria-selected="true"/);
+  assert.doesNotMatch(currentHTML, /id="results-tab-changes"/);
   assert.match(currentHTML, /読み込み中/);
   assert.doesNotMatch(currentHTML, /最新の試行のリスク|以前の試行のリスク/);
   assert.deepEqual(resultChanges(history, -1, null), []);
@@ -90,14 +91,14 @@ test('default scope waits for the cumulative report without showing latest-only 
   const cumulativeHTML = renderToStaticMarkup(createElement(ChangeReport, { changes: resultChanges(history, -1, detail), cumulative: true, onOpenRule: noOp }));
   assert.match(cumulativeHTML, /以前の試行のリスク/);
   assert.match(cumulativeHTML, /最新の試行のリスク/);
-  assert.match(cumulativeHTML, /前 1 → 後 4/);
+  assert.doesNotMatch(cumulativeHTML, /前 \d|後 \d/);
   assert.doesNotMatch(cumulativeHTML, /この試行の修正は未採用/);
   assert.deepEqual(resultChanges(history, 0, detail), old.changes.map(item => ({ ...item, origin: "previous" })));
   assert.deepEqual(resultChanges(history, 1, detail), latest.changes);
   const historicalHTML = renderReport(old);
   assert.match(historicalHTML, /以前の試行のリスク/);
   assert.doesNotMatch(historicalHTML, /最新の試行のリスク/);
-  assert.match(historicalHTML, /前 1 → 後 1/);
+  assert.doesNotMatch(historicalHTML, /前 \d|後 \d/);
   assert.deepEqual(resultChanges(history, -1, { cumulative: true, changes: [] }), []);
   assert.deepEqual(resultChanges(history, -1, { cumulative: false, changes: latest.changes }), []);
   const legacyHTML = render([attempt(null)]);
@@ -135,16 +136,16 @@ test('lazy reports supplement only a matching historical attempt and cannot over
   assert.equal(withChangeReport(snapshot, { history: [{ ...loaded, outcome: 'done', commit: 'new-commit' }] }), snapshot);
 });
 
-test('rows with no recorded change are absent from counts, details, and default tab', () => {
+test('empty unchanged records stay hidden while held reasons survive without a planned change', () => {
   const absent = [item('empty', 'unchanged', { change: '', reason: 'already correct' }), item('space', 'needs_human', { change: ' \n ' })];
   const html = render([attempt(absent)]);
   assert.doesNotMatch(html, /id="results-tab-changes"|対応内容未記録|results-change-item/);
   assert.match(html, /id="results-tab-diff"[^>]*aria-selected="true"/);
   const withHold = renderReport(attempt([...absent, item('hold', 'needs_human', { change: '通知をいつ送るべきか確認する' })]));
-  assert.equal((withHold.match(/class="results-change-item"/g) || []).length, 1);
-  assert.match(withHold, /要確認<b>1<\/b>/);
+  assert.equal((withHold.match(/class="results-change-item"/g) || []).length, 2);
+  assert.match(withHold, /要確認<b>2<\/b>/);
   assert.doesNotMatch(withHold, /class="results-change-status change-unchanged"|対応内容未記録/);
-  assert.equal(recordedChanges(absent).length, 0);
+  assert.deepEqual(recordedChanges(absent), [absent[1]]);
 });
 
 const span = (beforeStart, beforeEnd, afterStart, afterEnd) => ({ beforeStart, beforeEnd, afterStart, afterEnd });
@@ -173,14 +174,18 @@ test('diff rule chips appear once per replacement, never on context rows, and sh
     item('context', 'fixed', { ruleId: 'R999', lineRanges: [span(4, 4, 4, 4)] }),
   ];
   const html = renderToStaticMarkup(createElement(ResultCode, { content: diff, isDiff: true, changes, onOpenRule: noOp }));
+  assert.doesNotMatch(html, /<thead>|<th\b/);
+  assert.match(html, /class="removed"><td class="results-line-number">5<\/td>/);
   assert.equal((html.match(/class="results-code-rules-row"/g) || []).length, 1, 'one row for the removed/added replacement together');
   assert.equal((html.match(/<code>R101<\/code>/g) || []).length, 1);
   assert.equal((html.match(/<code>R102<\/code>/g) || []).length, 1);
-  assert.doesNotMatch(html, /R999/);
+  assert.match(html, /class="results-code-unplaced-row"[\s\S]*?R999/);
+  assert.doesNotMatch(html.slice(html.indexOf('<tr class="hunk"')), /R999/, "unlocated explanations are not assigned to a specific change");
+  assert.doesNotMatch(html, /results-change-report|<details/);
   assert.match(html, /title="R101 · 保存後に通知する"/);
   assert.match(html, /&lt;unsafe title&gt;/);
-  assert.match(html, /<\/span><\/td><\/tr><tr class="removed">/);
-  assert.doesNotMatch(html, /<\/span><\/td><\/tr><tr class="added">/);
+  assert.match(html, /<\/div><\/td><\/tr><tr class="removed">/);
+  assert.doesNotMatch(html, /<\/div><\/td><\/tr><tr class="added">/);
   const plain = renderToStaticMarkup(createElement(ResultCode, { content: 'one\ntwo\nthree\nfour\nnew\nadded', isDiff: false, view: 'after', changes: changes.slice(0, 2), onOpenRule: noOp }));
   assert.equal((plain.match(/class="results-code-rules-row"/g) || []).length, 1);
   const noAnchors = renderToStaticMarkup(createElement(ResultCode, { content: diff, isDiff: true, changes: [item('legacy', 'fixed', { location: '5行目' })] }));
@@ -192,7 +197,7 @@ test('a rule used in separate changes remains visible at every change block', ()
   const changes = [item('repeated', 'fixed', { lineRanges: [span(5, 5, 5, 5), span(7, 7, 7, 7), span(20, 20, 20, 20)] })];
   const html = renderToStaticMarkup(createElement(ResultCode, { content: diff, isDiff: true, changes }));
   assert.equal((html.match(/<code>R101<\/code>/g) || []).length, 3, 'context and hunk boundaries preserve independent rule markers');
-  assert.equal((html.match(/<\/span><\/td><\/tr><tr class="removed">/g) || []).length, 3);
+  assert.equal((html.match(/<\/div><\/td><\/tr><tr class="removed">/g) || []).length, 3);
 });
 
 test('new rules on added rows retain their exact location without repeating removed-side rules', () => {
@@ -206,7 +211,7 @@ test('new rules on added rows retain their exact location without repeating remo
   for (const id of ['R101', 'R102', 'R103']) {
     assert.equal((html.match(new RegExp(`<code>${id}<\\/code>`, 'g')) || []).length, 1);
   }
-  assert.match(html, /<code>R103<\/code><\/button><\/span><\/td><\/tr><tr class="added"><td class="results-line-number"><\/td><td class="results-line-number">6<\/td>/);
+  assert.match(html, /<code>R103<\/code>[\s\S]*?<\/div><\/td><\/tr><tr class="removed"><td class="results-line-number">6<\/td>/);
 });
 
 test('missing final newline markers do not duplicate a replacement rule', () => {
@@ -223,19 +228,19 @@ test('standalone before and after views keep their own rule markers', () => {
   const after = renderToStaticMarkup(createElement(ResultCode, { content: 'context\nextra\nnew\nnewMore\nend', isDiff: false, view: 'after', changes }));
   assert.equal((before.match(/<code>R101<\/code>/g) || []).length, 1);
   assert.equal((after.match(/<code>R101<\/code>/g) || []).length, 1);
-  assert.match(before, /<\/span><\/td><\/tr><tr class="source"><td class="results-line-number">2<\/td>/);
-  assert.match(after, /<\/span><\/td><\/tr><tr class="source"><td class="results-line-number">3<\/td>/);
+  assert.match(before, /<\/div><\/td><\/tr><tr class="source"[^>]*><td class="results-line-number">2<\/td>/);
+  assert.match(after, /<\/div><\/td><\/tr><tr class="source"[^>]*><td class="results-line-number">3<\/td>/);
 });
 
-test('pure insertion/deletion leaves the absent side unmarked and details show exact lines', () => {
+test('pure insertion/deletion leaves the absent side unmarked without prose line labels', () => {
   const deletion = item('delete', 'fixed', { lineRanges: [span(9, 10, 0, 0)] });
   const insertion = item('insert', 'fixed', { ruleId: 'R102', lineRanges: [span(0, 0, 12, 14)] });
   assert.deepEqual(rulesForLine([deletion, insertion], 'before', 12), []);
   assert.deepEqual(rulesForLine([deletion, insertion], 'after', 9), []);
   const html = renderToStaticMarkup(createElement(ChangeReport, { attempt: attempt([deletion, insertion]), onOpenRule: noOp }));
-  assert.match(html, /前 9–10/);
-  assert.match(html, /後 12–14/);
-  assert.doesNotMatch(html, /前 0|後 0/);
+  assert.doesNotMatch(html, /前 \d|後 \d/);
+  assert.match(html, /R101/);
+  assert.match(html, /R102/);
 });
 
 
@@ -280,16 +285,16 @@ test('no-op and failed retries leave all earlier accepted IDs in the previous co
   assert.equal(resultChanges([old], -1, { cumulative: true, changes: old.changes })[0].origin, undefined, 'missing provenance stays neutral');
 });
 
-test('a single diff block merges old and latest IDs without hiding the latest origin or duplicating badges', () => {
+test('changes at the same location merge old and latest IDs without duplicating badges', () => {
   const changes = [
-    item('old', 'fixed', { origin: 'previous', lineRanges: [span(1, 1, 0, 0)] }),
-    item('new', 'fixed', { origin: 'latest', lineRanges: [span(0, 0, 1, 1)] }),
+    item('old', 'fixed', { origin: 'previous', lineRanges: [span(1, 1, 1, 1)] }),
+    item('new', 'fixed', { origin: 'latest', lineRanges: [span(1, 1, 1, 1)] }),
   ];
   const html = renderToStaticMarkup(createElement(ResultCode, { content: '@@ -1 +1 @@\n-old\n+new\n', isDiff: true, changes }));
   assert.equal((html.match(/<code>R101<\/code>/g) || []).length, 1);
   assert.match(html, /data-change-origin="mixed"/);
   assert.match(html, /選択した実行と以前の実行で修正/);
-  assert.match(html, /<\/span><\/td><\/tr><tr class="removed">/);
+  assert.match(html, /<\/div><\/td><\/tr><tr class="removed">/);
 });
 
 test('source view shows timing changes on adjacent lines even when the rule ID is the same', () => {
@@ -301,4 +306,129 @@ test('source view shows timing changes on adjacent lines even when the rule ID i
   assert.equal((html.match(/<code>R101<\/code>/g) || []).length, 2);
   assert.match(html, /data-change-origin="previous"/);
   assert.match(html, /data-change-origin="latest"/);
+});
+
+test('different changes of one rule stay beside their own added lines within one diff block', () => {
+  const changes = [
+    item('api', 'fixed', { change: 'APIの呼び出しを置き換えた', lineRanges: [span(1, 1, 1, 1)] }),
+    item('flush', 'fixed', { change: '通知の前にflushを追加した', lineRanges: [span(0, 0, 2, 2)] }),
+  ];
+  const html = renderToStaticMarkup(createElement(ResultCode, { content: '@@ -1 +1,2 @@\n-writer.add(data);\n+writer.write(data);\n+await writer.flush();\n', isDiff: true, changes }));
+  assert.equal((html.match(/<code>R101<\/code>/g) || []).length, 2);
+  assert.equal((html.match(/APIの呼び出しを置き換えた/g) || []).length, 1);
+  assert.equal((html.match(/通知の前にflushを追加した/g) || []).length, 1);
+  assert.ok(html.indexOf('APIの呼び出しを置き換えた') < html.indexOf('writer.write(data);'));
+  assert.ok(html.indexOf('writer.write(data);') < html.indexOf('通知の前にflushを追加した'));
+  assert.ok(html.indexOf('通知の前にflushを追加した') < html.indexOf('await writer.flush();'));
+});
+
+test('old broad line ranges stay inside the diff as unlocated notes without implying exact attribution', () => {
+  const change = item('old', 'fixed', { attributionVersion: undefined, change: '以前の保存処理の修正', lineRanges: [span(1, 50, 1, 50)] });
+  assert.deepEqual(rulesForLine([change], 'after', 1), []);
+  const html = renderToStaticMarkup(createElement(ResultCode, { content: '@@ -1 +1 @@\n-old\n+new\n', isDiff: true, changes: [change] }));
+  assert.match(html, /以前の保存処理の修正/);
+  const code = html.slice(html.indexOf('<div class="results-code is-diff"'));
+  assert.match(code, /results-code-unplaced-row/);
+  assert.match(code, /位置未特定の対応記録/);
+  assert.doesNotMatch(code, /class="results-code-rules-row"|<details|results-change-report/);
+});
+
+
+test('merged change rows show a rule id and concrete edits without descriptions, adoption boilerplate or decision details', () => {
+  const changes = [
+    item('import', 'fixed', { change: 'ReportWriterのimportを削除した', reason: '機械検証と独立レビューを通過した修正をコミットしました。', lineRanges: [span(1, 1, 1, 1)] }),
+    item('new-import', 'fixed', { change: 'parcel-client.jsからreportsをimportした', reason: '検証結果に基づく判定', lineRanges: [span(0, 0, 1, 1)] }),
+    item('hold', 'needs_human', { ruleId: 'R102', change: '契約の変更を確認する', reason: '呼び出し元の契約が確認できない' }),
+  ];
+  const rules = new Map([['R101', { id: 'R101', title: 'importを整理する', summary: '旧API移行後に不要なimportを除去し、新APIのimportを重複なく配置する' }]]);
+  const html = renderToStaticMarkup(createElement(ResultCode, { content: '@@ -1 +1 @@\n-old\n+updated\n', isDiff: true, changes, rules }));
+  assert.equal((html.match(/<code>R101<\/code>/g) || []).length, 1);
+  assert.equal((html.match(/class="results-line-rule"/g) || []).length, 2, 'one located rule group and one unlocated human decision');
+  for (const text of ['ReportWriterのimportを削除した', 'parcel-client.jsからreportsをimportした', '呼び出し元の契約が確認できない', '要確認', '修正済み']) assert.ok(html.includes(text), text);
+  assert.match(html, /<code>R101<\/code>[\s\S]*?：[\s\S]*?ReportWriterのimportを削除した/);
+  assert.doesNotMatch(html, /旧API移行後に不要なimportを除去し、新APIのimportを重複なく配置する/);
+  const code = html.slice(html.indexOf('<div class="results-code is-diff"'));
+  assert.doesNotMatch(code, /機械検証と独立レビューを通過した修正をコミットしました。|検証結果に基づく判定|判断の詳細|保存失敗時に通知だけ届く|通知前に保存が完了する/);
+  assert.doesNotMatch(html, /前 \d|後 \d/);
+});
+
+test('cumulative split coordinates show the rule id and concrete fix above the replacement only once', () => {
+  const changes = [item('repair', 'fixed', { change: '保存後に完了通知を移動した', lineRanges: [span(3, 3, 0, 0), span(0, 0, 3, 3)] })];
+  const rules = new Map([['R101', { id: 'R101', title: '順序を修正', summary: '保存完了後にだけ完了通知を送信する' }]]);
+  const html = renderToStaticMarkup(createElement(ResultCode, { content: '@@ -3 +3 @@\n-notify(); save();\n+save(); notify();\n', isDiff: true, changes, rules }));
+  assert.equal((html.match(/class="results-code-rules-row"/g) || []).length, 1);
+  assert.equal((html.match(/<code>R101<\/code>/g) || []).length, 1);
+  assert.match(html, /<code>R101<\/code>[\s\S]*?：[\s\S]*?保存後に完了通知を移動した/);
+  assert.doesNotMatch(html, /保存完了後にだけ完了通知を送信する/);
+  assert.ok(html.indexOf('保存後に完了通知を移動した') < html.indexOf('-notify(); save();'));
+  assert.doesNotMatch(html, /results-change-report|<details|位置未特定/);
+});
+
+
+test('held reasons appear at verified unchanged context and source lines even without a change or rule id', () => {
+  const held = item('held', 'needs_human', { ruleId: '', change: '', reason: '送信先の契約を確認してください', lineRanges: [span(2, 3, 2, 3)] });
+  const diff = '@@ -1,4 +1,4 @@\n-old\n+new\n deliver();\n acknowledge();\n end();\n';
+  const html = renderToStaticMarkup(createElement(ResultCode, { content: diff, isDiff: true, changes: [held] }));
+  assert.equal((html.match(/送信先の契約を確認してください/g) || []).length, 1, 'continuous context does not repeat the same hold');
+  assert.ok(html.indexOf('送信先の契約を確認してください') < html.indexOf(' deliver();'));
+  assert.match(html, /change-needs_human/);
+  assert.doesNotMatch(html, /<code>|位置未特定|表示範囲外/);
+  for (const view of ['before', 'after']) {
+    const source = renderToStaticMarkup(createElement(ResultCode, { content: 'start();\ndeliver();\nacknowledge();\nend();', isDiff: false, view, changes: [held] }));
+    assert.equal((source.match(/送信先の契約を確認してください/g) || []).length, 1);
+    assert.ok(source.indexOf('送信先の契約を確認してください') < source.indexOf('data-source-line="2"'));
+  }
+});
+
+test('held navigation chooses a verified source coordinate and never uses prose or old broad coordinates', () => {
+  const held = item('held', 'needs_human', { change: '', reason: '認証の引き継ぎ方を確認する', lineRanges: [span(40, 40, 42, 42)] });
+  const counts = { before: 50, after: 55 };
+  assert.deepEqual(heldSourceTarget(held, 'after', counts), { side: 'after', line: 42 });
+  assert.deepEqual(heldSourceTarget(held, 'before', counts), { side: 'before', line: 40 });
+  assert.deepEqual(heldSourceTarget(held, 'after', { ...counts, after: 3 }), { side: 'before', line: 40 });
+  assert.equal(heldSourceTarget({ ...held, attributionVersion: undefined, location: '42行目' }, 'after', counts), null);
+  const detail = { before: 'line\n'.repeat(50), after: 'line\n'.repeat(55), cumulative: true };
+  const menu = renderToStaticMarkup(createElement(HeldChangeMenu, { changes: [held, { ...held, id: 'old', attributionVersion: undefined }], detail, view: 'diff', onChoose: noOp }));
+  assert.match(menu, /要確認 <b>2<\/b>件/);
+  assert.match(menu, /変更後の 42 行目を表示/);
+  assert.match(menu, /位置未特定・ファイル全体を表示/);
+  assert.match(menu, /認証の引き継ぎ方を確認する/);
+});
+
+test('an unaccepted candidate-only hold opens its original attempt instead of guessing an accepted-file position', () => {
+  const held = item('review-issue', 'needs_human', { lineRanges: [span(0, 0, 82, 82)] });
+  const history = [attempt([], { id: 'first' }), attempt([held], { id: 'rejected' })];
+  const cumulative = { ...held, id: 'attempt:rejected:0:review-issue', sourceAttemptId: 'rejected', lineRanges: [] };
+  const detail = { before: 'original', after: 'accepted', cumulative: true };
+  assert.deepEqual(heldChangeDestination(cumulative, detail, 'diff', history), { side: 'after', line: 82, attemptIndex: 1 });
+  assert.equal(heldChangeDestination({ ...cumulative, id: 'attempt:rejected:1:review-issue' }, detail, 'diff', history), null);
+  assert.equal(heldChangeDestination({ ...cumulative, sourceAttemptId: 'unknown' }, detail, 'diff', history), null);
+  const menu = renderToStaticMarkup(createElement(HeldChangeMenu, { changes: [cumulative], detail, view: 'diff', history, onChoose: noOp }));
+  assert.match(menu, /試行 2・変更後の 82 行目を表示/);
+});
+
+test('jumping to a held line past the normal rendering limit displays and marks the requested source window', () => {
+  const held = item('late', 'needs_human', { change: '', reason: 'この値の出所を確認する', lineRanges: [span(10003, 10003, 10003, 10003)] });
+  const content = Array.from({ length: 10005 }, (_, index) => `source_${index + 1}`).join('\n');
+  const html = renderToStaticMarkup(createElement(ResultCode, { content, isDiff: false, view: 'after', changes: [held], focus: { line: 10003, request: 1 } }));
+  assert.match(html, /class="source is-held-target" data-source-line="10003"/);
+  assert.match(html, /この値の出所を確認する/);
+  assert.doesNotMatch(html, /data-source-line="1"/);
+});
+
+test('partial same-rule adoption places fixed work and held scope beside their own code', () => {
+  const changes = [
+    item('safe', 'fixed', { change: '専用接続を保存後に解放した', lineRanges: [{ beforeStart: 1, beforeEnd: 1, afterStart: 1, afterEnd: 1 }] }),
+    item('held', 'needs_human', { change: '共有接続の所有権を確認する', reason: '共有接続を解放してよいか確認してください', lineRanges: [{ beforeStart: 2, beforeEnd: 2, afterStart: 2, afterEnd: 2 }] }),
+  ];
+  const html = renderToStaticMarkup(createElement(ResultCode, {
+    content: '@@ -1,2 +1,2 @@\n-save();\n+saveAndRelease();\n releaseShared();\n', isDiff: true, changes,
+  }));
+  assert.equal((html.match(/専用接続を保存後に解放した/g) || []).length, 1);
+  assert.equal((html.match(/共有接続を解放してよいか確認してください/g) || []).length, 1);
+  assert.ok(html.indexOf('専用接続を保存後に解放した') < html.indexOf('-save();'));
+  assert.ok(html.indexOf('共有接続を解放してよいか確認してください') > html.indexOf('+saveAndRelease();'));
+  assert.ok(html.indexOf('共有接続を解放してよいか確認してください') < html.indexOf(' releaseShared();'));
+  assert.match(html, /change-fixed/);
+  assert.match(html, /change-needs_human/);
 });

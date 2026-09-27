@@ -160,11 +160,11 @@ func executeRulesCommand(ctx context.Context, s *engine.Service, args []string, 
 		}
 	case "import":
 		configure = func(f *flag.FlagSet) {
-			f.StringVar(&input, "input", "", ".oborules ファイル")
+			f.StringVar(&input, "input", "", "rules.json またはCSVファイル")
 			f.StringVar(&mode, "mode", "", "replace または merge")
 		}
 	case "export":
-		configure = func(f *flag.FlagSet) { f.StringVar(&output, "output", "", "保存先 .oborules ファイル") }
+		configure = func(f *flag.FlagSet) { f.StringVar(&output, "output", "", "保存先 rules.json") }
 	default:
 		return nil, fmt.Errorf("不明な rules 操作 %q", command)
 	}

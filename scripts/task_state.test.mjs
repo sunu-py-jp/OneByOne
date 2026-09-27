@@ -5,7 +5,7 @@ import ts from '../frontend/node_modules/typescript/lib/typescript.js';
 
 const source = await readFile(new URL('../frontend/src/task-state.ts', import.meta.url), 'utf8');
 const { outputText } = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } });
-const { taskDisplayStatus, taskStatusLabel, compareTaskStatus, isCompletedTask } = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`);
+const { taskDisplayStatus, taskStatusLabel, compareTaskStatus, isCompletedTask, isPartialAdoption, attemptStatusLabel } = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`);
 
 test('retry presentation requires a pending task with a persisted resume request', () => {
   assert.equal(taskStatusLabel({ status: 'pending' }), '未修正');
@@ -44,4 +44,20 @@ test('unchanged retry keeps effective accepted changes complete without promotin
     assert.equal(taskDisplayStatus({ status, canDiscardChanges: true }), status);
   }
   assert.equal(taskDisplayStatus({ status: 'pending', resumeRequested: true, canDiscardChanges: true }), 'retry');
+});
+
+
+test('partial adoption remains actionable while distinguishing accepted fixes from an untouched hold', () => {
+  const partial = { status: 'needs_human', canDiscardChanges: true };
+  assert.equal(taskStatusLabel(partial), '修正済み・要確認あり');
+  assert.equal(taskDisplayStatus(partial), 'needs_human');
+  assert.equal(isCompletedTask(partial), false);
+  assert.equal(taskStatusLabel({ ...partial, canDiscardChanges: false }), '要確認');
+  const accepted = { outcome: 'needs_human', partial: true, commit: 'accepted' };
+  assert.equal(isPartialAdoption(accepted), true);
+  assert.equal(attemptStatusLabel(accepted), '修正済み・要確認あり');
+  for (const attempt of [{ ...accepted, partial: false }, { ...accepted, commit: '' }, { ...accepted, outcome: 'failed' }]) {
+    assert.equal(isPartialAdoption(attempt), false);
+    assert.notEqual(attemptStatusLabel(attempt), '修正済み・要確認あり');
+  }
 });

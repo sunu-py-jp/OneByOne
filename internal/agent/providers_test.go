@@ -194,7 +194,7 @@ func TestAllProvidersToolLoopPreservesNativeHistoryAndUsage(t *testing.T) {
 					case 1:
 						claudeReply(w, "tool_use", usage, map[string]any{"type": "tool_use", "id": "call_2", "name": "read_context", "input": map[string]any{"path": "src/context.txt", "startLine": 1, "endLine": 10}})
 					case 2:
-						claudeReply(w, "tool_use", usage, map[string]any{"type": "tool_use", "id": "plan", "name": "update_state", "input": testPlan(0)})
+						claudeReply(w, "tool_use", usage, map[string]any{"type": "tool_use", "id": "plan", "name": "update_state", "input": testPlanWire(testPlan(0))})
 					case 3:
 						claudeReply(w, "tool_use", usage, map[string]any{"type": "tool_use", "id": "validate", "name": "validate_candidate", "input": testCandidate()})
 					case 4:

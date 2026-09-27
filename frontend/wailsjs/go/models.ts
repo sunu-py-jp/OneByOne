@@ -1,15 +1,15 @@
 export namespace model {
-	
+
 	export class ChangeLineRange {
 	    beforeStart: number;
 	    beforeEnd: number;
 	    afterStart: number;
 	    afterEnd: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ChangeLineRange(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.beforeStart = source["beforeStart"];
@@ -29,12 +29,13 @@ export namespace model {
 	    status: string;
 	    reason: string;
 	    lineRanges?: ChangeLineRange[];
+	    attributionVersion?: number;
 	    sourceAttemptId?: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ChangeReportItem(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -47,9 +48,10 @@ export namespace model {
 	        this.status = source["status"];
 	        this.reason = source["reason"];
 	        this.lineRanges = this.convertValues(source["lineRanges"], ChangeLineRange);
+	        this.attributionVersion = source["attributionVersion"];
 	        this.sourceAttemptId = source["sourceAttemptId"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -68,24 +70,46 @@ export namespace model {
 		    return a;
 		}
 	}
+	export class ReviewHoldAssessment {
+	    itemId: string;
+	    status: string;
+	    reason: string;
+
+	    static createFrom(source: any = {}) {
+	        return new ReviewHoldAssessment(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.itemId = source["itemId"];
+	        this.status = source["status"];
+	        this.reason = source["reason"];
+	    }
+	}
 	export class ReviewIssue {
+	    kind?: string;
 	    ruleId: string;
 	    location: string;
 	    lineBasis: string;
 	    excerpt: string;
+	    startLine: number;
+	    endLine: number;
 	    reason: string;
 	    requestedChange: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ReviewIssue(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.kind = source["kind"];
 	        this.ruleId = source["ruleId"];
 	        this.location = source["location"];
 	        this.lineBasis = source["lineBasis"];
 	        this.excerpt = source["excerpt"];
+	        this.startLine = source["startLine"];
+	        this.endLine = source["endLine"];
 	        this.reason = source["reason"];
 	        this.requestedChange = source["requestedChange"];
 	    }
@@ -94,11 +118,11 @@ export namespace model {
 	    ruleId: string;
 	    status: string;
 	    reason: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ReviewAssessment(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.ruleId = source["ruleId"];
@@ -116,14 +140,15 @@ export namespace model {
 	    summary: string;
 	    assessments: ReviewAssessment[];
 	    issues: ReviewIssue[];
+	    holdAssessments?: ReviewHoldAssessment[];
 	    usage: Usage;
 	    startedAt: string;
 	    finishedAt: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new IndependentReview(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -135,11 +160,12 @@ export namespace model {
 	        this.summary = source["summary"];
 	        this.assessments = this.convertValues(source["assessments"], ReviewAssessment);
 	        this.issues = this.convertValues(source["issues"], ReviewIssue);
+	        this.holdAssessments = this.convertValues(source["holdAssessments"], ReviewHoldAssessment);
 	        this.usage = this.convertValues(source["usage"], Usage);
 	        this.startedAt = source["startedAt"];
 	        this.finishedAt = source["finishedAt"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -165,11 +191,11 @@ export namespace model {
 	    outputTokens: number;
 	    costUsd: number;
 	    turns: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new Usage(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.uncertain = source["uncertain"];
@@ -185,11 +211,11 @@ export namespace model {
 	    status: string;
 	    detail: string;
 	    durationMs: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new Check(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
@@ -205,6 +231,7 @@ export namespace model {
 	    startedAt: string;
 	    finishedAt: string;
 	    outcome: string;
+	    partial?: boolean;
 	    note: string;
 	    rulesApplied: string[];
 	    checks: Check[];
@@ -212,16 +239,17 @@ export namespace model {
 	    diffPath: string;
 	    commit: string;
 	    baseCommit: string;
+	    commitBase?: string;
 	    inputHash: string;
 	    outputHash: string;
 	    repairPath?: string;
 	    reviews?: IndependentReview[];
 	    changes?: ChangeReportItem[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new Attempt(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -230,6 +258,7 @@ export namespace model {
 	        this.startedAt = source["startedAt"];
 	        this.finishedAt = source["finishedAt"];
 	        this.outcome = source["outcome"];
+	        this.partial = source["partial"];
 	        this.note = source["note"];
 	        this.rulesApplied = source["rulesApplied"];
 	        this.checks = this.convertValues(source["checks"], Check);
@@ -237,13 +266,14 @@ export namespace model {
 	        this.diffPath = source["diffPath"];
 	        this.commit = source["commit"];
 	        this.baseCommit = source["baseCommit"];
+	        this.commitBase = source["commitBase"];
 	        this.inputHash = source["inputHash"];
 	        this.outputHash = source["outputHash"];
 	        this.repairPath = source["repairPath"];
 	        this.reviews = this.convertValues(source["reviews"], IndependentReview);
 	        this.changes = this.convertValues(source["changes"], ChangeReportItem);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -262,32 +292,15 @@ export namespace model {
 		    return a;
 		}
 	}
-	
-	
-	
-	export class Command {
-	    name: string;
-	    executable: string;
-	    args: string[];
-	
-	    static createFrom(source: any = {}) {
-	        return new Command(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.name = source["name"];
-	        this.executable = source["executable"];
-	        this.args = source["args"];
-	    }
-	}
+
+
+
 	export class Config {
 	    llmConnectionId?: string;
-	    rulePackageName?: string;
 	    provider?: string;
 	    root: string;
 	    rulesPath: string;
-	    legacyPath: string;
+	    excludedRuleIds?: string[];
 	    queuePath: string;
 	    rgPath: string;
 	    endpoint?: string;
@@ -295,9 +308,7 @@ export namespace model {
 	    authMode?: string;
 	    credential?: string;
 	    credentialSet?: boolean;
-	    includeGlobs: string[];
-	    excludeGlobs: string[];
-	    checkCommands: Command[];
+	    concurrency?: number;
 	    maxAttempts: number;
 	    maxTurns: number;
 	    maxOutputTokens: number;
@@ -307,19 +318,18 @@ export namespace model {
 	    inputPricePerMillion: number;
 	    cachedInputPricePerMillion: number;
 	    outputPricePerMillion: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new Config(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.llmConnectionId = source["llmConnectionId"];
-	        this.rulePackageName = source["rulePackageName"];
 	        this.provider = source["provider"];
 	        this.root = source["root"];
 	        this.rulesPath = source["rulesPath"];
-	        this.legacyPath = source["legacyPath"];
+	        this.excludedRuleIds = source["excludedRuleIds"];
 	        this.queuePath = source["queuePath"];
 	        this.rgPath = source["rgPath"];
 	        this.endpoint = source["endpoint"];
@@ -327,9 +337,7 @@ export namespace model {
 	        this.authMode = source["authMode"];
 	        this.credential = source["credential"];
 	        this.credentialSet = source["credentialSet"];
-	        this.includeGlobs = source["includeGlobs"];
-	        this.excludeGlobs = source["excludeGlobs"];
-	        this.checkCommands = this.convertValues(source["checkCommands"], Command);
+	        this.concurrency = source["concurrency"];
 	        this.maxAttempts = source["maxAttempts"];
 	        this.maxTurns = source["maxTurns"];
 	        this.maxOutputTokens = source["maxOutputTokens"];
@@ -340,24 +348,6 @@ export namespace model {
 	        this.cachedInputPricePerMillion = source["cachedInputPricePerMillion"];
 	        this.outputPricePerMillion = source["outputPricePerMillion"];
 	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
 	}
 	export class DiscardChange {
 	    id: string;
@@ -370,11 +360,11 @@ export namespace model {
 	    inputHash: string;
 	    outputHash: string;
 	    throughAttempt: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new DiscardChange(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -395,12 +385,13 @@ export namespace model {
 	    finishedAt?: string;
 	    status: string;
 	    targetCount: number;
+	    concurrency?: number;
 	    error?: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ExecutionRun(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -408,6 +399,7 @@ export namespace model {
 	        this.finishedAt = source["finishedAt"];
 	        this.status = source["status"];
 	        this.targetCount = source["targetCount"];
+	        this.concurrency = source["concurrency"];
 	        this.error = source["error"];
 	    }
 	}
@@ -415,11 +407,11 @@ export namespace model {
 	    time: string;
 	    level: string;
 	    message: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new LogEntry(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.time = source["time"];
@@ -431,31 +423,25 @@ export namespace model {
 	    id: string;
 	    title: string;
 	    summary: string;
-	    pattern: string;
-	    overview: string;
-	    before: string;
-	    after: string;
-	    notes: string;
-	    holdConditions: string;
+	    pathPattern: string;
+	    contentPattern: string;
+	    body: string;
 	    always: boolean;
 	    candidateCount: number;
 	    appliedCount: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new Rule(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
 	        this.title = source["title"];
 	        this.summary = source["summary"];
-	        this.pattern = source["pattern"];
-	        this.overview = source["overview"];
-	        this.before = source["before"];
-	        this.after = source["after"];
-	        this.notes = source["notes"];
-	        this.holdConditions = source["holdConditions"];
+	        this.pathPattern = source["pathPattern"];
+	        this.contentPattern = source["contentPattern"];
+	        this.body = source["body"];
 	        this.always = source["always"];
 	        this.candidateCount = source["candidateCount"];
 	        this.appliedCount = source["appliedCount"];
@@ -466,6 +452,7 @@ export namespace model {
 	    discards?: DiscardChange[];
 	    file: string;
 	    excluded?: boolean;
+	    excludedBeforeScope?: boolean;
 	    rules: string[];
 	    status: string;
 	    attempts: number;
@@ -475,17 +462,18 @@ export namespace model {
 	    updatedAt: string;
 	    history: Attempt[];
 	    resumeRequested?: boolean;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new Task(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.canDiscardChanges = source["canDiscardChanges"];
 	        this.discards = this.convertValues(source["discards"], DiscardChange);
 	        this.file = source["file"];
 	        this.excluded = source["excluded"];
+	        this.excludedBeforeScope = source["excludedBeforeScope"];
 	        this.rules = source["rules"];
 	        this.status = source["status"];
 	        this.attempts = source["attempts"];
@@ -496,7 +484,7 @@ export namespace model {
 	        this.history = this.convertValues(source["history"], Attempt);
 	        this.resumeRequested = source["resumeRequested"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -522,11 +510,11 @@ export namespace model {
 	    ruleId?: string;
 	    file?: string;
 	    section?: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new WorkspaceIssue(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -542,11 +530,11 @@ export namespace model {
 	    name: string;
 	    root: string;
 	    issues?: WorkspaceIssue[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new Workspace(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -554,7 +542,7 @@ export namespace model {
 	        this.root = source["root"];
 	        this.issues = this.convertValues(source["issues"], WorkspaceIssue);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -577,11 +565,11 @@ export namespace model {
 	    owner: string;
 	    host: string;
 	    openedAt: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new WorkspaceLock(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.owner = source["owner"];
@@ -602,11 +590,11 @@ export namespace model {
 	    oauthClientId?: string;
 	    oauthUsername?: string;
 	    oauthSignedIn: boolean;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new LLMConnection(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -639,17 +627,19 @@ export namespace model {
 	    running: boolean;
 	    phase: string;
 	    currentFile: string;
+	    currentFiles: string[];
+	    filePhases: Record<string, string>;
 	    worktree: string;
 	    branch: string;
 	    scannedCount: number;
 	    excludedCount: number;
 	    usage: Usage;
 	    lastError: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new State(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.executionRuns = this.convertValues(source["executionRuns"], ExecutionRun);
@@ -667,6 +657,8 @@ export namespace model {
 	        this.running = source["running"];
 	        this.phase = source["phase"];
 	        this.currentFile = source["currentFile"];
+	        this.currentFiles = source["currentFiles"];
+	        this.filePhases = source["filePhases"];
 	        this.worktree = source["worktree"];
 	        this.branch = source["branch"];
 	        this.scannedCount = source["scannedCount"];
@@ -674,7 +666,7 @@ export namespace model {
 	        this.usage = this.convertValues(source["usage"], Usage);
 	        this.lastError = source["lastError"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -697,18 +689,18 @@ export namespace model {
 	    run: ExecutionRun;
 	    state: State;
 	    targetFiles: string[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ExecutionRunResult(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.run = this.convertValues(source["run"], ExecutionRun);
 	        this.state = this.convertValues(source["state"], State);
 	        this.targetFiles = source["targetFiles"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -734,11 +726,11 @@ export namespace model {
 	    diff: string;
 	    cumulative: boolean;
 	    changes: ChangeReportItem[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new FileDetail(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.task = this.convertValues(source["task"], Task);
@@ -748,7 +740,7 @@ export namespace model {
 	        this.cumulative = source["cumulative"];
 	        this.changes = this.convertValues(source["changes"], ChangeReportItem);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -774,11 +766,11 @@ export namespace model {
 	    path: string;
 	    version: string;
 	    message: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new GitInstallation(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.available = source["available"];
@@ -789,20 +781,20 @@ export namespace model {
 	        this.message = source["message"];
 	    }
 	}
-	
-	
-	
+
+
+
 	export class PublishResultsRequest {
 	    workspaceId: string;
 	    revision: string;
 	    branch: string;
 	    title: string;
 	    message: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new PublishResultsRequest(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.workspaceId = source["workspaceId"];
@@ -821,11 +813,11 @@ export namespace model {
 	    fileCount: number;
 	    title: string;
 	    message: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ResultPublication(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.branch = source["branch"];
@@ -840,17 +832,19 @@ export namespace model {
 	}
 	export class ResultPublicationFile {
 	    file: string;
+	    linkPath: string;
 	    rulesApplied: string[];
 	    summary: string;
 	    diff: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ResultPublicationFile(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.file = source["file"];
+	        this.linkPath = source["linkPath"];
 	        this.rulesApplied = source["rulesApplied"];
 	        this.summary = source["summary"];
 	        this.diff = source["diff"];
@@ -865,11 +859,11 @@ export namespace model {
 	    message: string;
 	    files: ResultPublicationFile[];
 	    publications: ResultPublication[];
-	
+
 	    static createFrom(source: any = {}) {
 	        return new ResultPublicationPreview(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.workspaceId = source["workspaceId"];
@@ -881,7 +875,7 @@ export namespace model {
 	        this.files = this.convertValues(source["files"], ResultPublicationFile);
 	        this.publications = this.convertValues(source["publications"], ResultPublication);
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -900,35 +894,32 @@ export namespace model {
 		    return a;
 		}
 	}
-	
-	
-	
+
+
+
+
 	export class RuleEdit {
 	    expectedRevision?: string;
 	    id: string;
 	    name: string;
-	    overview: string;
-	    before: string;
-	    after: string;
-	    notes: string;
-	    holdConditions: string;
-	    pattern: string;
-	
+	    description: string;
+	    pathPattern: string;
+	    contentPattern: string;
+	    body: string;
+
 	    static createFrom(source: any = {}) {
 	        return new RuleEdit(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.expectedRevision = source["expectedRevision"];
 	        this.id = source["id"];
 	        this.name = source["name"];
-	        this.overview = source["overview"];
-	        this.before = source["before"];
-	        this.after = source["after"];
-	        this.notes = source["notes"];
-	        this.holdConditions = source["holdConditions"];
-	        this.pattern = source["pattern"];
+	        this.description = source["description"];
+	        this.pathPattern = source["pathPattern"];
+	        this.contentPattern = source["contentPattern"];
+	        this.body = source["body"];
 	    }
 	}
 	export class RuleEditor {
@@ -937,11 +928,11 @@ export namespace model {
 	    readOnly: boolean;
 	    lockOwner?: string;
 	    lockHost?: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new RuleEditor(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.revision = source["revision"];
@@ -950,7 +941,7 @@ export namespace model {
 	        this.lockOwner = source["lockOwner"];
 	        this.lockHost = source["lockHost"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -969,15 +960,15 @@ export namespace model {
 		    return a;
 		}
 	}
-	
+
 	export class TargetFile {
 	    file: string;
 	    size: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new TargetFile(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.file = source["file"];
@@ -991,11 +982,11 @@ export namespace model {
 	    size: number;
 	    content: string;
 	    unavailableReason: string;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new TargetFileContent(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.workspaceId = source["workspaceId"];
@@ -1012,11 +1003,11 @@ export namespace model {
 	    files: TargetFile[];
 	    truncated: boolean;
 	    limit: number;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new TargetFileList(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.workspaceId = source["workspaceId"];
@@ -1025,7 +1016,7 @@ export namespace model {
 	        this.truncated = source["truncated"];
 	        this.limit = source["limit"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -1044,10 +1035,10 @@ export namespace model {
 		    return a;
 		}
 	}
-	
-	
-	
-	
+
+
+
+
 
 }
 

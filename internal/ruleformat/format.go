@@ -1,5 +1,4 @@
-// Package ruleformat defines the single persisted rule schema and the Markdown
-// representation sent to the model. UI and stored data remain structured.
+// Package ruleformat parses Markdown rules with YAML front matter.
 package ruleformat
 
 import (
@@ -9,149 +8,233 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 	"unicode/utf8"
+
+	"gopkg.in/yaml.v3"
 
 	"onebyone/internal/model"
 )
 
-const Version = 1
 const MaxBytes = 4 << 20
 
-var fields = map[string]bool{"version": true, "name": true, "overview": true, "before": true, "after": true, "notes": true, "holdConditions": true, "pattern": true}
+// Rule IDs are also lock-file names, commit trailers and LLM tool arguments.
+var (
+	validID   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
+	decimalID = regexp.MustCompile(`^(0|[1-9][0-9]*)$`)
+)
+
+var frontMatterKeys = []string{"id", "name", "description", "path_pattern", "content_pattern"}
+
+const invalidIDMessage = "id は英数字で始まる64文字以内の英数字・ハイフン・アンダースコアで入力してください"
+
+func ValidID(id string) bool { return validID.MatchString(id) }
+
+func NormalizeID(id string) (string, error) {
+	id = strings.TrimSpace(strings.TrimPrefix(id, "\ufeff"))
+	if id == "" {
+		return "", fmt.Errorf("id を入力してください")
+	}
+	if !validID.MatchString(id) {
+		return "", fmt.Errorf(invalidIDMessage)
+	}
+	return id, nil
+}
 
 func NormalizeName(name string) (string, error) {
 	name = strings.TrimSpace(strings.TrimPrefix(name, "\ufeff"))
-	if !utf8.ValidString(name) || name == "" || utf8.RuneCountInString(name) > 200 || strings.ContainsAny(name, "\r\n\x00\u0085\u2028\u2029") {
-		return "", fmt.Errorf("ルール名は改行やNULを含まない1〜200文字のUTF-8テキストにしてください")
+	if name == "" {
+		return "", fmt.Errorf("name を入力してください")
+	}
+	if !utf8.ValidString(name) || utf8.RuneCountInString(name) > 200 || strings.ContainsAny(name, "\r\n\x00\u0085  ") {
+		return "", fmt.Errorf("name は改行やNULを含まない1〜200文字で入力してください")
 	}
 	return name, nil
 }
-
 func Validate(d model.RuleDefinition) error {
-	if d.Version != Version {
-		return fmt.Errorf("rule.json のversionは1で指定してください")
+	if _, err := NormalizeID(d.ID); err != nil {
+		return err
 	}
 	if _, err := NormalizeName(d.Name); err != nil {
 		return err
 	}
-	for _, text := range []string{d.Name, d.Overview, d.Before, d.After, d.Notes, d.HoldConditions, d.Pattern} {
-		if !utf8.ValidString(text) || strings.ContainsRune(text, 0) {
-			return fmt.Errorf("ルールの各項目はNULを含まないUTF-8テキストにしてください")
+	if strings.TrimSpace(d.Description) == "" {
+		return fmt.Errorf("description を入力してください")
+	}
+	for _, v := range []string{d.Name, d.Description, d.PathPattern, d.ContentPattern, d.Body} {
+		if !utf8.ValidString(v) || strings.ContainsRune(v, 0) {
+			return fmt.Errorf("ルールはNULを含まないUTF-8で入力してください")
 		}
 	}
-	if strings.ContainsAny(d.Pattern, "\r\n\u0085\u2028\u2029") {
-		return fmt.Errorf("適用パターンは改行を含まない1行で入力してください")
+	for _, v := range []string{d.PathPattern, d.ContentPattern} {
+		if strings.ContainsAny(v, "\r\n\u0085  ") {
+			return fmt.Errorf("適用パターンは1行で入力してください")
+		}
 	}
-	data, err := json.Marshal(d)
-	if err != nil || len(data) > MaxBytes {
-		return fmt.Errorf("rule.json は4MiB以内にしてください")
+	data, _ := json.Marshal(d)
+	if len(data) > MaxBytes {
+		return fmt.Errorf("ルールは4MiB以内にしてください")
 	}
 	return nil
 }
 
+// parse splits the front matter from the body. A lenient parse ignores
+// unknown or repeated keys so a stored rule can still be identified.
+func parse(data []byte, strict bool) (map[string]*yaml.Node, string, error) {
+	if len(data) > MaxBytes || !utf8.Valid(data) {
+		return nil, "", fmt.Errorf("ルールは4MiB以内のUTF-8で指定してください")
+	}
+	text := strings.TrimPrefix(string(data), "\ufeff")
+	lines := strings.SplitAfter(text, "\n")
+	if len(lines) == 0 || strings.TrimRight(lines[0], "\r\n") != "---" {
+		return nil, "", fmt.Errorf("ルールの先頭に --- で囲むfront matterが必要です")
+	}
+	end := -1
+	for i := 1; i < len(lines); i++ {
+		if strings.TrimRight(lines[i], "\r\n") == "---" {
+			end = i
+			break
+		}
+	}
+	if end < 0 {
+		return nil, "", fmt.Errorf("front matter の終端 --- がありません")
+	}
+	decoder := yaml.NewDecoder(strings.NewReader(strings.Join(lines[1:end], "")))
+	var node yaml.Node
+	if err := decoder.Decode(&node); err != nil {
+		return nil, "", fmt.Errorf("front matter を読み込めません: %w", err)
+	}
+	if len(node.Content) != 1 || node.Content[0].Kind != yaml.MappingNode {
+		return nil, "", fmt.Errorf("front matter はid・name・description・path_pattern・content_patternの項目で指定してください")
+	}
+	known := map[string]bool{}
+	for _, key := range frontMatterKeys {
+		known[key] = true
+	}
+	fields := map[string]*yaml.Node{}
+	mapping := node.Content[0]
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		k, v := mapping.Content[i], mapping.Content[i+1]
+		if !known[k.Value] || fields[k.Value] != nil {
+			if strict {
+				return nil, "", fmt.Errorf("front matter に未定義または重複した項目があります: %s", k.Value)
+			}
+			continue
+		}
+		fields[k.Value] = v
+	}
+	if err := decoder.Decode(new(any)); strict && err != io.EOF {
+		return nil, "", fmt.Errorf("front matter に余分な文書があります")
+	}
+	body := strings.Join(lines[end+1:], "")
+	body = strings.TrimPrefix(body, "\r\n")
+	body = strings.TrimPrefix(body, "\n")
+	return fields, body, nil
+}
+
+// An unquoted `id: 1` is a YAML integer; the ID is always its literal text.
+func idValue(v *yaml.Node) (string, error) {
+	if v == nil || (v.Kind == yaml.ScalarNode && v.Tag == "!!null") {
+		return "", fmt.Errorf("id を入力してください")
+	}
+	if v.Kind != yaml.ScalarNode {
+		return "", fmt.Errorf(invalidIDMessage)
+	}
+	return NormalizeID(v.Value)
+}
+
+// PeekID identifies a stored rule even when its other fields are invalid.
+func PeekID(data []byte) (string, error) {
+	fields, _, err := parse(data, false)
+	if err != nil {
+		return "", err
+	}
+	return idValue(fields["id"])
+}
+
 func Decode(data []byte) (model.RuleDefinition, error) {
 	var d model.RuleDefinition
-	if len(data) > MaxBytes || !utf8.Valid(data) {
-		return d, fmt.Errorf("rule.json は4MiB以内のUTF-8で指定してください")
+	fields, body, err := parse(data, true)
+	if err != nil {
+		return d, err
 	}
-	data = bytes.TrimPrefix(data, []byte{0xef, 0xbb, 0xbf})
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	token, err := decoder.Token()
-	if err != nil || token != json.Delim('{') {
-		return d, fmt.Errorf("rule.json はJSONオブジェクトで指定してください")
+	if v := fields["id"]; v != nil && v.Kind != yaml.ScalarNode {
+		return d, fmt.Errorf(invalidIDMessage)
+	} else if v != nil && v.Tag != "!!null" {
+		d.ID = v.Value
 	}
-	seen := map[string]bool{}
-	for decoder.More() {
-		token, err := decoder.Token()
-		if err != nil {
-			return d, fmt.Errorf("rule.json のキーを読み込めません")
+	for _, field := range []struct {
+		key  string
+		dest *string
+	}{{"name", &d.Name}, {"description", &d.Description}, {"path_pattern", &d.PathPattern}, {"content_pattern", &d.ContentPattern}} {
+		v := fields[field.key]
+		if v == nil {
+			continue
 		}
-		key, ok := token.(string)
-		if !ok || !fields[key] || seen[key] {
-			return d, fmt.Errorf("rule.json に未定義・重複のキーがあります: %s", key)
+		if v.Kind != yaml.ScalarNode || (v.Tag != "!!str" && !(v.Tag == "!!null" && v.Value == "")) {
+			return d, fmt.Errorf("%s は文字列で入力してください", field.key)
 		}
-		seen[key] = true
-		var raw json.RawMessage
-		if err := decoder.Decode(&raw); err != nil || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-			return d, fmt.Errorf("rule.json の%sはnull以外の値で指定してください", key)
-		}
+		*field.dest = v.Value
 	}
-	if token, err := decoder.Token(); err != nil || token != json.Delim('}') {
-		return d, fmt.Errorf("rule.json を読み込めません")
+	d.Body = body
+	d.ID = strings.TrimSpace(d.ID)
+	d.Name = strings.TrimSpace(d.Name)
+	d.Description = strings.TrimSpace(d.Description)
+	d.PathPattern = strings.TrimSpace(d.PathPattern)
+	d.ContentPattern = strings.TrimSpace(d.ContentPattern)
+	return d, Validate(d)
+}
+
+// scalar keeps each front matter value on one line. yaml.v3 folds long plain
+// text at 80 columns; JSON strings are valid YAML double-quoted scalars.
+func scalar(tag, value string) string {
+	out, err := yaml.Marshal(&yaml.Node{Kind: yaml.ScalarNode, Tag: tag, Value: value})
+	line := strings.TrimSuffix(string(out), "\n")
+	if err == nil && !strings.Contains(line, "\n") {
+		return line
 	}
-	if decoder.Decode(new(any)) != io.EOF {
-		return d, fmt.Errorf("rule.json に余分な内容があります")
-	}
-	for key := range fields {
-		if !seen[key] {
-			return d, fmt.Errorf("rule.json の%sは必須です", key)
-		}
-	}
-	if err := json.Unmarshal(data, &d); err != nil {
-		return model.RuleDefinition{}, fmt.Errorf("rule.json の項目の型が不正です")
-	}
-	if err := Validate(d); err != nil {
-		return model.RuleDefinition{}, err
-	}
-	d.Name, _ = NormalizeName(d.Name)
-	return d, nil
+	var quoted bytes.Buffer
+	encoder := json.NewEncoder(&quoted)
+	encoder.SetEscapeHTML(false)
+	_ = encoder.Encode(value)
+	return strings.TrimSuffix(quoted.String(), "\n")
 }
 
 func Encode(d model.RuleDefinition) ([]byte, error) {
 	if err := Validate(d); err != nil {
 		return nil, err
 	}
+	d.ID, _ = NormalizeID(d.ID)
 	d.Name, _ = NormalizeName(d.Name)
-	data, err := json.MarshalIndent(d, "", "  ")
-	if err != nil {
-		return nil, err
+	d.Description = strings.TrimSpace(d.Description)
+	d.PathPattern = strings.TrimSpace(d.PathPattern)
+	d.ContentPattern = strings.TrimSpace(d.ContentPattern)
+	idTag := "!!str"
+	if decimalID.MatchString(d.ID) {
+		idTag = "!!int"
 	}
-	if len(data)+1 > MaxBytes {
-		return nil, fmt.Errorf("rule.json は4MiB以内にしてください")
+	var out bytes.Buffer
+	out.WriteString("---\n")
+	out.WriteString("id: " + scalar(idTag, d.ID) + "\n")
+	for _, field := range []struct{ key, value string }{{"name", d.Name}, {"description", d.Description}, {"path_pattern", d.PathPattern}, {"content_pattern", d.ContentPattern}} {
+		out.WriteString(field.key + ": " + scalar("!!str", field.value) + "\n")
 	}
-	return append(data, '\n'), nil
+	out.WriteString("---\n\n")
+	out.WriteString(d.Body)
+	if out.Len() > MaxBytes {
+		return nil, fmt.Errorf("ルールは4MiB以内にしてください")
+	}
+	return out.Bytes(), nil
 }
-
 func Revision(d model.RuleDefinition) string {
-	if name, err := NormalizeName(d.Name); err == nil {
-		d.Name = name
-	}
 	data, _ := json.Marshal(d)
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
 }
-
 func ToRule(id string, d model.RuleDefinition) model.Rule {
-	summary := []rune(strings.Join(strings.Fields(d.Overview), " "))
-	if len(summary) > 240 {
-		summary = append(summary[:240], '…')
-	}
-	name, _ := NormalizeName(d.Name)
-	return model.Rule{ID: id, Title: name, Summary: string(summary), Overview: d.Overview, Before: d.Before, After: d.After, Notes: d.Notes, HoldConditions: d.HoldConditions, Pattern: d.Pattern, Always: strings.TrimSpace(d.Pattern) == ""}
+	return model.Rule{ID: id, Title: d.Name, Summary: d.Description, PathPattern: d.PathPattern, ContentPattern: d.ContentPattern, Body: d.Body, Always: strings.TrimSpace(d.PathPattern) == "" && strings.TrimSpace(d.ContentPattern) == ""}
 }
-
-func fenced(code string) string {
-	longest, current := 0, 0
-	for _, r := range code {
-		if r == '`' {
-			current++
-			if current > longest {
-				longest = current
-			}
-		} else {
-			current = 0
-		}
-	}
-	length := max(3, longest+1)
-	fence := strings.Repeat("`", length)
-	suffix := "\n"
-	if strings.HasSuffix(code, "\n") {
-		suffix = ""
-	}
-	return fence + "\n" + code + suffix + fence
-}
-
 func Markdown(d model.RuleDefinition) string {
-	return "# 変更概要\n\n" + d.Overview + "\n\n# 変更前\n\n" + fenced(d.Before) + "\n\n# 変更後\n\n" + fenced(d.After) + "\n\n# 備考\n\n" + d.Notes + "\n\n# 修正を保留すべきケース\n\n" + d.HoldConditions + "\n"
+	return "# " + d.Name + "\n\n" + d.Description + "\n\n" + d.Body
 }

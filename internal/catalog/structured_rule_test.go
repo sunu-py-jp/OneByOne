@@ -5,69 +5,45 @@ import (
 	"errors"
 	"onebyone/internal/model"
 	"onebyone/internal/ruleformat"
-	"path/filepath"
+	"onebyone/internal/rulepack"
 	"strings"
 	"testing"
 )
 
-func TestStructuredRulesUseSameMarkdownForCommonPromptAndReadRule(t *testing.T) {
+func TestFreeMarkdownAndDescriptionReachModel(t *testing.T) {
 	cfg := fixture(t)
-	d := model.RuleDefinition{Version: 1, Name: "structured example", Overview: "overview", Before: "before();\n```\n", After: "after();", Notes: "notes", HoldConditions: "hold", Pattern: ""}
+	d := model.RuleDefinition{Name: "free Markdown", Description: "explicit overview", Body: "# 任意の見出し\n\n- list\n\n```js\nbefore();\n```\n\n## nested"}
 	writeRule(t, cfg, "R001", d)
-	cat, err := Load(context.Background(), cfg)
+	c, err := Load(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	expected := ruleformat.Markdown(d)
-	read, err := cat.ReadRule("R001")
-	if err != nil || read != expected || !strings.Contains(cat.SystemPrompt, expected) {
-		t.Fatal("ReadRule and common prompt do not share the Markdown converter")
+	body, _ := c.ReadRule("R001")
+	if body != ruleformat.Markdown(d) || !strings.Contains(body, d.Description) || !strings.Contains(body, d.Body) || !strings.Contains(c.SystemPrompt, body) {
+		t.Fatal(body)
 	}
-	if cat.Rules[0].Overview != d.Overview || cat.Rules[0].Before != d.Before || cat.Rules[0].After != d.After || cat.Rules[0].Notes != d.Notes || cat.Rules[0].HoldConditions != d.HoldConditions {
-		t.Fatal("state does not expose independent fields")
-	}
-	if strings.Contains(read, `"overview"`) || strings.Contains(read, "pattern") {
-		t.Fatal("raw definition escaped into model Markdown")
-	}
-	d.Pattern = "unique-regex-not-in-fields"
+	d.PathPattern = "src/**"
 	writeRule(t, cfg, "R001", d)
-	individual, err := Load(context.Background(), cfg)
+	c, err = Load(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, _ := individual.ReadRule("R001")
-	if body != expected || strings.Contains(individual.SystemPrompt, "before();") || strings.Contains(body, d.Pattern) {
-		t.Fatal("individual prompt contains a full body or generated Markdown contains the pattern")
-	}
-	if cat.Hash == individual.Hash {
-		t.Fatal("pattern change did not invalidate the catalog")
+	body, _ = c.ReadRule("R001")
+	if strings.Contains(c.SystemPrompt, "before();") || strings.Contains(body, "src/**") {
+		t.Fatal("individual body leaked to index or filters into body")
 	}
 }
-
-func TestLegacyDefinitionFilesRejectedEvenAlongsideRuleJSON(t *testing.T) {
-	for _, name := range []string{"rule.md", "pattern.txt", "name.txt", "Rule.md"} {
-		t.Run(name, func(t *testing.T) {
-			cfg := fixture(t)
-			write(t, filepath.Join(cfg.RulesPath, "R001", name), "old")
-			_, err := Load(context.Background(), cfg)
-			if err == nil || !strings.Contains(err.Error(), "旧形式") {
-				t.Fatalf("legacy file not explicitly rejected: %v", err)
-			}
-			var diagnostic *DiagnosticError
-			if !errors.As(err, &diagnostic) || diagnostic.RuleID != "R001" || diagnostic.Section != "" {
-				t.Fatalf("legacy rejection lost its structured rule destination: %#v", diagnostic)
-			}
-		})
-	}
-}
-
-func TestLegacyPatternDiagnosticTargetsFiltering(t *testing.T) {
+func TestInvalidMarkdownRuleRemainsAddressable(t *testing.T) {
 	cfg := fixture(t)
-	cfg.LegacyPath = filepath.Join(t.TempDir(), "legacy-symbols.txt")
-	write(t, cfg.LegacyPath, "[")
-	_, err := Load(context.Background(), cfg)
-	var diagnostic *DiagnosticError
-	if !errors.As(err, &diagnostic) || diagnostic.RuleID != "" || diagnostic.Section != "filtering" {
-		t.Fatalf("legacy pattern rejection lost its filtering destination: %v", err)
+	p, err := rulepack.Snapshot(cfg.RulesPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Rules[0].Markdown = "---\nid: R001\nname: missing-description\n---\nbody"
+	saveRules(t, cfg, p)
+	_, err = Load(context.Background(), cfg)
+	var d *DiagnosticError
+	if !errors.As(err, &d) || d.RuleID != "R001" {
+		t.Fatal(err)
 	}
 }

@@ -16,6 +16,10 @@ import (
 // the mutable worktree or its HEAD, keep one response consistent while an
 // editor or validator is preparing the next candidate.
 func cumulativeFileDetail(cfg model.Config, m manifest, task model.Task) (model.FileDetail, error) {
+	return cumulativeFileDetailWithSources(cfg, m, task, nil)
+}
+
+func cumulativeFileDetailWithSources(cfg model.Config, m manifest, task model.Task, candidateAfter func(model.Attempt) (string, bool)) (model.FileDetail, error) {
 	d := model.FileDetail{Task: task, Cumulative: true, Changes: []model.ChangeReportItem{}}
 	if err := validatePreviewFilePath(task.File); err != nil {
 		return d, err
@@ -74,7 +78,7 @@ func cumulativeFileDetail(cfg model.Config, m manifest, task model.Task) (model.
 	activeHistory := repairHistory(task)
 	for i := len(activeHistory) - 1; i >= 0; i-- {
 		h := activeHistory[i]
-		if h.Outcome != "done" || h.Commit == "" {
+		if !h.AdoptedChanges() {
 			continue
 		}
 		d.After, err = read(h.Commit, h.OutputHash)
@@ -95,8 +99,28 @@ func cumulativeFileDetail(cfg model.Config, m manifest, task model.Task) (model.
 		if err != nil {
 			return "", "", err
 		}
-		after, err := read(h.Commit, h.OutputHash)
-		return before, after, err
+		if h.AdoptedChanges() {
+			after, err := read(h.Commit, h.OutputHash)
+			return before, after, err
+		}
+		// Frozen executions must never consult a live checkpoint: the same
+		// attempt can be resumed and acquire a different candidate afterwards.
+		if candidateAfter != nil {
+			if after, ok := candidateAfter(h); ok {
+				return before, after, nil
+			}
+			return before, "", nil
+		}
+		// A held attempt has no accepted commit. Its original input still
+		// belongs to the cumulative accepted history; candidate text is used
+		// only to map genuinely unchanged reviewer locations back to that input.
+		if checkpoint, err := loadRepairCheckpoint(cfg, h); err == nil {
+			sources := loadReportSources(cfg, h, checkpoint)
+			if sources.afterValid {
+				return before, sources.after, nil
+			}
+		}
+		return before, "", nil
 	})
 	if err != nil {
 		return d, err

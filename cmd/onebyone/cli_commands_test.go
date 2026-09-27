@@ -45,11 +45,25 @@ func TestCLICompleteSetupSelectionAndSettingsWithoutGUI(t *testing.T) {
 	invoke("", "workspace", "create", "--name", "CLI-only", "--root", root)
 	edit, _ := json.Marshal(workspaceRulesEdit())
 	invoke(string(edit), "rules", "create", "--input", "-")
-	invoke(`{"includeGlobs":["*.txt"],"maxTurns":8,"maxCostUSD":2,"inputPricePerMillion":1,"outputPricePerMillion":2}`, "settings", "update", "--input", "-")
+	invoke(`{"maxTurns":8,"maxCostUSD":2,"inputPricePerMillion":1,"outputPricePerMillion":2}`, "settings", "update", "--input", "-")
 	var state model.State
 	_ = json.Unmarshal(invoke("", "scan"), &state)
 	if len(state.Tasks) != 2 {
 		t.Fatalf("wrong target count %d", len(state.Tasks))
+	}
+	selection, _ := json.Marshal(map[string]any{"excludedRuleIds": []string{state.Rules[0].ID}})
+	_ = json.Unmarshal(invoke(string(selection), "settings", "update", "--input", "-"), &state)
+	if len(state.Config.ExcludedRuleIDs) != 1 {
+		t.Fatal("CLI did not persist execution rule selection")
+	}
+	_ = json.Unmarshal(invoke("", "scan"), &state)
+	if len(state.Tasks) != 0 || len(state.Rules) != 1 {
+		t.Fatal("CLI exclusion did not restrict scan while retaining rule definitions")
+	}
+	invoke(`{"excludedRuleIds":[]}`, "settings", "update", "--input", "-")
+	_ = json.Unmarshal(invoke("", "scan"), &state)
+	if len(state.Tasks) != 2 {
+		t.Fatal("CLI could not restore all rule selection")
 	}
 	_ = json.Unmarshal(invoke("", "selection", "--file", "b.txt"), &state)
 	for _, task := range state.Tasks {
@@ -64,7 +78,7 @@ func TestCLICompleteSetupSelectionAndSettingsWithoutGUI(t *testing.T) {
 		}
 	}
 	_ = json.Unmarshal(invoke(`{"maxTurns":0,"maxCostUSD":0}`, "settings", "update", "--input", "-"), &state)
-	if state.Config.MaxTurns != 0 || state.Config.MaxCostUSD != 0 || state.Config.OutputPricePerMillion != 2 || len(state.Config.IncludeGlobs) != 1 {
+	if state.Config.MaxTurns != 0 || state.Config.MaxCostUSD != 0 || state.Config.OutputPricePerMillion != 2 || state.Config.InputPricePerMillion != 1 {
 		t.Fatal("partial settings update reset unrelated fields or failed to clear limits")
 	}
 	var content model.TargetFileContent

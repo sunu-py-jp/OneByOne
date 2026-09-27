@@ -58,7 +58,7 @@ func canDiscardChanges(t model.Task) bool {
 	}
 	history := repairHistory(t)
 	for i := len(history) - 1; i >= 0; i-- {
-		if h := history[i]; h.Commit != "" && h.Outcome == "done" {
+		if h := history[i]; h.AdoptedChanges() {
 			return h.OutputHash != baseline || baseline == ""
 		}
 	}

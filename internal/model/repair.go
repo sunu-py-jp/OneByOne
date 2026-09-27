@@ -10,14 +10,15 @@ type PlanDecision struct {
 }
 
 type PlanItem struct {
-	ID         string `json:"id"`
-	RuleID     string `json:"ruleId"`
-	Location   string `json:"location"`
-	Risk       string `json:"risk,omitempty"`
-	Change     string `json:"change"`
-	Expected   string `json:"expected"`
-	Status     string `json:"status"`
-	HoldReason string `json:"holdReason,omitempty"`
+	ID              string           `json:"id"`
+	RuleID          string           `json:"ruleId"`
+	Location        string           `json:"location"`
+	Risk            string           `json:"risk,omitempty"`
+	Change          string           `json:"change"`
+	Expected        string           `json:"expected"`
+	Status          string           `json:"status"`
+	HoldReason      string           `json:"holdReason,omitempty"`
+	SourceLocations []SourceLocation `json:"sourceLocations,omitempty"`
 }
 
 type RepairPlan struct {
@@ -51,17 +52,21 @@ type CandidateDiagnostic struct {
 }
 
 type CandidateValidation struct {
-	CandidateID      string                `json:"candidateId"`
-	CandidateHash    string                `json:"candidateHash"`
-	PlanRevision     int                   `json:"planRevision"`
-	Passed           bool                  `json:"passed"`
-	Checks           []Check               `json:"checks"`
-	Diagnostics      []CandidateDiagnostic `json:"diagnostics"`
-	RemainingItemIDs []string              `json:"remainingItemIds"`
-	EditRanges       []EditLineRange       `json:"editRanges,omitempty"`
+	AttributionVersion int                   `json:"attributionVersion,omitempty"`
+	CandidateID        string                `json:"candidateId"`
+	CandidateHash      string                `json:"candidateHash"`
+	PlanRevision       int                   `json:"planRevision"`
+	Passed             bool                  `json:"passed"`
+	Checks             []Check               `json:"checks"`
+	Diagnostics        []CandidateDiagnostic `json:"diagnostics"`
+	RemainingItemIDs   []string              `json:"remainingItemIds"`
+	EditRanges         []EditLineRange       `json:"editRanges,omitempty"`
 }
 
 type CandidateRecord struct {
+	// NoChange is assigned only by the runner when an unchanged source is sent
+	// for independent review. It is never part of the model's edit proposal.
+	NoChange        bool                `json:"noChange,omitempty"`
 	Request         CandidateRequest    `json:"request"`
 	Result          CandidateValidation `json:"result"`
 	ReviewRequested bool                `json:"reviewRequested,omitempty"`

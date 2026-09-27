@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -34,12 +35,13 @@ type resultPublicationSnapshot struct {
 	meta        manifest
 	workspaceID string
 	tasks       []model.Task
+	rules       []model.Rule
 }
 
 func (s *Service) publicationSnapshot() resultPublicationSnapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return resultPublicationSnapshot{s.state.Config, s.meta, s.state.ActiveWorkspaceID, copyTasks(s.state.Tasks)}
+	return resultPublicationSnapshot{s.state.Config, s.meta, s.state.ActiveWorkspaceID, copyTasks(s.state.Tasks), append([]model.Rule{}, s.state.Rules...)}
 }
 
 func (s *Service) GetResultPublicationPreview() (model.ResultPublicationPreview, error) {
@@ -100,17 +102,19 @@ func buildResultPublicationPreview(ctx context.Context, snapshot resultPublicati
 			return p, fmt.Errorf("採用済みの対象一覧にない変更があります: %s", path)
 		}
 		file := publicationFileSummary(task)
+		file.LinkPath = filepath.ToSlash(filepath.Join(m.SourceRelative, task.File))
 		p.Files = append(p.Files, file)
 	}
 	sort.Slice(p.Files, func(i, j int) bool { return p.Files[i].File < p.Files[j].File })
-	p.Message, err = publicationCommitMessage(p.Files)
+	p.Message, err = publicationCommitMessage(p.Files, publicationReportContext(snapshot))
 	if err != nil {
 		return p, err
 	}
 	binding, err := json.Marshal(struct {
 		WorkspaceID, BaseCommit, SourceCommit string
 		Files                                 []model.ResultPublicationFile
-	}{p.WorkspaceID, p.BaseCommit, p.SourceCommit, p.Files})
+		Message                               string
+	}{p.WorkspaceID, p.BaseCommit, p.SourceCommit, p.Files, p.Message})
 	if err != nil {
 		return p, err
 	}
@@ -165,7 +169,7 @@ func publicationFileSummary(task model.Task) model.ResultPublicationFile {
 	// the tree diff; explicit discards cut off their earlier attempts. This avoids
 	// loading every historical blob for potentially ten thousand preview files.
 	for _, attempt := range repairHistory(task) {
-		if attempt.Outcome != "done" || attempt.Commit == "" {
+		if !attempt.AdoptedChanges() {
 			continue
 		}
 		if len(attempt.Changes) > 0 {
@@ -189,8 +193,8 @@ func publicationFileSummary(task model.Task) model.ResultPublicationFile {
 				}
 			}
 		} else {
-			// Old accepted attempts predate detailed change reports. Their recorded
-			// rulesApplied is the only available attribution; never use task.Rules.
+			// Without change rows (for example, an unavailable checkpoint), the
+			// recorded rulesApplied is the only attribution; never use task.Rules.
 			for _, id := range attempt.RulesApplied {
 				if id == "" {
 					continue
@@ -211,6 +215,12 @@ func publicationFileSummary(task model.Task) model.ResultPublicationFile {
 		notes = append(notes, "- 採用済みの変更（ルール別の対応記録なし）")
 	}
 	file.Summary = strings.Join(notes, "\n")
+	// Match the latest accepted result explanation, preserving every line.
+	for _, attempt := range repairHistory(task) {
+		if (attempt.AdoptedChanges() || attempt.Outcome == "skipped") && strings.TrimSpace(attempt.Note) != "" {
+			file.Summary = attempt.Note
+		}
+	}
 	return file
 }
 
@@ -255,7 +265,7 @@ func (s *Service) PublishResults(req model.PublishResultsRequest) (model.ResultP
 	if req.Title == "" || strings.ContainsAny(req.Title, "\r\n\x00") {
 		return result, fmt.Errorf("コミットタイトルを1行で入力してください")
 	}
-	if strings.ContainsRune(req.Message, '\x00') || len(req.Message) > 4<<20 || len(req.Title) > 1024 {
+	if strings.ContainsRune(req.Message, '\x00') || len(req.Message) > maxPublicationMessageBytes || len(req.Title) > 1024 {
 		return result, fmt.Errorf("コミットメッセージが不正、または長すぎます")
 	}
 	snapshot := s.publicationSnapshot()
@@ -438,8 +448,8 @@ func publicationBranchExists(ctx context.Context, repo, branch string) (bool, er
 
 func validatePreparedPublication(ctx context.Context, repo string, p model.ResultPublication) error {
 	// Raw object bytes avoid local log-output encoding and allow the entire
-	// accepted message (4 MiB) plus object headers without truncation.
-	content, err := publicationGitInputLimit(ctx, repo, "", (4<<20)+65536, "cat-file", "commit", p.Commit)
+	// accepted message plus object headers without truncation.
+	content, err := publicationGitInputLimit(ctx, repo, "", len(p.Message)+len(p.Title)+65536, "cat-file", "commit", p.Commit)
 	if err != nil {
 		return err
 	}
@@ -478,51 +488,176 @@ func createResultPublicationBranch(ctx context.Context, m manifest, p model.Resu
 	return err
 }
 
-func publicationCommitMessage(files []model.ResultPublicationFile) (string, error) {
+const maxPublicationMessageBytes = 64 << 20
+
+type publicationRuleReport struct {
+	Title      string
+	Changes    []string
+	Assessment *model.ReviewAssessment
+}
+
+type publicationReport struct {
+	Tasks          []model.Task
+	SourceRelative string
+	Rules          map[string]map[string]publicationRuleReport
+}
+
+func publicationReportContext(snapshot resultPublicationSnapshot) publicationReport {
+	report := publicationReport{Tasks: snapshot.tasks, SourceRelative: snapshot.meta.SourceRelative, Rules: map[string]map[string]publicationRuleReport{}}
+	current := map[string]model.Rule{}
+	for _, rule := range snapshot.rules {
+		current[rule.ID] = rule
+	}
+	// Cache only rule metadata, not entire per-execution queues. The immutable
+	// execution snapshot keeps titles correct after subsequent rule edits.
+	byExecution := map[string]map[string]model.Rule{}
+	for _, task := range snapshot.tasks {
+		rules := map[string]publicationRuleReport{}
+		for _, attempt := range repairHistory(task) {
+			if !attempt.AdoptedChanges() && attempt.Outcome != "skipped" {
+				continue
+			}
+			definitions := current
+			if attempt.ExecutionID != "" {
+				if _, exists := byExecution[attempt.ExecutionID]; !exists {
+					byExecution[attempt.ExecutionID] = map[string]model.Rule{}
+					if record, err := readExecutionRecord(snapshot.config.QueuePath, attempt.ExecutionID); err == nil {
+						for _, rule := range record.State.Rules {
+							byExecution[attempt.ExecutionID][rule.ID] = rule
+						}
+					}
+				}
+				definitions = byExecution[attempt.ExecutionID]
+			}
+			for _, id := range attempt.RulesApplied {
+				entry := rules[id]
+				if rule, ok := definitions[id]; ok {
+					entry.Title = rule.Title
+				}
+				rules[id] = entry
+			}
+			for _, change := range attempt.Changes {
+				if !attempt.AdoptedChanges() || change.Status != "fixed" || change.RuleID == "" {
+					continue
+				}
+				entry := rules[change.RuleID]
+				if rule, ok := definitions[change.RuleID]; ok {
+					entry.Title = rule.Title
+				}
+				if strings.TrimSpace(change.Change) != "" {
+					entry.Changes = append(entry.Changes, strings.TrimSpace(change.Change))
+				}
+				rules[change.RuleID] = entry
+			}
+			for _, review := range attempt.Reviews {
+				if (review.Verdict != "passed" && !(attempt.Partial && attempt.AdoptedChanges() && review.Verdict == "passed_with_holds")) || review.CandidateHash != attempt.OutputHash || review.BaseHash != attempt.InputHash || attempt.OutputHash == "" {
+					continue
+				}
+				for _, assessment := range review.Assessments {
+					entry := rules[assessment.RuleID]
+					entry.Assessment = &assessment
+					rules[assessment.RuleID] = entry
+				}
+			}
+		}
+		report.Rules[task.File] = rules
+	}
+	return report
+}
+
+func publicationCommitMessage(files []model.ResultPublicationFile, report publicationReport) (string, error) {
 	if len(files) == 0 {
 		return "", nil
 	}
-	render := func(withNotes bool) string {
-		var body strings.Builder
-		fmt.Fprintf(&body, "%dファイルの採用済み変更を反映\n", len(files))
-		for _, file := range files {
-			fmt.Fprintf(&body, "\n%s\n- %s", file.File, strings.Join(file.RulesApplied, ", "))
-			if len(file.RulesApplied) == 0 {
-				body.WriteString("ルール別の対応記録なし")
-			}
-			if withNotes {
-				descriptions := []string{}
-				for _, line := range strings.Split(file.Summary, "\n") {
-					line = strings.TrimPrefix(line, "- ")
-					if prefix, description, ok := strings.Cut(line, ": "); ok {
-						for _, id := range file.RulesApplied {
-							if prefix == id {
-								line = description
-								break
-							}
-						}
+	changed := map[string]bool{}
+	for _, file := range files {
+		changed[file.File] = true
+	}
+	total, unchanged, partialHeld := len(files), 0, 0
+	tasksByFile := make(map[string]model.Task, len(report.Tasks))
+	for _, task := range report.Tasks {
+		tasksByFile[task.File] = task
+		if changed[task.File] && task.Status != "done" && task.Status != "skipped" {
+			history := repairHistory(task)
+			if len(history) > 0 {
+				for _, change := range history[len(history)-1].Changes {
+					if change.Status == "needs_human" {
+						partialHeld++
+						break
 					}
-					descriptions = append(descriptions, strings.Join(strings.Fields(line), " "))
-				}
-				note := strings.Join(descriptions, "; ")
-				runes := []rune(note)
-				if len(runes) > 160 {
-					note = string(runes[:160]) + "…"
-				}
-				if note != "" {
-					body.WriteString(": " + note)
 				}
 			}
-			body.WriteByte('\n')
 		}
-		return strings.TrimSpace(body.String())
+		if changed[task.File] || (task.Excluded && len(repairHistory(task)) == 0) {
+			continue
+		}
+		total++
+		if task.Status == "skipped" {
+			unchanged++
+		}
 	}
-	message := render(true)
-	if len(message) > 4<<20 {
-		message = render(false)
+	var body strings.Builder
+	fmt.Fprintf(&body, "# 全体サマリー\n\n対象ファイル数：%d\n修正済みファイル数：%d\n修正不要ファイル数：%d\n", total, len(files), unchanged)
+	if partialHeld > 0 {
+		fmt.Fprintf(&body, "修正済みのうち要確認が残るファイル数：%d\n", partialHeld)
 	}
-	if len(message) > 4<<20 {
-		return "", fmt.Errorf("対象ファイル名と適用ルール一覧がコミット本文の上限（4 MiB）を超えています。対象を分割してください")
+	if remaining := total - len(files) - unchanged; remaining > 0 {
+		fmt.Fprintf(&body, "未完了・要確認ファイル数：%d\n", remaining)
 	}
-	return message, nil
+	body.WriteString("\n# 修正一覧\n")
+	for _, file := range files {
+		path := filepath.ToSlash(filepath.Join(report.SourceRelative, file.File))
+		label := strings.NewReplacer("\\", "\\\\", "[", "\\[", "]", "\\]").Replace(path)
+		link := (&url.URL{Path: path}).EscapedPath()
+		fmt.Fprintf(&body, "\n---\n\n## 修正ファイル\n\n[%s](<%s>)\n\n### 修正概要\n\n%s\n\n### 適用ルール一覧\n", label, link, file.Summary)
+		if len(file.RulesApplied) == 0 {
+			body.WriteString("\nルール別の対応記録なし\n")
+		}
+		for _, id := range file.RulesApplied {
+			rule := report.Rules[file.File][id]
+			title := strings.TrimSpace(rule.Title)
+			if title == "" {
+				title = "Titleの記録なし"
+			}
+			title = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ").Replace(title)
+			fmt.Fprintf(&body, "\n#### %s：%s\n\n**修正の内容**\n\n", id, title)
+			if len(rule.Changes) == 0 {
+				body.WriteString("修正内容の記録なし\n")
+			} else {
+				for _, change := range rule.Changes {
+					fmt.Fprintf(&body, "- %s\n", strings.ReplaceAll(change, "\n", "\n  "))
+				}
+			}
+			body.WriteString("\n**修正後レビュー結果**\n\n")
+			if rule.Assessment == nil {
+				body.WriteString("独立レビューの記録なし\n")
+			} else {
+				fmt.Fprintf(&body, "%s\n", rule.Assessment.Reason)
+			}
+		}
+		// A published safe subset is not a claim that the whole file is complete.
+		// Include its outstanding decisions separately from the applied rules.
+		if task, exists := tasksByFile[file.File]; exists && task.Status != "done" && task.Status != "skipped" {
+			history := repairHistory(task)
+			printed := false
+			var outstanding []model.ChangeReportItem
+			if len(history) > 0 {
+				outstanding = history[len(history)-1].Changes
+			}
+			for _, change := range outstanding {
+				if change.Status != "needs_human" {
+					continue
+				}
+				if !printed {
+					body.WriteString("\n### 要確認の箇所\n\n")
+					printed = true
+				}
+				fmt.Fprintf(&body, "- %s（%s）：%s\n", change.RuleID, change.Location, strings.ReplaceAll(change.Reason, "\n", "\n  "))
+			}
+		}
+		if body.Len() > maxPublicationMessageBytes {
+			return "", fmt.Errorf("コミット本文が上限（64 MiB）を超えています。省略せず出力するため、対象を分割してください")
+		}
+	}
+	return strings.TrimSpace(body.String()), nil
 }

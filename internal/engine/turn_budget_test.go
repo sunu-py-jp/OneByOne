@@ -121,8 +121,8 @@ func TestTurnBudgetAutomaticRetriesShareAllowanceUntilNextStart(t *testing.T) {
 		if err := in.SaveRepairState(state); err != nil {
 			return model.Proposal{}, err
 		}
-		// The legacy-symbol gate rejects this claim and triggers an automatic retry.
-		return model.Proposal{Outcome: "skipped", Note: "force mechanical rejection"}, nil
+		// An edit absent from the original is rejected mechanically and triggers an automatic retry.
+		return model.Proposal{Outcome: "modified", Edits: []model.Edit{{OldText: "Missing.Save()", NewText: "Modern.Save()"}}, Note: "force mechanical rejection"}, nil
 	}
 	first := runTest(t, s, 1)
 	if first.LastError != "" || calls != 2 || first.Tasks[0].Status != "needs_human" || sumUsage(first.Tasks[0].History).Turns != 2 || first.Usage.Turns != 2 {

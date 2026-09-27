@@ -36,6 +36,8 @@ func repairSettingsHash(cfg model.Config) string {
 
 func fullRepairSettingsHash(cfg model.Config) string {
 	// Hash execution semantics without storing a credential or its fingerprint.
+	// Worker count changes scheduling, never the contents of a saved proposal.
+	cfg.Concurrency = 0
 	cfg.Credential = ""
 	cfg.CredentialSet = false
 	b, _ := json.Marshal(cfg)
@@ -154,7 +156,7 @@ func unfinishedRepair(t model.Task) bool {
 		return false
 	}
 	h := history[len(history)-1]
-	return h.RepairPath != "" && h.Outcome != "done" && h.Outcome != "skipped"
+	return h.RepairPath != "" && !h.AdoptedChanges() && h.Outcome != "done" && h.Outcome != "skipped"
 }
 
 func resetRepairPlan(c *repairCheckpoint, cfg model.Config, cat *catalog.Catalog, file, head, inputHash string) bool {

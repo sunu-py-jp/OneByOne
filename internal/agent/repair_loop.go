@@ -43,11 +43,9 @@ func Run(ctx context.Context, in Input) (proposal model.Proposal, err error) {
 	if err := safeRelativePath(in.File); err != nil {
 		return proposal, err
 	}
-	required := append([]string{}, in.CandidateRules...)
+	required := make([]string, 0, len(in.Rules))
 	for _, rule := range in.Rules {
-		if rule.Always {
-			required = append(required, rule.ID)
-		}
+		required = append(required, rule.ID)
 	}
 	for _, id := range required {
 		if !validRuleID(id) {
@@ -70,6 +68,14 @@ func Run(ctx context.Context, in Input) (proposal model.Proposal, err error) {
 		if state.LastCandidate != nil {
 			state.LastCandidate.Result = journalValidation(state.LastCandidate.Result)
 		}
+	}
+	// Old edit-range attribution cannot be adopted or resumed into review. Keep
+	// the plan, reviewed rules and accounting, then ask the editor for a fresh
+	// candidate in this same repair loop instead of failing the execution. Failed
+	// candidates cannot be adopted and retain their diagnostics for correction.
+	upgradedAttribution := state.LastCandidate != nil && state.LastCandidate.Result.Passed && !state.LastCandidate.NoChange && state.LastCandidate.Result.AttributionVersion != model.LineAttributionVersion
+	if upgradedAttribution {
+		state.LastCandidate = nil
 	}
 	if state.Version != 1 {
 		return proposal, &fatalError{errors.New("Unsupported repair-state version")}
@@ -157,13 +163,29 @@ func Run(ctx context.Context, in Input) (proposal model.Proposal, err error) {
 		user["repairState"] = map[string]any{"plan": state.Plan, "lastCandidate": state.LastCandidate, "historicalUsage": state.Usage, "executionUsage": map[string]any{"turns": used.Turns, "elapsedMs": used.ElapsedMS, "validationCount": used.ValidationCount, "reviewCount": used.ReviewCount, "toolCalls": used.ToolCalls, "readBytes": used.ReadBytes}}
 		user["previouslyReadRules"] = ruleCache
 	}
+	if upgradedAttribution {
+		user["attributionUpgrade"] = "The previous candidate used obsolete whole-edit attribution and was discarded. Your saved plan, read rules, review findings and usage remain available. Submit a new COMPLETE original-based candidate with exact per-item attributions, revalidate it, and finish normally. Do not repeat completed reads or stop because of this upgrade."
+		if len(state.Reviews) > 0 {
+			user["previousReview"] = state.Reviews[len(state.Reviews)-1]
+		}
+	}
 	userJSON, _ := json.Marshal(user)
 	history := []json.RawMessage{raw(map[string]any{"role": "user", "content": string(userJSON)})}
 	lastRejection := ""
 	// Resume a final candidate's interrupted review without asking the editor to
 	// recreate its final answer or resetting any request/cost counters.
 	if candidate := state.LastCandidate; candidate != nil && candidate.ReviewRequested && candidate.Request.PlanRevision == state.Plan.Revision {
-		final, parseErr := parseCandidateFinal(string(raw(map[string]any{"outcome": "modified", "candidateId": candidate.Result.CandidateID, "note": candidate.ReviewNote})), state, in, required)
+		var final model.Proposal
+		var parseErr error
+		if candidate.NoChange {
+			parseErr = noChangePlan(state.Plan, in)
+			if parseErr == nil && (!currentNoChangeCandidate(candidate, state.Plan, in.BaseHash) || strings.TrimSpace(candidate.ReviewNote) == "" || len(candidate.ReviewNote) > 8192) {
+				parseErr = errors.New("Restored unchanged-source review does not match the current source and plan")
+			}
+			final = model.Proposal{Outcome: "skipped", CandidateID: candidate.Result.CandidateID, Note: candidate.ReviewNote}
+		} else {
+			final, parseErr = parseCandidateFinal(string(raw(map[string]any{"outcome": "modified", "candidateId": candidate.Result.CandidateID, "note": candidate.ReviewNote})), state, in, required)
+		}
 		if parseErr != nil {
 			return proposal, parseErr
 		}
@@ -373,8 +395,14 @@ func executeRepairTool(ctx context.Context, in Input, call functionCall, state *
 		if len(call.Arguments) > maxToolBytes || strictRequiredJSON(call.Arguments, &update, "expectedRevision", "ruleDecisions", "items") != nil {
 			return "", errors.New("update_state requires expectedRevision, ruleDecisions and items within 96 KiB")
 		}
+		if err := requirePlanSourceLocationFields(call.Arguments); err != nil {
+			return "", err
+		}
 		plan, err := UpdateRepairPlan(state.Plan, update, in.Rules, required, sortedRuleIDs(cache))
 		if err != nil {
+			return "", err
+		}
+		if err := resolvePlanSourceLocations(&plan, in.Content); err != nil {
 			return "", err
 		}
 		state.Plan = plan
@@ -390,13 +418,16 @@ func executeRepairTool(ctx context.Context, in Input, call functionCall, state *
 		if request.BaseHash != in.BaseHash {
 			return "", errors.New("Candidate baseHash differs from the original target; use the supplied baseHash")
 		}
-		if err := requireNewCandidateAttribution(request); err != nil {
+		if err := requireNewCandidateAttribution(request, call.Arguments); err != nil {
 			return "", err
 		}
 		if err := CheckCandidatePlan(state.Plan, request); err != nil {
 			return "", err
 		}
 		if err := validateExactEdits(request.Edits, in.Content); err != nil {
+			return "", err
+		}
+		if err := CheckCandidateHolds(state.Plan, request, in.Content); err != nil {
 			return "", err
 		}
 		maxValidations := cfg.MaxAttempts
@@ -411,8 +442,8 @@ func executeRepairTool(ctx context.Context, in Input, call functionCall, state *
 		// passed candidate as though it were the latest validation.
 		state.LastCandidate = nil
 		state.ValidationCount++
-		// Build/test commands can outlive the process as well. Reserve elapsed time
-		// durably before invoking them, without marking an LLM request pending.
+		// Reserve elapsed time before validating the candidate, without marking
+		// an LLM request pending.
 		if err := reserveElapsed(); err != nil {
 			return "", err
 		}
@@ -420,7 +451,7 @@ func executeRepairTool(ctx context.Context, in Input, call functionCall, state *
 		if err != nil {
 			return "", &fatalError{err}
 		}
-		if result.CandidateID == "" || len(result.CandidateID) > 256 || len(result.CandidateHash) > 128 || result.PlanRevision != request.PlanRevision {
+		if result.CandidateID == "" || len(result.CandidateID) > 256 || len(result.CandidateHash) > 128 || result.PlanRevision != request.PlanRevision || (result.Passed && result.AttributionVersion != model.LineAttributionVersion) {
 			return "", &fatalError{errors.New("Candidate validator returned inconsistent candidate metadata")}
 		}
 		state.LastCandidate = &model.CandidateRecord{Request: request, Result: journalValidation(result)}
@@ -455,6 +486,21 @@ func parseCandidateFinal(text string, state model.RepairState, in Input, require
 		if state.Plan.Revision > 0 && !planHasHumanBlocker(state.Plan) {
 			return result, errors.New("needs_human requires a recorded human-decision blocker: use update_state with a blocked rule and reason or a blocked item and holdReason for genuine missing context, conflicting rules, cross-file changes or unavailable APIs. Unfinished edits, pending revalidation and anticipated budget exhaustion are not human blockers; continue the current work and let the runner enforce limits")
 		}
+		if state.Plan.Revision > 0 {
+			if _, _, err := validatePlanSnapshot(state.Plan); err != nil {
+				return result, err
+			}
+			if err := validatePlanSourceLocations(state.Plan, in.Content); err != nil {
+				return result, err
+			}
+		}
+		if holds, err := CandidateHolds(state.Plan); err == nil && len(holds) > 0 {
+			for _, item := range state.Plan.Items {
+				if item.Status != "blocked" {
+					return result, errors.New("localized human holds do not discard independent safe work: validate and submit a modified candidate for every non-blocked item; if an item depends on unresolved judgment, explicitly mark that dependent item blocked too")
+				}
+			}
+		}
 		return result, nil
 	}
 	if state.Plan.Revision < 1 {
@@ -463,9 +509,6 @@ func parseCandidateFinal(text string, state model.RepairState, in Input, require
 	reviewed := map[string]bool{}
 	for _, decision := range state.Plan.RuleDecisions {
 		reviewed[decision.RuleID] = true
-		if decision.Decision == "blocked" {
-			return result, errors.New("The plan contains blocked rules; resolve them or return needs_human")
-		}
 	}
 	for _, id := range required {
 		if !reviewed[id] {
@@ -487,7 +530,7 @@ func parseCandidateFinal(text string, state model.RepairState, in Input, require
 		}
 	case "modified":
 		candidate := state.LastCandidate
-		if candidate == nil || !candidate.Result.Passed || candidate.Result.CandidateID != final.CandidateID || candidate.Result.PlanRevision != state.Plan.Revision || candidate.Request.PlanRevision != state.Plan.Revision || candidate.Request.BaseHash != in.BaseHash {
+		if candidate == nil || candidate.NoChange || candidate.Result.AttributionVersion != model.LineAttributionVersion || !candidate.Result.Passed || candidate.Result.CandidateID != final.CandidateID || candidate.Result.PlanRevision != state.Plan.Revision || candidate.Request.PlanRevision != state.Plan.Revision || candidate.Request.BaseHash != in.BaseHash {
 			return result, errors.New("modified requires the current plan's last validated, passed candidate ID")
 		}
 		if err := CheckCandidatePlan(state.Plan, candidate.Request); err != nil {
@@ -496,11 +539,19 @@ func parseCandidateFinal(text string, state model.RepairState, in Input, require
 		if err := validateExactEdits(candidate.Request.Edits, in.Content); err != nil {
 			return result, err
 		}
+		if err := CheckCandidateHolds(state.Plan, candidate.Request, in.Content); err != nil {
+			return result, err
+		}
 		result.Edits = append([]model.Edit{}, candidate.Request.Edits...)
 		result.CandidateID = final.CandidateID
-		for _, decision := range state.Plan.RuleDecisions {
-			if decision.Decision == "modify" {
-				result.RulesApplied = append(result.RulesApplied, decision.RuleID)
+		addressed, applied := map[string]bool{}, map[string]bool{}
+		for _, id := range candidate.Request.AddressedItemIDs {
+			addressed[id] = true
+		}
+		for _, item := range state.Plan.Items {
+			if addressed[item.ID] && !applied[item.RuleID] {
+				result.RulesApplied = append(result.RulesApplied, item.RuleID)
+				applied[item.RuleID] = true
 			}
 		}
 	default:

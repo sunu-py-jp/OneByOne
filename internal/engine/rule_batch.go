@@ -3,6 +3,7 @@ package engine
 import (
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"onebyone/internal/catalog"
@@ -22,6 +23,10 @@ func ruleBatchError(id string, err error) error {
 func (s *Service) SaveRules(edits []model.RuleEdit) (model.State, error) {
 	s.op.Lock()
 	defer s.op.Unlock()
+	return s.saveRules(edits)
+}
+
+func (s *Service) saveRules(edits []model.RuleEdit) (model.State, error) {
 	if err := s.editable(); err != nil {
 		return s.Snapshot(), err
 	}
@@ -48,24 +53,33 @@ func (s *Service) SaveRules(edits []model.RuleEdit) (model.State, error) {
 	// selection after another app deletes that connection. Read the latest rule
 	// package paths from disk for optimistic definition checks.
 	cfg := current
-	cfg.RulesPath, cfg.LegacyPath, cfg.RulePackageName = saved.RulesPath, saved.LegacyPath, saved.RulePackageName
-	pkg := &rulepack.Package{Settings: rulepack.FromConfig(cfg), Files: map[string][]byte{}}
+	cfg.RulesPath = saved.RulesPath
+	pkg := &rulepack.Package{Rules: []rulepack.Entry{}}
 	if cfg.RulesPath != "" {
-		pkg, err = rulepack.Snapshot(cfg.RulesPath, cfg.LegacyPath, rulepack.FromConfig(cfg))
+		pkg, err = rulepack.Snapshot(cfg.RulesPath)
 		if err != nil {
 			return s.Snapshot(), err
 		}
 	}
 	existing := map[string]string{}
-	for path := range pkg.Files {
-		parts := strings.Split(path, "/")
-		if len(parts) == 3 && parts[0] == "rules" && parts[2] == "rule.json" {
-			existing[strings.ToLower(parts[1])] = parts[1]
-		}
+	positions := map[string]int{}
+	taken := map[string]bool{}
+	for i, entry := range pkg.Rules {
+		existing[strings.ToLower(entry.ID)] = entry.ID
+		positions[entry.ID] = i
+		taken[strings.ToLower(entry.ID)] = true
+	}
+	for _, edit := range edits {
+		taken[strings.ToLower(strings.TrimSpace(edit.ID))] = true
 	}
 	seen := map[string]bool{}
 	ids := make([]string, 0, len(edits))
 	for _, edit := range edits {
+		edit.ID = strings.TrimSpace(edit.ID)
+		if edit.ID == "" && edit.ExpectedRevision == "" {
+			edit.ID = nextRuleID(taken)
+			taken[strings.ToLower(edit.ID)] = true
+		}
 		if err := validateRuleEdit(edit); err != nil {
 			return s.Snapshot(), ruleBatchError(edit.ID, err)
 		}
@@ -76,11 +90,14 @@ func (s *Service) SaveRules(edits []model.RuleEdit) (model.State, error) {
 		seen[key] = true
 		id, exists := existing[key]
 		if exists {
+			if edit.ExpectedRevision == "" {
+				return s.Snapshot(), ruleBatchError(edit.ID, fmt.Errorf("同じIDのルールが既にあります: %s", id))
+			}
 			stored, err := ruleFromPackage(pkg, id)
 			if err != nil {
 				return s.Snapshot(), ruleBatchError(id, err)
 			}
-			if edit.ExpectedRevision == "" || edit.ExpectedRevision != ruleRevision(stored) {
+			if edit.ExpectedRevision != ruleRevision(stored) {
 				return s.Snapshot(), ruleBatchError(id, fmt.Errorf("このルールは他の編集で更新されています。最新の内容を開き直し、変更を確認してから保存してください"))
 			}
 		} else {
@@ -89,11 +106,20 @@ func (s *Service) SaveRules(edits []model.RuleEdit) (model.State, error) {
 			}
 			id = edit.ID
 		}
-		data, err := ruleformat.Encode(editDefinition(edit))
+		// The stored spelling stays canonical; an ID is fixed after creation.
+		definition := editDefinition(edit)
+		definition.ID = id
+		data, err := ruleformat.Encode(definition)
 		if err != nil {
 			return s.Snapshot(), ruleBatchError(id, err)
 		}
-		pkg.Files["rules/"+id+"/rule.json"] = data
+		entry := rulepack.Entry{ID: id, Markdown: string(data)}
+		if index, ok := positions[id]; ok {
+			pkg.Rules[index] = entry
+		} else {
+			positions[id] = len(pkg.Rules)
+			pkg.Rules = append(pkg.Rules, entry)
+		}
 		ids = append(ids, id)
 	}
 	var leases []*store.WorkspaceLease
@@ -122,10 +148,21 @@ func (s *Service) SaveRules(edits []model.RuleEdit) (model.State, error) {
 		}
 		leases = append(leases, lease)
 	}
-	if cfg.RulePackageName == "" {
-		cfg.RulePackageName = "rules.oborules"
-	}
 	// Keep an already-open editor's lease on both success and failure. Leases
 	// acquired just for this batch are released after validation and commit.
 	return s.installRulePackage(w, cfg, pkg)
+}
+
+// nextRuleID continues the numeric sequence used by the bundled rules.
+func nextRuleID(taken map[string]bool) string {
+	next := 1
+	for id := range taken {
+		if n, err := strconv.Atoi(id); err == nil && n >= next {
+			next = n + 1
+		}
+	}
+	for taken[strconv.Itoa(next)] {
+		next++
+	}
+	return strconv.Itoa(next)
 }

@@ -151,3 +151,31 @@ test('completed results initially fold below active files while their selected d
   assert.match(html, /id="result-file-detail"[^>]*aria-label="src\/dispatch\.jsの詳細"/);
   assert.match(html, /status-done/);
 });
+
+
+test('accepted safe subsets remain visible as held files with a successful scoped review', () => {
+  const acceptedReview = review('partial', 'passed_with_holds', {
+    summary: '独立した修正は適合し、保留範囲を維持しています。',
+    assessments: [{ ruleId: 'R101', status: 'needs_human', reason: '共有接続の所有権だけ確認が必要です。' }],
+    holdAssessments: [{ itemId: 'shared-ownership', status: 'preserved', reason: '共有接続は未変更で、個別接続の解放とは独立しています。' }],
+  });
+  const history = [{ id: 'partial-attempt', number: 1, outcome: 'needs_human', partial: true,
+    note: '安全な修正を保存し、共有接続の所有権は保留しました。', commit: 'accepted-partial',
+    checks: [], rulesApplied: ['R101'], usage: emptyUsage, diffPath: 'partial.diff', reviews: [acceptedReview] }];
+  for (const tab of ['diff', 'checks', 'history']) {
+    const html = render([], { tab, taskChanges: { status: 'needs_human', canDiscardChanges: true, history } });
+    assert.match(html, /修正済み・要確認あり/);
+    assert.match(html, /確認済みの修正を保存・要確認の箇所は未変更/);
+    assert.doesNotMatch(html, /この試行の変更は未採用|変更は未採用/);
+    const list = html.slice(html.indexOf('<section class="results-files"'), html.indexOf('<div class="results-splitter'));
+    assert.match(list, /<strong>dispatch\.js<\/strong>/);
+    assert.doesNotMatch(list, /task-completed-toggle/);
+    if (tab === 'diff') assert.match(html, /class="active" aria-pressed="true">差分/);
+    if (tab !== 'diff') {
+      assert.match(html, /修正部分は合格・要確認あり/);
+      assert.match(html, /results-check results-review passed/);
+      assert.match(html, /保留箇所の確認/);
+      assert.match(html, /共有接続は未変更で、個別接続の解放とは独立しています。/);
+    }
+  }
+});

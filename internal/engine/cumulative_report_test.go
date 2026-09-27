@@ -11,7 +11,7 @@ import (
 )
 
 func cumulativeReportAttempt(id string, number int, spans ...model.ChangeLineRange) model.Attempt {
-	return model.Attempt{ID: id, Number: number, Outcome: "done", Commit: id, Changes: []model.ChangeReportItem{{ID: "item", RuleID: "R001", RuleTitle: "rule", Status: "fixed", Location: "recorded location", Risk: "risk", Change: "repair", LineRanges: spans}}}
+	return model.Attempt{ID: id, Number: number, Outcome: "done", Commit: id, Changes: []model.ChangeReportItem{{ID: "item", RuleID: "R001", RuleTitle: "rule", Status: "fixed", Location: "recorded location", Risk: "risk", Change: "repair", AttributionVersion: model.LineAttributionVersion, LineRanges: spans}}}
 }
 
 func cumulativeReportReader(texts map[string][2]string) func(model.Attempt) (string, string, error) {
@@ -45,6 +45,19 @@ func TestCumulativeReportPreservesFixAcrossNoOpRetry(t *testing.T) {
 	}
 	if h.Changes[0].SourceAttemptID != "" || skipped.Changes[0].SourceAttemptID != "" || skipped.Changes[1].SourceAttemptID != "" {
 		t.Fatal("display provenance must not be written into attempt history")
+	}
+}
+
+func TestCumulativeReportKeepsOldExplanationWithoutGuessingItsLines(t *testing.T) {
+	before, after := "old\ncontext\n", "new\ncontext\n"
+	h := cumulativeReportAttempt("old", 1, model.ChangeLineRange{BeforeStart: 1, BeforeEnd: 2, AfterStart: 1, AfterEnd: 2})
+	h.Changes[0].AttributionVersion = 0
+	rows, err := cumulativeChangeReports(model.Task{History: []model.Attempt{h}}, before, after, cumulativeReportReader(map[string][2]string{h.ID: {before, after}}))
+	if err != nil || len(rows) != 1 || rows[0].Change != h.Changes[0].Change || len(rows[0].LineRanges) != 0 {
+		t.Fatalf("old explanation was lost or received inferred lines: %+v, %v", rows, err)
+	}
+	if len(h.Changes[0].LineRanges) != 1 {
+		t.Fatal("historical record was rewritten")
 	}
 }
 
@@ -86,7 +99,7 @@ func TestCumulativeReportRemovesUndoneChangesWhileKeepingOtherFixes(t *testing.T
 	latest := "intro\nheader\nold\ntail\n"
 	h1 := cumulativeReportAttempt("first", 1, model.ChangeLineRange{BeforeStart: 2, BeforeEnd: 2, AfterStart: 2, AfterEnd: 2})
 	h2 := cumulativeReportAttempt("second", 2, model.ChangeLineRange{BeforeStart: 2, BeforeEnd: 2, AfterStart: 3, AfterEnd: 3})
-	h2.Changes = append(h2.Changes, model.ChangeReportItem{ID: "intro", RuleID: "R002", Status: "fixed", Change: "add intro", LineRanges: []model.ChangeLineRange{{AfterStart: 1, AfterEnd: 1}}})
+	h2.Changes = append(h2.Changes, model.ChangeReportItem{ID: "intro", RuleID: "R002", Status: "fixed", Change: "add intro", AttributionVersion: model.LineAttributionVersion, LineRanges: []model.ChangeLineRange{{AfterStart: 1, AfterEnd: 1}}})
 	rows, err := cumulativeChangeReports(model.Task{History: []model.Attempt{h1, h2}}, base, latest, cumulativeReportReader(map[string][2]string{h1.ID: {base, first}, h2.ID: {first, latest}}))
 	if err != nil || len(rows) != 1 || rows[0].RuleID != "R002" {
 		t.Fatalf("reverted content was still counted as a current fix: %+v %v", rows, err)
@@ -210,5 +223,77 @@ func TestCumulativeLineMappingBoundedFallback(t *testing.T) {
 	m = cumulativeLineMapping(before, before)
 	if len(m.forward) != 1500 {
 		t.Fatal("identical large file needs no costly mapping")
+	}
+}
+
+func TestCumulativeHeldLocationsRebaseOriginalAcrossAcceptedInsertions(t *testing.T) {
+	baseline := "head\nshared.release();\ntail\n"
+	accepted := "intro\nhead\nshared.release();\ntail\n"
+	first := cumulativeReportAttempt("accepted", 1, model.ChangeLineRange{AfterStart: 1, AfterEnd: 1})
+	held := model.Attempt{ID: "held", Number: 2, Outcome: "needs_human", Changes: []model.ChangeReportItem{{ID: "ownership", RuleID: "R002", Status: "needs_human", AttributionVersion: model.LineAttributionVersion, LineRanges: []model.ChangeLineRange{{BeforeStart: 3, BeforeEnd: 3}}}}}
+	rows, err := cumulativeChangeReports(model.Task{History: []model.Attempt{first, held}}, baseline, accepted, cumulativeReportReader(map[string][2]string{first.ID: {baseline, accepted}, held.ID: {accepted, ""}}))
+	want := []model.ChangeLineRange{{BeforeStart: 2, BeforeEnd: 2}, {AfterStart: 3, AfterEnd: 3}}
+	if err != nil || len(rows) != 2 || rows[1].Status != "needs_human" || rows[1].SourceAttemptID != held.ID || !reflect.DeepEqual(rows[1].LineRanges, want) {
+		t.Fatalf("original held source lost cumulative coordinates: %+v %v", rows, err)
+	}
+	if !reflect.DeepEqual(held.Changes[0].LineRanges, []model.ChangeLineRange{{BeforeStart: 3, BeforeEnd: 3}}) {
+		t.Fatal("cumulative view mutated immutable attempt coordinates")
+	}
+}
+
+func TestCumulativeHeldCandidateOnlyLinesDoNotBecomeAdoptedCoordinates(t *testing.T) {
+	original := "head\nshared.release();\ntail\n"
+	candidate := "head\nnewOwnership.release();\nshared.release();\ntail\n"
+	held := model.Attempt{ID: "held", Number: 1, Outcome: "needs_human", Changes: []model.ChangeReportItem{
+		{ID: "new-call", Status: "needs_human", AttributionVersion: model.LineAttributionVersion, LineRanges: []model.ChangeLineRange{{AfterStart: 2, AfterEnd: 2}}},
+		{ID: "existing-call", Status: "needs_human", AttributionVersion: model.LineAttributionVersion, LineRanges: []model.ChangeLineRange{{AfterStart: 3, AfterEnd: 3}}},
+	}}
+	rows, err := cumulativeChangeReports(model.Task{History: []model.Attempt{held}}, original, original, cumulativeReportReader(map[string][2]string{held.ID: {original, candidate}}))
+	want := []model.ChangeLineRange{{BeforeStart: 2, BeforeEnd: 2}, {AfterStart: 2, AfterEnd: 2}}
+	if err != nil || len(rows) != 2 || len(rows[0].LineRanges) != 0 || rows[0].SourceAttemptID != held.ID || !reflect.DeepEqual(rows[1].LineRanges, want) {
+		t.Fatalf("unadopted new code acquired accepted-file coordinates: %+v %v", rows, err)
+	}
+	if len(held.Changes[0].LineRanges) != 1 || held.Changes[0].LineRanges[0].AfterStart != 2 {
+		t.Fatal("individual proposal must retain its candidate-only location")
+	}
+}
+
+func TestCumulativeHeldUnchangedSourceHasLocationsWithoutAnyDiff(t *testing.T) {
+	original := "\ufeffhead\r\nshared.release();\r\ntail\r\n"
+	for _, basis := range []string{"before", "after"} {
+		t.Run(basis, func(t *testing.T) {
+			span := model.ChangeLineRange{BeforeStart: 2, BeforeEnd: 2}
+			candidate := ""
+			if basis == "after" {
+				span, candidate = model.ChangeLineRange{AfterStart: 2, AfterEnd: 2}, original
+			}
+			h := model.Attempt{ID: "held", Outcome: "needs_human", Changes: []model.ChangeReportItem{{ID: "hold", Status: "needs_human", AttributionVersion: model.LineAttributionVersion, LineRanges: []model.ChangeLineRange{span}}}}
+			rows, err := cumulativeChangeReports(model.Task{History: []model.Attempt{h}}, original, original, cumulativeReportReader(map[string][2]string{h.ID: {original, candidate}}))
+			want := []model.ChangeLineRange{{BeforeStart: 2, BeforeEnd: 2}, {AfterStart: 2, AfterEnd: 2}}
+			if err != nil || len(rows) != 1 || !reflect.DeepEqual(rows[0].LineRanges, want) {
+				t.Fatalf("held unchanged source lost both identical coordinate systems: %+v %v", rows, err)
+			}
+		})
+	}
+}
+
+func TestCumulativeHeldLocationsNeverGuessUnavailableOrAmbiguousEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name, original, candidate, accepted string
+		version                             int
+		span                                model.ChangeLineRange
+	}{
+		{"legacy", "same\n", "same\n", "same\n", 0, model.ChangeLineRange{BeforeStart: 1, BeforeEnd: 1}},
+		{"missing candidate", "same\n", "", "same\n", model.LineAttributionVersion, model.ChangeLineRange{AfterStart: 1, AfterEnd: 1}},
+		{"ambiguous candidate", "head\nsame\ntail\n", "head\nsame\nsame\ntail\n", "head\nsame\ntail\n", model.LineAttributionVersion, model.ChangeLineRange{AfterStart: 2, AfterEnd: 2}},
+		{"invalid range", "same\n", "same\n", "same\n", model.LineAttributionVersion, model.ChangeLineRange{BeforeStart: 1, BeforeEnd: 999}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := model.Attempt{ID: "held", Outcome: "needs_human", Changes: []model.ChangeReportItem{{ID: "hold", Status: "needs_human", Location: "line 1", AttributionVersion: tc.version, LineRanges: []model.ChangeLineRange{tc.span}}}}
+			rows, err := cumulativeChangeReports(model.Task{History: []model.Attempt{h}}, tc.accepted, tc.accepted, cumulativeReportReader(map[string][2]string{h.ID: {tc.original, tc.candidate}}))
+			if err != nil || len(rows) != 1 || len(rows[0].LineRanges) != 0 || rows[0].Location != "line 1" {
+				t.Fatalf("unknown coordinate became a code badge: %+v %v", rows, err)
+			}
+		})
 	}
 }

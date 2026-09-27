@@ -100,14 +100,14 @@ func TestCompletedFileRetrySurvivesScanAndReloadWithoutUndoingAcceptedChanges(t 
 		if in.Content != acceptedContent || in.BaseHash != digest([]byte(acceptedContent)) || reloaded.Snapshot().Tasks[0].ResumeRequested {
 			t.Fatal("retry did not start from accepted code or did not clear its pending marker")
 		}
-		return model.Proposal{Outcome: "skipped", Note: "already updated", RulesApplied: []string{"R001", "R019"}}, nil
+		return reviewedNoChangeProposal(t, in, "already updated")
 	}
 	finished := runTest(t, reloaded, 0)
 	if !called || finished.LastError != "" || finished.Tasks[0].Status != "done" || finished.Tasks[0].ResumeRequested || finished.Tasks[0].Attempts != 2 || len(finished.Tasks[0].History) != 2 || !reflect.DeepEqual(finished.Tasks[0].History[0], history[0]) {
 		t.Fatalf("retry did not finish independently while retaining the accepted attempt: %+v", finished.Tasks)
 	}
 	latest := finished.Tasks[0].History[1]
-	if latest.Outcome != "skipped" || latest.Commit != "" || latest.OutputHash != "" || !reflect.DeepEqual(finished.Tasks[0].RulesApplied, completed.Tasks[0].RulesApplied) {
+	if latest.Outcome != "skipped" || latest.Commit != "" || latest.OutputHash != latest.InputHash || !reflect.DeepEqual(finished.Tasks[0].RulesApplied, completed.Tasks[0].RulesApplied) {
 		t.Fatalf("confirmation-only retry fabricated a change or changed adopted rules: %+v", finished.Tasks[0])
 	}
 	if readTest(t, acceptedPath) != acceptedContent || readTest(t, filepath.Join(cfg.Root, "src", "A.txt")) != "Legacy.Save()\n" || gitTest(t, finished.Worktree, "rev-parse", "HEAD") != acceptedHead {
@@ -200,5 +200,77 @@ func TestReviewScanRequiresCleanGitAndAtLeastOneRule(t *testing.T) {
 	}
 	if _, err := s.Scan(); err == nil || readTest(t, cfg.QueuePath) != queue {
 		t.Fatal("review accepted zero rules or replaced the prior queue")
+	}
+}
+
+func TestCheckedHeldTaskBecomesResumableAndActuallyRuns(t *testing.T) {
+	s, cfg := fixture(t, map[string]string{"A.txt": "Legacy.Save()\n", "B.txt": "Legacy.Save()\n"})
+	s.propose = func(_ context.Context, in agent.Input) (model.Proposal, error) {
+		return model.Proposal{Outcome: "needs_human", Note: "確認待ち"}, nil
+	}
+	held := runTest(t, s, 0)
+	if held.Tasks[0].Status != "needs_human" || held.Tasks[1].Status != "needs_human" {
+		t.Fatalf("initial run did not hold both files: %+v", held.Tasks)
+	}
+	// The queue already marks this file selected. Confirming that unchanged
+	// checked set still needs to requeue it, not just change the UI's count.
+	selected, err := s.SetTaskSelection([]string{"A.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, b := selected.Tasks[0], selected.Tasks[1]
+	if a.Status != "pending" || !a.ResumeRequested || a.Excluded || a.Attempts != held.Tasks[0].Attempts || !reflect.DeepEqual(a.History, held.Tasks[0].History) {
+		t.Fatalf("selection did not preserve and resume held work: %+v", a)
+	}
+	if b.Status != "needs_human" || !b.Excluded || b.ResumeRequested || !reflect.DeepEqual(b.History, held.Tasks[1].History) {
+		t.Fatalf("unchecked held file was requeued or changed: %+v", b)
+	}
+	queue, err := store.LoadQueue(cfg.QueuePath)
+	if err != nil || queue[0].Status != "pending" || !queue[0].ResumeRequested || !queue[1].Excluded {
+		t.Fatalf("resumable selection was not saved: %+v, %v", queue, err)
+	}
+	visited := []string{}
+	s.propose = func(ctx context.Context, in agent.Input) (model.Proposal, error) {
+		visited = append(visited, in.File)
+		return successfulProposal(ctx, in)
+	}
+	finished := runTest(t, s, 0)
+	if finished.LastError != "" || !reflect.DeepEqual(visited, []string{"A.txt"}) || finished.Tasks[0].Status != "done" || finished.Tasks[1].Status != "needs_human" {
+		t.Fatalf("held selection was counted but not executed correctly: %+v, visited=%v", finished, visited)
+	}
+	if readTest(t, filepath.Join(cfg.Root, "A.txt")) != "Legacy.Save()\n" {
+		t.Fatal("selection/retry changed the user's checkout")
+	}
+}
+
+func TestHeldSelectionRequeuesEvenWithoutCheckboxDifference(t *testing.T) {
+	s, cfg := fixture(t, map[string]string{"A.txt": "Legacy.Save()\n"})
+	s.mu.Lock()
+	s.state.Tasks[0].Status = "needs_human"
+	s.state.Tasks[0].Note = "選択状態は保持済み"
+	s.mu.Unlock()
+	state, err := s.SetTaskSelection([]string{"A.txt"})
+	if err != nil || state.Tasks[0].Status != "pending" || !state.Tasks[0].ResumeRequested || state.Tasks[0].Excluded {
+		t.Fatalf("an already checked held file was not made runnable: %+v %v", state.Tasks, err)
+	}
+	queue, err := store.LoadQueue(cfg.QueuePath)
+	if err != nil || queue[0].Status != "pending" || !queue[0].ResumeRequested {
+		t.Fatalf("retry intent was not persisted: %+v %v", queue, err)
+	}
+}
+
+func TestSelectionDoesNotRetryCompletedTasksOrBypassRuleFreshness(t *testing.T) {
+	s, cfg := fixture(t, map[string]string{"A.txt": "Legacy.Save()\n", "B.txt": "Legacy.Save()\n"})
+	s.mu.Lock()
+	s.state.Tasks[0].Status = "done"
+	s.state.Tasks[1].Status = "needs_human"
+	s.mu.Unlock()
+	selected, err := s.SetTaskSelection([]string{"A.txt", "B.txt"})
+	if err != nil || selected.Tasks[0].Status != "done" || selected.Tasks[0].ResumeRequested || selected.Tasks[1].Status != "pending" {
+		t.Fatalf("completed file should require the explicit retry action: %+v %v", selected.Tasks, err)
+	}
+	writeFixtureRule(t, cfg.RulesPath, "R019", fixtureRuleJSON(t, "Updated", "Legacy", "New rule version", "old", "new", "", ""))
+	if err := s.Start(0); err == nil || !strings.Contains(err.Error(), "再実行") {
+		t.Fatalf("held selection bypassed stale rule mapping: %v", err)
 	}
 }

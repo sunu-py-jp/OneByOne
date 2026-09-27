@@ -191,7 +191,7 @@ func (s *Service) validateDemoLocation(root string) error {
 	return nil
 }
 
-// ImportDemoRules uses the same validated, atomic install as a rule archive.
+// ImportDemoRules uses the same validated, atomic install as imported rules.
 // Source selection, queue history and the selected LLM connection are retained.
 func (s *Service) ImportDemoRules() (model.State, error) {
 	s.op.Lock()
@@ -216,8 +216,16 @@ func (s *Service) ImportDemoRules() (model.State, error) {
 	if err != nil {
 		return s.Snapshot(), err
 	}
-	cfg = pkg.Settings.Apply(cfg)
-	cfg.RulePackageName = demopreset.ProjectName + ".oborules"
+	existing, err := s.existingRuleIDs(w.ID, cfg.RulesPath)
+	if err != nil {
+		return s.Snapshot(), err
+	}
+	lockIDs := append(packageRuleIDs(pkg), existing...)
+	release, err := s.lockImportedRules(w.ID, lockIDs)
+	if err != nil {
+		return s.Snapshot(), err
+	}
+	defer release()
 	cfg, err = normalizeConfig(cfg)
 	if err != nil {
 		return s.Snapshot(), err
@@ -297,9 +305,8 @@ func (s *Service) CreateDemoWorkspace(name, root string) (model.State, error) {
 	if owner != nil {
 		return s.Snapshot(), workspaceInUse(owner)
 	}
-	cfg := pkg.Settings.Apply(DefaultConfig())
+	cfg := DefaultConfig()
 	cfg.Root, cfg.QueuePath = root, filepath.Join(filepath.Dir(setting), "runs", "queue.jsonl")
-	cfg.RulePackageName = demopreset.ProjectName + ".oborules"
 	cfg, err = normalizeConfig(cfg)
 	if err != nil {
 		return s.Snapshot(), err

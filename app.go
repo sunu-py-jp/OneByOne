@@ -151,29 +151,25 @@ func (a *App) CreateRule(input model.RuleEdit) (model.State, error) {
 }
 func (a *App) ChooseRulePackage() (string, error) {
 	return runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
-		Title:   "ルールパッケージを取り込む",
-		Filters: []runtime.FileFilter{{DisplayName: "OneByOne rule package", Pattern: "*.oborules"}},
+		Title:   "ルールを取り込む",
+		Filters: []runtime.FileFilter{{DisplayName: "ルール (JSON・CSV)", Pattern: "*.json;*.csv"}},
 	})
 }
 func (a *App) ImportRulePackage(path, mode string) (model.State, error) {
 	return a.service.ImportRulePackage(path, mode)
 }
 func (a *App) ExportRulePackage() (string, error) {
-	st := a.service.Snapshot()
-	name := st.Config.RulePackageName
-	if name == "" {
-		name = "rules.oborules"
-	}
+	name := "rules.json"
 	path, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
-		Title: "ルールパッケージを書き出す", DefaultFilename: filepath.Base(name),
-		Filters:              []runtime.FileFilter{{DisplayName: "OneByOne rule package", Pattern: "*.oborules"}},
+		Title: "ルールを書き出す", DefaultFilename: filepath.Base(name),
+		Filters:              []runtime.FileFilter{{DisplayName: "ルール (JSON)", Pattern: "*.json"}},
 		CanCreateDirectories: true,
 	})
 	if err != nil || path == "" {
 		return "", err
 	}
 	if filepath.Ext(path) == "" {
-		path += ".oborules"
+		path += ".json"
 	}
 	return a.service.ExportRulePackage(path)
 }
@@ -217,9 +213,6 @@ func (a *App) ChooseDirectory(kind string) (string, error) {
 		defaultDir = st.Config.Root
 	case "demo":
 		title = "デモ保存先のディレクトリを選択"
-	case "rules":
-		title = "rules フォルダ"
-		defaultDir = st.Config.RulesPath
 	default:
 		return "", fmt.Errorf("未対応のフォルダ選択です: %s", kind)
 	}
@@ -229,9 +222,6 @@ func (a *App) ChooseDirectory(kind string) (string, error) {
 	return runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: title, DefaultDirectory: defaultDir, CanCreateDirectories: kind == "demo"})
 }
 
-func (a *App) ChooseLegacy() (string, error) {
-	return runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{Title: "旧シンボルのパターン一覧", Filters: []runtime.FileFilter{{DisplayName: "Pattern files", Pattern: "*.txt;*.pattern"}}})
-}
 func (a *App) OpenWorktree() error {
 	path := a.service.Snapshot().Worktree
 	if path == "" {

@@ -1,127 +1,108 @@
 package ruleformat
 
 import (
-	"bytes"
-	"encoding/json"
 	"onebyone/internal/model"
 	"reflect"
 	"strings"
 	"testing"
-	"unicode/utf8"
 )
 
 func fixtureDefinition() model.RuleDefinition {
-	return model.RuleDefinition{Version: 1, Name: "保存APIの更新", Overview: "Legacy.Save を更新する。\n順序は保つ。", Before: "const before = `raw`;\n```nested\nvalue\n```\n", After: "updated();\r\n", Notes: "備考を保持", HoldConditions: "型を特定できない場合", Pattern: `Legacy\.Save`}
+	return model.RuleDefinition{ID: "1", Name: "API更新", Description: "呼出し順と契約を保つ。", PathPattern: "src/**/*.ts", ContentPattern: `\bSave\(`, Body: "自由な説明\n\n# 独自セクション\n\n```ts\nSave();\n```\n"}
 }
-
-func TestStructuredRoundTripAndAIOnlyMarkdownPreserveIndependentFields(t *testing.T) {
+func TestMarkdownRoundTripPreservesBodyAndPattern(t *testing.T) {
 	d := fixtureDefinition()
-	data, err := Encode(d)
-	if err != nil {
-		t.Fatal(err)
+	b, e := Encode(d)
+	if e != nil {
+		t.Fatal(e)
 	}
-	got, err := Decode(data)
-	if err != nil || !reflect.DeepEqual(got, d) {
-		t.Fatalf("independent fields changed: %+v %v", got, err)
+	got, e := Decode(b)
+	if e != nil || !reflect.DeepEqual(d, got) {
+		t.Fatalf("round trip: %+v %v", got, e)
 	}
-	var raw map[string]any
-	if err := json.Unmarshal(data, &raw); err != nil {
-		t.Fatal(err)
+	if !strings.Contains(Markdown(d), d.Description) || !strings.Contains(Markdown(d), d.Body) {
+		t.Fatal("LLM did not receive description/body")
 	}
-	if len(raw) != 8 || raw["before"] != d.Before || raw["after"] != d.After {
-		t.Fatal("stored JSON did not keep the original code fields")
-	}
-	markdown := Markdown(d)
-	for _, section := range []string{"# 変更概要\n", "# 変更前\n", "# 変更後\n", "# 備考\n", "# 修正を保留すべきケース\n"} {
-		if strings.Count(markdown, section) != 1 {
-			t.Fatalf("missing or repeated generated section: %s", section)
+	for _, change := range []func(*model.RuleDefinition){func(v *model.RuleDefinition) { v.ID += "0" }, func(v *model.RuleDefinition) { v.Name += "x" }, func(v *model.RuleDefinition) { v.Description += "x" }, func(v *model.RuleDefinition) { v.PathPattern += "x" }, func(v *model.RuleDefinition) { v.ContentPattern += "x" }, func(v *model.RuleDefinition) { v.Body += "x" }} {
+		next := d
+		change(&next)
+		if Revision(d) == Revision(next) {
+			t.Fatal("revision missed field")
 		}
-	}
-	if !strings.Contains(markdown, "````\n"+d.Before+"````") || !strings.Contains(markdown, "```\n"+d.After+"```") {
-		t.Fatal("code fences did not preserve original newlines and nested backticks")
-	}
-	if strings.Contains(markdown, d.Pattern) || strings.Contains(markdown, d.Name) || strings.Contains(markdown, `"version"`) {
-		t.Fatal("AI Markdown includes pattern, title metadata, or persisted JSON")
-	}
-	for _, change := range []func(*model.RuleDefinition){func(d *model.RuleDefinition) { d.Name += "changed" }, func(d *model.RuleDefinition) { d.Overview += "changed" }, func(d *model.RuleDefinition) { d.Before += "changed" }, func(d *model.RuleDefinition) { d.After += "changed" }, func(d *model.RuleDefinition) { d.Notes += "changed" }, func(d *model.RuleDefinition) { d.HoldConditions += "changed" }, func(d *model.RuleDefinition) { d.Pattern += "changed" }} {
-		changed := d
-		change(&changed)
-		if Revision(d) == Revision(changed) {
-			t.Fatal("revision omitted an independently editable field")
-		}
-	}
-	empty := model.RuleDefinition{Version: 1, Name: "Empty sections"}
-	if _, err := Encode(empty); err != nil {
-		t.Fatalf("empty five sections are valid: %v", err)
 	}
 }
-
-func TestDecodeRejectsMissingUnknownDuplicateNullAndWrongTypedFields(t *testing.T) {
-	data, _ := Encode(fixtureDefinition())
-	for key := range fields {
-		t.Run("missing-"+key, func(t *testing.T) {
-			var value map[string]json.RawMessage
-			_ = json.Unmarshal(data, &value)
-			delete(value, key)
-			bad, _ := json.Marshal(value)
-			if _, err := Decode(bad); err == nil {
-				t.Fatal("missing required field accepted")
-			}
-		})
+func TestEncodedFrontMatterStartsWithReadableOneLineID(t *testing.T) {
+	d := fixtureDefinition()
+	d.Description = strings.Repeat("keep the calling contract ", 12)
+	d.PathPattern = "*.tsx"
+	b, e := Encode(d)
+	if e != nil {
+		t.Fatal(e)
 	}
-	invalid := []string{
-		strings.Replace(string(data), `"version": 1`, `"version": 2`, 1),
-		strings.Replace(string(data), `"version": 1`, `"version": 1, "version": 1`, 1),
-		strings.Replace(string(data), `"version": 1`, `"Version": 1`, 1),
-		strings.Replace(string(data), `"notes": "備考を保持"`, `"notes": null`, 1),
-		strings.Replace(string(data), `"version": 1`, `"version": "1"`, 1),
-		strings.Replace(string(data), `"version": 1`, `"version": 1, "markdown":"old format"`, 1),
-		string(data) + `{}`, `null`, `[]`, strings.Replace(string(data), `"pattern": "Legacy\\.Save"`, `"pattern": "first\nsecond"`, 1),
+	lines := strings.Split(string(b), "\n")
+	if lines[1] != "id: 1" || !strings.HasPrefix(lines[2], "name: ") || !strings.HasPrefix(lines[3], "description: ") || !strings.HasPrefix(lines[4], "path_pattern: ") || !strings.HasPrefix(lines[5], "content_pattern: ") || lines[6] != "---" {
+		t.Fatalf("front matter order or line folding changed:\n%s", b)
 	}
-	for i, bad := range invalid {
+	for _, id := range []string{"001", "R019", "api-save_2", "0", "08", "1e3"} {
+		d.ID = id
+		if b, e = Encode(d); e != nil {
+			t.Fatal(e)
+		}
+		got, e := Decode(b)
+		if e != nil || got.ID != id || got.Description != strings.TrimSpace(d.Description) || got.PathPattern != d.PathPattern {
+			t.Fatalf("id %q did not round trip: %+v %v\n%s", id, got, e, b)
+		}
+	}
+}
+func TestUnquotedNumericIDsKeepTheirLiteralText(t *testing.T) {
+	for raw, want := range map[string]string{"1": "1", "001": "001", "'007'": "007", "R001": "R001", "0x1F": "0x1F"} {
+		d, err := Decode([]byte("---\nid: " + raw + "\nname: Rule\ndescription: Explain\n---\nbody"))
+		if err != nil || d.ID != want {
+			t.Fatalf("id %s: %+v %v", raw, d, err)
+		}
+	}
+	for _, bad := range []string{"", "~", "[1]", "'R 1'", "'-1'", "ルール1", "1.5"} {
+		if _, err := Decode([]byte("---\nid: " + bad + "\nname: Rule\ndescription: Explain\n---\n")); err == nil {
+			t.Fatalf("accepted id %q", bad)
+		}
+	}
+	if _, err := Decode([]byte("---\nname: Rule\ndescription: Explain\n---\n")); err == nil || !strings.Contains(err.Error(), "id を入力") {
+		t.Fatalf("missing id was not reported: %v", err)
+	}
+}
+func TestPeekIDIdentifiesAnOtherwiseInvalidStoredRule(t *testing.T) {
+	id, err := PeekID([]byte("---\nid: 12\nname: ''\nunknown: x\n---\n"))
+	if err != nil || id != "12" {
+		t.Fatalf("lenient id: %q %v", id, err)
+	}
+	for _, bad := range []string{"plain markdown", "---\nname: x\n---\n", "---\nid: [1]\n---\n"} {
+		if _, err := PeekID([]byte(bad)); err == nil {
+			t.Fatalf("identified %q", bad)
+		}
+	}
+}
+func TestInvalidFrontMatterRejected(t *testing.T) {
+	for _, bad := range []string{"plain markdown", "---\nid: 1\nname: x\n---\n", "---\nid: 1\nname: x\ndescription: ' '\n---\n", "---\nid: 1\nname: x\nname: y\ndescription: text\n---\n", "---\nid: 1\nname: x\ndescription: text\nunknown: x\n---\n", "---\nid: 1\nname: [x]\ndescription: text\n---\n", "---\nid: 1\nname: x\ndescription: text\ncontent_pattern: 42\n---\n", "---\nid: 1\nname: x\ndescription: text\n"} {
 		if _, err := Decode([]byte(bad)); err == nil {
-			t.Fatalf("invalid JSON case %d accepted", i)
+			t.Fatalf("accepted: %q", bad)
 		}
-	}
-	if _, err := Decode(bytes.Repeat([]byte("x"), MaxBytes+1)); err == nil {
-		t.Fatal("oversize input accepted")
 	}
 }
-
-func TestValidationSingleLinePatternsAndBoundedOverviewIndex(t *testing.T) {
-	for _, separator := range []string{"\n", "\r", "\u0085", "\u2028", "\u2029"} {
-		d := fixtureDefinition()
-		d.Pattern = "one" + separator + "two"
-		if err := Validate(d); err == nil {
-			t.Fatal("multiline pattern accepted")
-		}
+func TestEmptyPatternsAndLiteralRegex(t *testing.T) {
+	d, err := Decode([]byte("---\nid: 1\nname: Rule\ndescription: Explain\npath_pattern:\ncontent_pattern: '\\bSave\\b'\n---\n\n# Body\n"))
+	if err != nil || d.ContentPattern != `\bSave\b` {
+		t.Fatalf("%+v %v", d, err)
 	}
-	d := fixtureDefinition()
-	d.Notes = "invalid\x00"
-	if err := Validate(d); err == nil {
-		t.Fatal("NUL content accepted")
+	d.ContentPattern = ""
+	if !ToRule("id", d).Always {
+		t.Fatal("empty should be common")
 	}
-	d = fixtureDefinition()
-	d.After = string([]byte{0xff})
-	if err := Validate(d); err == nil {
-		t.Fatal("non-UTF8 content accepted")
+	d.PathPattern = "src/**"
+	if ToRule("id", d).Always {
+		t.Fatal("path scoped is not common")
 	}
-	d = fixtureDefinition()
-	d.Overview = strings.Repeat("日", 3000)
-	rule := ToRule("R019", d)
-	if rule.Overview != d.Overview || !utf8.ValidString(rule.Summary) || utf8.RuneCountInString(rule.Summary) != 241 || !strings.HasSuffix(rule.Summary, "…") {
-		t.Fatal("overview was lost or the index summary is not bounded by Unicode characters")
-	}
-	if rule.Title != d.Name || rule.ID != "R019" || rule.Before != d.Before || rule.After != d.After || rule.Always {
-		t.Fatal("structured rule view lost fields")
-	}
-	d.Pattern = " \t"
-	if !ToRule("R019", d).Always {
-		t.Fatal("blank pattern is not common")
-	}
-	d = fixtureDefinition()
-	d.Overview = strings.Repeat("x", MaxBytes)
-	if _, err := Encode(d); err == nil {
-		t.Fatal("oversize encoded definition accepted")
+	d.ContentPattern = "x\ny"
+	if Validate(d) == nil {
+		t.Fatal("multiline pattern accepted")
 	}
 }

@@ -131,7 +131,8 @@ func commandFlags(name string, args []string, configure func(*flag.FlagSet)) err
 }
 
 var editableSettings = []string{
-	"includeGlobs", "excludeGlobs", "checkCommands", "maxAttempts", "maxTurns",
+	"excludedRuleIds", "concurrency",
+	"maxAttempts", "maxTurns",
 	"maxOutputTokens", "maxFileBytes", "timeoutSeconds", "maxCostUSD",
 	"inputPricePerMillion", "cachedInputPricePerMillion", "outputPricePerMillion",
 }
@@ -143,6 +144,9 @@ func publicSettings(cfg model.Config) map[string]json.RawMessage {
 	result := make(map[string]json.RawMessage, len(editableSettings))
 	for _, key := range editableSettings {
 		result[key] = all[key]
+		if key == "excludedRuleIds" && result[key] == nil {
+			result[key] = json.RawMessage("[]")
+		}
 	}
 	return result
 }

@@ -17,14 +17,18 @@ func changeReportTitles(rules []model.Rule) map[string]string {
 
 // buildChangeReport never authorizes adoption. A plan is only the editor's
 // claim, and an accepted candidate still is not fixed until it is committed.
-func buildChangeReport(h model.Attempt, c *repairCheckpoint) []model.ChangeReportItem {
+func buildChangeReport(h model.Attempt, c *repairCheckpoint, evidence ...reportSources) []model.ChangeReportItem {
+	var sources reportSources
+	if len(evidence) > 0 {
+		sources = evidence[0]
+	}
 	if c == nil || c.AttemptID != h.ID || c.InputHash != h.InputHash || c.BaseCommit != h.BaseCommit {
 		return ensureChangeReportRows(h, nil)
 	}
 	plan, candidate := c.State.Plan, c.State.LastCandidate
 	fixed := map[string]bool{}
 	matching := candidate != nil && candidate.Request.BaseHash == h.InputHash && candidate.Request.PlanRevision == plan.Revision && candidate.Result.PlanRevision == plan.Revision && candidate.Result.CandidateID != ""
-	adopted := h.Outcome == "done" && h.Commit != "" && h.OutputHash != "" && matching && candidate.Result.Passed && candidate.Result.CandidateHash == h.OutputHash && len(candidate.Result.Checks) > 0 && checksPass(candidate.Result.Checks) && passedIndependentReview(candidate, h.InputHash, h.OutputHash, plan)
+	adopted := h.AdoptedChanges() && h.OutputHash != "" && matching && candidate.Result.Passed && candidate.Result.CandidateHash == h.OutputHash && len(candidate.Result.Checks) > 0 && checksPass(candidate.Result.Checks) && passedIndependentReview(candidate, h.InputHash, h.OutputHash, plan)
 	if adopted {
 		for _, id := range candidate.Request.AddressedItemIDs {
 			fixed[id] = true
@@ -45,7 +49,8 @@ func buildChangeReport(h model.Attempt, c *repairCheckpoint) []model.ChangeRepor
 	rows := make([]model.ChangeReportItem, 0, len(plan.Items)+len(plan.RuleDecisions))
 	for _, item := range plan.Items {
 		row := model.ChangeReportItem{ID: item.ID, RuleID: item.RuleID, RuleTitle: c.RuleTitles[item.RuleID], Location: item.Location, Risk: item.Risk, Change: item.Change, Expected: item.Expected, Status: "pending"}
-		if matching && candidate.Result.CandidateHash == h.OutputHash && h.OutputHash != "" {
+		if matching && candidate.Result.CandidateHash == h.OutputHash && h.OutputHash != "" && candidate.Result.AttributionVersion == model.LineAttributionVersion {
+			row.AttributionVersion = model.LineAttributionVersion
 			for _, span := range candidate.Result.EditRanges {
 				for _, id := range span.ItemIDs {
 					if id == item.ID {
@@ -59,6 +64,15 @@ func buildChangeReport(h model.Attempt, c *repairCheckpoint) []model.ChangeRepor
 		case item.Status == "blocked" || decisions[item.RuleID].Decision == "blocked":
 			row.Status = "needs_human"
 			row.Reason = firstReportText(item.HoldReason, decisions[item.RuleID].Reason, h.Note)
+			// A held item identifies the unchanged scope in the immutable input,
+			// even when independent safe edits elsewhere were adopted.
+			row.LineRanges, row.AttributionVersion = nil, 0
+			for _, location := range item.SourceLocations {
+				if span, ok := reportLocationRange(sources.before, sources.beforeValid, location, false); ok {
+					row.LineRanges = append(row.LineRanges, span)
+					row.AttributionVersion = model.LineAttributionVersion
+				}
+			}
 		case fixed[item.ID]:
 			row.Status, row.Reason = "fixed", "機械検証と独立レビューを通過した修正をコミットしました"
 		case terminal:
@@ -73,15 +87,24 @@ func buildChangeReport(h model.Attempt, c *repairCheckpoint) []model.ChangeRepor
 		if d.Decision == "blocked" && !reportHasRule(rows, d.RuleID) {
 			rows = append(rows, model.ChangeReportItem{ID: "rule:" + d.RuleID, RuleID: d.RuleID, RuleTitle: c.RuleTitles[d.RuleID], Status: "needs_human", Reason: d.Reason})
 		}
-		if d.Decision == "no_change" && (adopted || verifiedSkipReport(h)) {
+		if d.Decision == "no_change" && (adopted || (h.Outcome == "skipped" && h.OutputHash == h.InputHash && passedNoChangeReview(candidate, h.InputHash, plan))) {
 			rows = append(rows, model.ChangeReportItem{ID: "rule:" + d.RuleID, RuleID: d.RuleID, RuleTitle: c.RuleTitles[d.RuleID], Status: "unchanged", Reason: d.Reason})
 		}
 	}
-	if review == nil || review.Verdict == "passed" || review.Verdict == "running" || review.Verdict == "error" {
+	// A successful partial review acknowledges the existing held items. They
+	// already have exact locations/reasons above; do not duplicate them as
+	// rule-wide reviewer issues merely because their rule remains needs_human.
+	if review == nil || review.Verdict == "passed" || review.Verdict == "passed_with_holds" || review.Verdict == "running" || review.Verdict == "error" {
 		return ensureChangeReportRows(h, rows)
 	}
+	specificIssues := map[string]bool{}
+	for _, issue := range review.Issues {
+		if issue.RuleID != "" {
+			specificIssues[issue.RuleID] = true
+		}
+	}
 	for _, assessment := range review.Assessments {
-		if assessment.Status != "needs_human" {
+		if assessment.Status != "needs_human" || specificIssues[assessment.RuleID] {
 			continue
 		}
 		// A rule-level assessment cannot identify which of that rule's editor
@@ -92,10 +115,24 @@ func buildChangeReport(h model.Attempt, c *repairCheckpoint) []model.ChangeRepor
 		// Reviewer locations are separate evidence. Do not guess which editor
 		// item an issue concerns merely because they use the same rule.
 		status := "not_applied"
-		if review.Verdict == "needs_human" {
+		if issue.Kind == "needs_human" || (issue.Kind == "" && review.Verdict == "needs_human") {
 			status = "needs_human"
 		}
-		rows = append(rows, model.ChangeReportItem{ID: fmt.Sprintf("review:%s:%d", review.ID, i+1), RuleID: issue.RuleID, RuleTitle: c.RuleTitles[issue.RuleID], Location: issue.Location, Risk: issue.Reason, Change: issue.RequestedChange, Status: status, Reason: "独立レビュー: " + issue.Reason})
+		row := model.ChangeReportItem{ID: fmt.Sprintf("review:%s:%d", review.ID, i+1), RuleID: issue.RuleID, RuleTitle: c.RuleTitles[issue.RuleID], Location: issue.Location, Risk: issue.Reason, Change: issue.RequestedChange, Status: status, Reason: "独立レビュー: " + issue.Reason}
+		location := model.SourceLocation{StartLine: issue.StartLine, EndLine: issue.EndLine, Excerpt: issue.Excerpt}
+		var span model.ChangeLineRange
+		var verified bool
+		switch issue.LineBasis {
+		case "before":
+			span, verified = reportLocationRange(sources.before, sources.beforeValid, location, false)
+		case "after":
+			span, verified = reportLocationRange(sources.after, sources.afterValid, location, true)
+		}
+		if verified {
+			row.LineRanges = []model.ChangeLineRange{span}
+			row.AttributionVersion = model.LineAttributionVersion
+		}
+		rows = append(rows, row)
 	}
 	return ensureChangeReportRows(h, rows)
 }
@@ -135,21 +172,10 @@ func firstReportText(values ...string) string {
 	return ""
 }
 
-func verifiedSkipReport(h model.Attempt) bool {
-	if h.Outcome != "skipped" || !checksPass(h.Checks) {
-		return false
-	}
-	for _, check := range h.Checks {
-		if check.Status == "passed" {
-			return true
-		}
-	}
-	return false
-}
-
-// Older queues contain only the checkpoint path. Read their own immutable
-// attempt metadata on selection/export; a missing record is not an invented
-// repair, risk, or rule title. Existing snapshots retain their historical title.
+// An attempt stores its report when it finishes. For one still running or
+// interrupted, read its own immutable checkpoint on selection/export; a missing
+// record is not an invented repair, risk, or rule title. Existing snapshots
+// retain their historical title.
 func backfillChangeReports(cfg model.Config, tasks []model.Task) {
 	for i := range tasks {
 		for j := range tasks[i].History {
@@ -159,7 +185,7 @@ func backfillChangeReports(cfg model.Config, tasks []model.Task) {
 			}
 			c, err := loadRepairCheckpoint(cfg, *h)
 			if err == nil && c != nil && c.File == tasks[i].File {
-				h.Changes = buildChangeReport(*h, c)
+				h.Changes = buildRecordedChangeReport(cfg, *h, c)
 			} else {
 				h.Changes = ensureChangeReportRows(*h, nil)
 			}

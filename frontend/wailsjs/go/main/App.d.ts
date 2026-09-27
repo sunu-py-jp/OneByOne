@@ -10,8 +10,6 @@ export function CheckGitInstallation():Promise<model.GitInstallation>;
 
 export function ChooseDirectory(arg1:string):Promise<string>;
 
-export function ChooseLegacy():Promise<string>;
-
 export function ChooseRulePackage():Promise<string>;
 
 export function ClearLLMConnectionCredential(arg1:string):Promise<model.State>;

@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"errors"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -26,14 +25,14 @@ func workspaceIssues(t *testing.T, state model.State, id string) []model.Workspa
 
 func TestWorkspaceIssuesIdentifyInactiveInvalidRulesAndSurviveSelection(t *testing.T) {
 	s, root := workspaceTestService(t)
-	if _, err := s.CreateWorkspace("legacy definition", root); err != nil {
+	if _, err := s.CreateWorkspace("missing description", root); err != nil {
 		t.Fatal(err)
 	}
 	first, err := s.CreateRule(ruleEdit("R001", "first", ""))
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := s.DuplicateWorkspace("broken JSON")
+	second, err := s.DuplicateWorkspace("missing name")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,9 +40,9 @@ func TestWorkspaceIssuesIdentifyInactiveInvalidRulesAndSurviveSelection(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	legacyPath := filepath.Join(first.Config.RulesPath, "R001", "name.txt")
-	writeTest(t, legacyPath, []byte("old title remains untouched"))
-	writeTest(t, filepath.Join(second.Config.RulesPath, "R001", "rule.json"), []byte("invalid JSON"))
+	writeFixtureRule(t, first.Config.RulesPath, "R001", []byte("---\nname: First\ndescription: ''\n---\n\nOriginal body remains untouched\n"))
+	writeFixtureRule(t, second.Config.RulesPath, "R001", []byte("---\ndescription: Missing name\n---\n"))
+	originalRules := readTest(t, first.Config.RulesPath)
 	s.Close()
 	restored := workspaceNewService(t, s.configPath)
 	assertIssues := func(st model.State) {
@@ -57,8 +56,8 @@ func TestWorkspaceIssuesIdentifyInactiveInvalidRulesAndSurviveSelection(t *testi
 		if len(workspaceIssues(t, st, clean.ActiveWorkspaceID)) != 0 {
 			t.Fatal("healthy workspace inherited another workspace's issue")
 		}
-		if !strings.Contains(workspaceIssues(t, st, first.ActiveWorkspaceID)[0].Message, "旧形式のname.txt") {
-			t.Fatal("legacy rule diagnostic message was lost")
+		if !strings.Contains(workspaceIssues(t, st, first.ActiveWorkspaceID)[0].Message, "description") {
+			t.Fatal("required metadata diagnostic message was lost")
 		}
 	}
 	assertIssues(restored.Snapshot())
@@ -72,8 +71,8 @@ func TestWorkspaceIssuesIdentifyInactiveInvalidRulesAndSurviveSelection(t *testi
 			t.Fatal("invalid catalog was published as executable rules")
 		}
 	}
-	if readTest(t, legacyPath) != "old title remains untouched" {
-		t.Fatal("diagnosing an old rule modified its assets")
+	if readTest(t, first.Config.RulesPath) != originalRules {
+		t.Fatal("diagnosing an invalid rule modified its document")
 	}
 }
 
@@ -86,8 +85,8 @@ func TestWorkspaceIssuesRefreshAfterFixAndNeverValidateRunningPolls(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	legacyPath := filepath.Join(initial.Config.RulesPath, "R001", "name.txt")
-	writeTest(t, legacyPath, []byte("old"))
+	originalRules := readTest(t, initial.Config.RulesPath)
+	writeFixtureRule(t, initial.Config.RulesPath, "R001", []byte("---\nname: Repairable\ndescription: ''\n---\n"))
 	// Snapshot and polling while running must serve their memory-only view.
 	s.mu.Lock()
 	s.state.Running = true
@@ -103,9 +102,7 @@ func TestWorkspaceIssuesRefreshAfterFixAndNeverValidateRunningPolls(t *testing.T
 	if err != nil || len(workspaceIssues(t, st, initial.ActiveWorkspaceID)) != 1 || len(st.Rules) != 0 {
 		t.Fatalf("idle refresh did not diagnose invalid catalog: %v", err)
 	}
-	if err := os.Remove(legacyPath); err != nil {
-		t.Fatal(err)
-	}
+	writeTest(t, initial.Config.RulesPath, []byte(originalRules))
 	if len(workspaceIssues(t, s.Snapshot(), initial.ActiveWorkspaceID)) != 1 {
 		t.Fatal("Snapshot re-read the repaired catalog")
 	}
@@ -121,22 +118,22 @@ func TestWorkspaceRulePackageImportClearsIssueWithoutEditingOldAssets(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	archive := filepath.Join(base, "replacement.oborules")
+	archive := filepath.Join(base, "replacement.json")
 	if _, err = s.ExportRulePackage(archive); err != nil {
 		t.Fatal(err)
 	}
-	legacyPath := filepath.Join(initial.Config.RulesPath, "R001", "name.txt")
-	writeTest(t, legacyPath, []byte("old"))
+	writeFixtureRule(t, initial.Config.RulesPath, "R001", []byte("---\nname: Replacement\ndescription: ''\n---\n"))
+	brokenRules := readTest(t, initial.Config.RulesPath)
 	broken, err := s.SelectWorkspace(initial.ActiveWorkspaceID)
 	if err != nil || len(workspaceIssues(t, broken, initial.ActiveWorkspaceID)) != 1 || broken.LastError == "" {
-		t.Fatalf("fixture did not report old-format failure: %v", err)
+		t.Fatalf("fixture did not report missing metadata: %v", err)
 	}
 	fixed, err := s.ImportRulePackage(archive, "replace")
 	if err != nil || len(workspaceIssues(t, fixed, initial.ActiveWorkspaceID)) != 0 || len(fixed.Rules) != 1 || fixed.LastError != "" {
 		t.Fatalf("import did not clear the diagnosed catalog failure: %v", err)
 	}
-	if readTest(t, legacyPath) != "old" {
-		t.Fatal("repair changed the previous rule package")
+	if readTest(t, initial.Config.RulesPath) != brokenRules {
+		t.Fatal("repair changed the previous rule document")
 	}
 }
 
@@ -150,7 +147,7 @@ func TestWorkspaceQueueAndCatalogIssuesAreIndependent(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeTest(t, initial.Config.QueuePath, []byte("invalid queue JSON"))
-	writeTest(t, filepath.Join(initial.Config.RulesPath, "R001", "name.txt"), []byte("old"))
+	writeFixtureRule(t, initial.Config.RulesPath, "R001", []byte("---\nname: Rule\ndescription: ''\n---\n"))
 	st, err := s.SelectWorkspace(initial.ActiveWorkspaceID)
 	issues := workspaceIssues(t, st, initial.ActiveWorkspaceID)
 	if err != nil || len(issues) != 2 || issues[0].ID != "catalog" || issues[1].ID != "queue" || issues[1].Page != "results" {
@@ -183,14 +180,22 @@ func TestWorkspaceRunPreparationIssuesHaveActionableDestinations(t *testing.T) {
 			if test.breakSource {
 				writeTest(t, filepath.Join(cfg.Root, "A.txt"), []byte("Legacy.Save() // changed\n"))
 			} else {
-				writeTest(t, filepath.Join(cfg.RulesPath, "R019", "rule.json"), []byte("invalid rule JSON"))
+				writeFixtureRule(t, cfg.RulesPath, "R019", []byte("---\nname: Rule\ndescription: ''\n---\n"))
 			}
-			st := runTest(t, s, 1)
+			var st model.State
+			if test.breakSource {
+				st = runTest(t, s, 1)
+			} else {
+				if err := s.Start(1); err == nil {
+					t.Fatal("invalid catalog did not block execution synchronously")
+				}
+				st = s.Snapshot()
+			}
 			issues := workspaceIssues(t, st, st.ActiveWorkspaceID)
 			if len(issues) != 1 || issues[0].ID != test.id || issues[0].Page != test.page || issues[0].RuleID != test.ruleID || issues[0].File != "" {
 				t.Fatalf("preparation failure has wrong destination: %#v", issues)
 			}
-			if st.Running || st.CurrentFile != "" || st.LastError == "" || st.Tasks[0].Attempts != 0 {
+			if st.Running || st.CurrentFile != "" || (test.breakSource && st.LastError == "") || st.Tasks[0].Attempts != 0 {
 				t.Fatalf("preparation failure unexpectedly processed a file: %#v", st)
 			}
 		})

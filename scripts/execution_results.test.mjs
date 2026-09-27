@@ -13,7 +13,9 @@ const bundle = await build({
   stdin: { contents: `
     export { ResultsPanel, resultChanges, ChangeReport, ResultCode } from "./src/ResultsPanel";
     export { ExecutionResultsPanel, executionLabel } from "./src/ExecutionResultsPanel";
-    export { emptyState, emptyUsage, normalizeState } from "./src/types";
+    export { ConcurrencyControl } from "./src/ConcurrencyControl";
+    export { onlyConcurrencyChanged } from "./src/concurrency";
+    export { emptyState, emptyUsage, defaultConfig, normalizeState } from "./src/types";
     export { api as testApi } from "./src/bridge";
   `, resolveDir: frontend },
   bundle: true, write: false, platform: 'node', format: 'cjs', jsx: 'automatic',
@@ -31,7 +33,7 @@ function load(react = React) {
     id => id === 'react' ? react : requireFrontend(id), module, module.exports);
   return module.exports;
 }
-const { ResultsPanel, ExecutionResultsPanel, executionLabel, resultChanges, ChangeReport, ResultCode, emptyState, emptyUsage, normalizeState } = load();
+const { ResultsPanel, ExecutionResultsPanel, executionLabel, resultChanges, ChangeReport, ResultCode, ConcurrencyControl, onlyConcurrencyChanged, defaultConfig, emptyState, emptyUsage, normalizeState } = load();
 const noOp = () => {};
 const task = (file, status, extra = {}) => ({ file, status, rules: [], rulesApplied: [], history: [], attempts: 0, note: '', inputHash: '', updatedAt: '', ...extra });
 const run = (id, status = 'completed', targetCount = 2) => ({ id, status, targetCount, startedAt: '2026-09-21T03:00:00Z', finishedAt: status === 'running' ? '' : '2026-09-21T03:01:00Z', error: '' });
@@ -100,6 +102,56 @@ function button(tree, text) {
   assert.ok(found, `button ${text} exists`);
   return found;
 }
+
+test('parallelism defaults to two and the confirmation control restricts edits to one through ten', () => {
+  assert.equal(defaultConfig.concurrency, 2);
+  assert.equal(normalizeState({ ...emptyState, config: { ...defaultConfig, concurrency: 0 }, currentFiles: null, filePhases: null }).config.concurrency, 2);
+  const h = harness(), changes = [];
+  const props = { value: 2, disabled: false, onChange: value => changes.push(value) };
+  let tree = h.render(h.module.ConcurrencyControl, props);
+  const input = elements(tree).find(node => node.type === 'input');
+  assert.equal(input.props.type, 'number');
+  assert.equal(input.props.min, 1);
+  assert.equal(input.props.max, 10);
+  button(tree, '−').props.onClick();
+  button(tree, '+').props.onClick();
+  input.props.onChange({ currentTarget: { valueAsNumber: 99 } });
+  input.props.onChange({ currentTarget: { valueAsNumber: -1 } });
+  input.props.onChange({ currentTarget: { valueAsNumber: 3.9 } });
+  input.props.onChange({ currentTarget: { valueAsNumber: NaN } });
+  assert.deepEqual(changes, [1, 3, 10, 1, 3]);
+  assert.equal(button(h.render(h.module.ConcurrencyControl, { ...props, value: 1 }), '−').props.disabled, true);
+  assert.equal(button(h.render(h.module.ConcurrencyControl, { ...props, value: 10 }), '+').props.disabled, true);
+  tree = h.render(h.module.ConcurrencyControl, { ...props, disabled: true });
+  assert.ok(elements(tree).filter(node => ['input', 'button'].includes(node.type)).every(node => node.props.disabled));
+  const html = renderToStaticMarkup(React.createElement(ConcurrencyControl, props));
+  assert.match(html, />並列数<\/label>/);
+  assert.doesNotMatch(html, /tooltip|title=/);
+});
+
+test('changing only parallelism may save on start without bypassing other unsaved setup changes', () => {
+  assert.equal(onlyConcurrencyChanged({ ...defaultConfig, concurrency: 10 }, defaultConfig), true);
+  for (const change of [{ root: '/other' }, { rulesPath: '/other' }, { excludedRuleIds: ['1'] }, { maxFileBytes: 1024 }, { maxTurns: 8 }]) {
+    assert.equal(onlyConcurrencyChanged({ ...defaultConfig, concurrency: 10, ...change }, defaultConfig), false);
+  }
+});
+
+test('parallel progress shows every active file and its phase, with direct navigation to the selected worker', () => {
+  const tasks = [task('src/a.js', 'running'), task('src/b.js', 'running'), task('src/c.js', 'running')];
+  const state = stateOf(tasks, { running: true, phase: 'running', currentFile: 'src/a.js', currentFiles: tasks.map(item => item.file),
+    filePhases: { 'src/a.js': 'running', 'src/b.js': 'reviewing', 'src/c.js': 'applying' } });
+  const props = propsFor({ state, execution: undefined, selectedFile: '', onSelectFile: noOp });
+  const html = render(props);
+  assert.match(html, /修正中<\/span><button[^]*?src\/a\.js/);
+  assert.match(html, /独立レビュー中<\/span><button[^]*?src\/b\.js/);
+  assert.match(html, /反映待ち・保存中<\/span><button[^]*?src\/c\.js/);
+  const h = harness(), selected = [];
+  const tree = h.render(h.module.ResultsPanel, { ...props, onSelectFile: file => selected.push(file) });
+  button(tree, 'src/b.js').props.onClick();
+  assert.deepEqual(selected, ['src/b.js']);
+  const fallback = render({ ...props, state: { ...state, currentFiles: [], filePhases: {}, phase: 'checking' } });
+  assert.match(fallback, /検証中<\/span><button[^]*?src\/a\.js/);
+});
 
 test('selected-run completed rows stay visible while earlier completions fold and unrelated failures stay out', () => {
   const html = render();
@@ -251,7 +303,7 @@ test('rule provenance compares execution IDs rather than the latest attempt for 
   assert.equal(resultChanges([old], -1, { cumulative: true, changes: [oldFix] }, 'selected-run')[0].origin, 'previous');
   const current1 = { id: 'current-1', executionId: 'selected-run', outcome: 'done' };
   const current2 = { id: 'current-2', executionId: 'selected-run', outcome: 'done' };
-  const currentFix = (attempt, line) => ({ ...oldFix, id: attempt.id, sourceAttemptId: attempt.id, lineRanges: [{ beforeStart: line, beforeEnd: line, afterStart: line, afterEnd: line }] });
+  const currentFix = (attempt, line) => ({ ...oldFix, attributionVersion: 2, id: attempt.id, sourceAttemptId: attempt.id, lineRanges: [{ beforeStart: line, beforeEnd: line, afterStart: line, afterEnd: line }] });
   const detail = { cumulative: true, changes: [oldFix, currentFix(current1, 1), currentFix(current2, 3)] };
   const changes = resultChanges([old, current1, current2], -1, detail, 'selected-run');
   assert.deepEqual(changes.map(item => item.origin), ['previous', 'latest', 'latest']);
@@ -262,8 +314,10 @@ test('rule provenance compares execution IDs rather than the latest attempt for 
   assert.match(report, /data-change-origin="latest"/);
   const diff = '@@ -1,3 +1,3 @@\n-old\n+first\n context\n-old\n+second\n';
   const code = renderToStaticMarkup(React.createElement(ResultCode, { content: diff, isDiff: true, changes }));
-  assert.equal((code.match(/data-change-origin="latest"/g) || []).length, 2);
-  assert.doesNotMatch(code, /data-change-origin="previous"/);
+  const inlineCode = code.slice(code.indexOf('<div class="results-code is-diff"'));
+  assert.equal((inlineCode.match(/data-change-origin="latest"/g) || []).length, 2);
+  assert.match(inlineCode, /results-code-unplaced-row[\s\S]*?data-change-origin="previous"/, "unlocated earlier work stays in the diff with its original color");
+  assert.doesNotMatch(inlineCode.slice(inlineCode.indexOf('<tr class="hunk"')), /data-change-origin="previous"/);
 });
 
 test('a run opens on one of its targets and still lets the user inspect an earlier completed file', async () => {

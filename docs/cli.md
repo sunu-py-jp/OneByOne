@@ -12,7 +12,7 @@ CLIはデスクトップアプリと同じ処理・保存先・検証を使い�
 ./onebyone doctor
 ./onebyone workspace validate --root ./project
 ./onebyone workspace create --name "API更新" --root ./project
-./onebyone rules import --input ./api-update.oborules --mode replace
+./onebyone rules import --input ./rules.json --mode replace
 ```
 
 続いて、接続定義をJSONで用意します。Azure OAuthの例です。テナントID・クライアントIDには実際のGUIDを指定します。Entra側の登録・アクセス許可は[Azure OAuthの設定](azure-oauth.md)を参照してください。
@@ -40,7 +40,7 @@ CLIはデスクトップアプリと同じ処理・保存先・検証を使い�
 ./onebyone scan
 ./onebyone status --json
 ./onebyone selection --all
-./onebyone run --limit 20
+./onebyone run --limit 20 --concurrency 2
 ./onebyone runs list --json
 ./onebyone report --output ./result.json
 ```
@@ -48,6 +48,8 @@ CLIはデスクトップアプリと同じ処理・保存先・検証を使い�
 `llm list`の `id` が接続IDです。`login`は標準ブラウザーを開き、本人のサインインを待ちます。`test`は実際にモデルへリクエストを送り、利用料が発生する場合があります。`scan`までではLLMを呼びません。
 
 `run`は選択済みの未修正・失敗ファイルを処理します。`--limit 20`は今回処理するファイルの上限で、省略または `0` は件数制限なしです。修正は専用Git作業コピーへコミットし、元の対象フォルダに自動でマージしません。
+
+`--concurrency 1〜10`は並列で処理するファイル数です。指定した値はワークスペースへ保存し、以降のGUI・CLI実行でも使います。省略時は保存済み設定、未設定なら2です。LLMの修正・検証・レビューは並列、Gitへの採用・コミットは1件ずつ処理します。1を指定すると逐次実行になります。
 
 デモから始める場合は、上のワークスペース作成・ルール取り込み・抽出を次の1コマンドで置き換えられます。指定先の下に新しい子フォルダを作り、Gitの初回コミット・デモ用ルール・対象一覧まで準備します。LLM接続は別途設定します。
 
@@ -73,7 +75,7 @@ CLIはデスクトップアプリと同じ処理・保存先・検証を使い�
 | LLMの保存済み認証情報を削除・接続を削除 | `llm clear --id ID --yes` / `llm delete --id ID --yes` |
 | ルール一覧・詳細 | `rules list` / `rules show --id ID` |
 | ルール追加・更新・削除 | `rules create --input JSON` / `rules update --input JSON` / `rules delete --id ID --yes` |
-| パッケージ取り込み・書き出し | `rules import --input FILE.oborules --mode replace\|merge` / `rules export --output FILE.oborules` |
+| JSON/CSV取り込み・JSON書き出し | `rules import --input rules.json --mode replace\|merge` / `rules export --output rules.json` |
 | 実行設定・抽出条件の確認・変更 | `settings show` / `settings update --input JSON` |
 | 対象フォルダのファイル一覧・本文 | `files list` / `files show --file PATH` |
 | 実行用作業コピーの本文 | `files show --file PATH --source execution` |
@@ -118,52 +120,48 @@ APIキーを保存する場合はJSONの `credential` へ指定し、アクセ�
 
 ## ルールと設定を編集する
 
-`.oborules`はルール定義、旧シンボル、抽出条件、検証コマンドをまとめたパッケージです。取り込み時はワークスペース専用のコピーを作ります。
+`rules.json`はYAML front matter付きMarkdown文字列を`rules`配列へ格納する形式です。`rules import --input ./rules.csv`でCSVも取り込めます。CSVの必須ヘッダーは`id,name,description,path_pattern,content_pattern`で、追加列は列名をH1、セルを本文としてMarkdownにします。
 
-- `--mode replace`：ルール・パッケージ設定を置き換える。
-- `--mode merge`：既存のルールに追加する。同じIDは取り込む側を `R019_2` などへ変更し、旧シンボルを重複なく追加する。既存の抽出条件・検証コマンドは維持する。
+- `--mode replace`：ルール一覧を置き換える。
+- `--mode merge`：現在のルールを残して追加する。
 
-既存ルールがある場合は `--mode` が必須です。新規でルールがない場合の省略は `replace` として扱います。料金・処理上限はワークスペース側の設定として保持します。
+既存ルールがある場合は`--mode`が必須です。ない場合は`replace`として扱います。ルールIDはファイルの`id`を使い、`merge`で既存と重複したIDには`_2`、`_3`…を付けます。対象フォルダ・料金・処理上限・LLM接続と既存の実行履歴は保持します。
 
-ルールの追加JSONは次の形式です。`pattern` が空なら共通ルール、正規表現があれば個別ルールです。
+単一ルールの追加・更新APIは次のJSONを使います。公開`rules.json`の配列形式とは用途が異なります。両パターンが空なら共通ルールです。`name`と`description`は空白以外の値が必要です。`rules create`で`id`を省略すると、既存の数字IDの次の番号を割り当てます。IDは作成後に変更できません。
 
 ```json
 {
   "id": "R019",
   "name": "保存後に完了を通知する",
-  "overview": "保存に成功した場合だけ、後続処理へ完了を通知する。",
-  "before": "await store.save(record);",
-  "after": "await store.save(record);\nawait events.saved(record.id);",
-  "notes": "失敗時やリトライ途中には通知しない。周囲のエラー処理を維持する。",
-  "holdConditions": "通知先や通知対象のIDを判断できない場合。",
-  "pattern": "\\.save\\s*\\("
+  "description": "保存に成功した場合だけ、後続処理へ完了を通知する。",
+  "pathPattern": "src/**/*.ts",
+  "contentPattern": "\\.save\\s*\\(",
+  "body": "# 変更概要\n\n保存成功後に通知する。失敗時は通知しない。\n\n# 変換を保留にすべきケース\n\n通知先を判断できない場合。"
 }
 ```
 
 ```sh
-./onebyone rules create --input ./rule.json
+./onebyone rules create --input ./rule-input.json
 ./onebyone rules show --id R019 --json
 ./onebyone rules update --input ./rule-update.json
+./onebyone rules import --input ./rules.csv --mode merge
+./onebyone rules export --output ./rules.json
 ```
 
-更新JSONは同じ項目に `expectedRevision` を追加し、直前の `rules show` が返したトップレベルの `revision` を指定します。表示結果の `rule.title` は更新入力では `name` に対応します。取得後に別の編集が入った場合や、他の利用者がロック中の場合は上書きせずエラーになります。
+更新JSONは同じ項目に`expectedRevision`を追加し、直前の`rules show`が返した`revision`を指定します。表示結果の`title`は入力の`name`、`summary`は`description`に対応します。他者の編集ロックやリビジョン不一致がある場合は上書きせずエラーになります。
 
-`settings update`は部分更新です。指定しない項目は維持し、配列は指定した内容へ置き換えます。
+`settings update`はワークスペース側の部分更新です。指定しない項目は維持します。
 
 ```json
 {
+  "concurrency": 2,
   "maxTurns": 0,
   "timeoutSeconds": 0,
-  "maxCostUSD": 0,
-  "includeGlobs": ["src/**/*.js"],
-  "excludeGlobs": ["**/generated/**"],
-  "checkCommands": [
-    {"name": "テスト", "executable": "node", "args": ["--test"]}
-  ]
+  "maxCostUSD": 0
 }
 ```
 
-変更できる項目は `includeGlobs`、`excludeGlobs`、`checkCommands`、`maxAttempts`、`maxTurns`、`maxOutputTokens`、`maxFileBytes`、`timeoutSeconds`、`maxCostUSD`、`inputPricePerMillion`、`cachedInputPricePerMillion`、`outputPricePerMillion` です。ターン・時間・検証回数・料金上限の `0` は未設定です。出力トークン・ファイルサイズの `0` はアプリ既定値を使います。対象フォルダ、接続、ルールパッケージはそれぞれ専用コマンドで変更します。
+更新可能なのは`excludedRuleIds`、`concurrency`、`maxAttempts`、`maxTurns`、`maxOutputTokens`、`maxFileBytes`、`timeoutSeconds`、`maxCostUSD`、`inputPricePerMillion`、`cachedInputPricePerMillion`、`outputPricePerMillion`です。`concurrency`は1〜10、`0`は既定の2へ戻します。ターン・時間・検証回数・料金上限の`0`は未設定、出力トークンとファイルサイズの`0`はアプリ既定値を使います。対象の絞り込みは各ルールの`pathPattern`・`contentPattern`で指定します。`excludedRuleIds`には今回使わないルールIDを指定し、空配列で全ルールを選択します。検証コマンドや旧シンボル定義の指定はありません。
 
 ルールや抽出条件を変えたら `scan` で対象を更新し、選択を確認してから実行してください。`scan --root PATH` は対象フォルダを設定してから抽出します。ワークスペースがある場合は対象フォルダの変更、ない場合は作成を行います。
 
@@ -202,6 +200,8 @@ Ctrl+Cは処理の停止と保存を待って終了します。再開は同じ�
 ```
 
 `runs show`は実行情報、対象ファイル、当時の状態を返します。`detail`は変更前・変更後・差分と箇所別の対応状況を返し、`--attempt`なしなら初回から選択した実行までの累積表示です。`--attempt`はそのファイルの試行を1から数えた番号です。`--run`を省略すると現在の状態を使います。
+
+`status --json`の`currentFiles`は処理中のファイル、`filePhases`はファイルごとの段階です。実行履歴の`concurrency`にはその実行で使用した並列数を記録します。
 
 `report`は接続の秘密情報を除いた結果JSONを保存します。`--output`を省略すると内部のレポート保存先へ出力し、生成したパスを返します。
 
@@ -254,7 +254,7 @@ Ctrl+Cは処理の停止と保存を待って終了します。再開は同じ�
 
 ## 保存先・JSON・終了コード
 
-既定ではGUIと同じローカル保存先を使います。Windowsは `%LOCALAPPDATA%/OneByOne/`、macOSは `~/Library/Application Support/OneByOne/` です。ワークスペース・パッケージ・キュー・結果はこの下で自動管理し、`--queue`・`--rules`・`--legacy`・`--rg`で直接保存先を差し替える方式は使いません。
+既定ではGUIと同じローカル保存先を使います。Windowsは `%LOCALAPPDATA%/OneByOne/`、macOSは `~/Library/Application Support/OneByOne/` です。ワークスペース・ルール・キュー・結果はこの下で自動管理し、`--queue`・`--rules`・`--legacy`・`--rg`で直接保存先を差し替える方式は使いません。
 
 アプリ設定の指定順は `--config`、環境変数 `ONEBYONE_CONFIG`、既定の `app-settings.json` です。指定した設定ファイルの親フォルダに `workspaces/` を作ります。個人接続の保存先は別で、検証環境を完全に分ける場合は `ONEBYONE_PRIVATE_DIR` も指定してください。
 

@@ -1,0 +1,32 @@
+.rule-markdown { min-width: 0; color: var(--text, #47526a); font-size: 12px; line-height: 1.75; overflow-wrap: anywhere; }
+.rule-markdown > :first-child { margin-top: 0; }
+.rule-markdown > :last-child { margin-bottom: 0; }
+.rule-markdown h1 { margin: 22px 0 8px; padding-bottom: 6px; border-bottom: 1px solid var(--line); font-size: 16px; line-height: 1.5; }
+.rule-markdown h2 { margin: 18px 0 7px; font-size: 14px; }
+.rule-markdown h3, .rule-markdown h4 { margin: 16px 0 6px; font-size: 12px; }
+.rule-markdown p { margin: 8px 0; }
+.rule-markdown ul, .rule-markdown ol { padding-left: 24px; margin: 8px 0; }
+.rule-markdown pre { overflow: auto; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; background: #f8f9fc; font: 11px/1.7 "SFMono-Regular", Consolas, monospace; white-space: pre; }
+.rule-markdown code { padding: 1px 4px; border-radius: 3px; background: #f0f1f7; font-family: "SFMono-Regular", Consolas, monospace; }
+.rule-markdown pre code { padding: 0; background: none; font: inherit; }
+.rule-markdown blockquote { margin: 10px 0; padding: 1px 12px; border-left: 3px solid #c4bfdc; color: #727b90; }
+.rule-markdown table { display: block; max-width: 100%; overflow: auto; border-collapse: collapse; }
+.rule-markdown td, .rule-markdown th { padding: 6px 10px; border: 1px solid var(--line); }
+.rule-markdown a { color: var(--accent); }
+.rule-markdown-image { color: #8d95a5; }
+.rule-metadata-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.rule-metadata-grid .field { margin-bottom: 0; }
+.rule-metadata-grid .rule-metadata-wide { grid-column: 1 / -1; }
+.rule-identity-fields { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(88px, 160px) minmax(0, 1fr); gap: 12px; }
+.rule-identity-fields .field { margin-bottom: 0; }
+.rule-body-editor { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.rule-body-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.rule-body-heading .segmented { flex: none; }
+.rule-body-content { min-width: 0; }
+.rule-body-editor textarea { display: block; width: 100%; min-height: 300px; resize: vertical; }
+.rule-body-preview { min-width: 0; min-height: 300px; border: 1px solid var(--line); border-radius: 6px; padding: 12px; background: #fff; overflow: auto; }
+.rule-edit-scroll.rule-markdown-edit { display: flex; flex-direction: column; gap: 18px; padding: 16px; }
+.rule-list-error-icon { display: flex; flex: none; color: #c64e56; }
+.rule-input-error { color: #b54652; font-size: 11px; margin: 5px 0 0; }
+.rule-metadata-grid [aria-invalid="true"] { border-color: #cc6c74; }
+@media (max-width: 760px) { .rule-metadata-grid, .rule-identity-fields { grid-template-columns: minmax(0, 1fr); } }

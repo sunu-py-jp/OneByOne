@@ -4,9 +4,9 @@ import type { Config, Rule } from "./types";
 // filters and the destination queue do; a failed scan never establishes a key.
 export function selectionContextKey(workspaceId: string, config: Config, rules: Rule[]): string {
   return JSON.stringify([
-    workspaceId, config.root, config.queuePath, config.rulesPath, config.legacyPath,
-    config.includeGlobs, config.excludeGlobs, config.maxFileBytes,
-    rules.map(({ id, title, overview, before, after, notes, holdConditions, pattern }) =>
-      [id, title, overview, before, after, notes, holdConditions, pattern]).sort((a, b) => a[0].localeCompare(b[0])),
+    workspaceId, config.root, config.queuePath, config.rulesPath, config.maxFileBytes,
+    [...new Set(config.excludedRuleIds || [])].sort(),
+    rules.map(({ id, title, summary, pathPattern, contentPattern, body }) =>
+      [id, title, summary, pathPattern, contentPattern, body]).sort((a, b) => a[0].localeCompare(b[0])),
   ]);
 }

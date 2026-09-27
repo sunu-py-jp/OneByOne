@@ -40,7 +40,8 @@ func TestValidationFailureRepairsInSameConversation(t *testing.T) {
 	candidate := testCandidate()
 	candidate.BaseHash = hex.EncodeToString(sum[:])
 	candidate.AddressedItemIDs = append(candidate.AddressedItemIDs, "P2")
-	candidate.Edits[0].ItemIDs = []string{"P1", "P2"} // Deliberately incomplete proposal; validation must catch it.
+	candidate.Edits[0].ItemIDs = []string{"P1", "P2"} // Deliberately incorrect mapping; validation must catch it.
+	candidate.Edits[0].Attributions = []model.EditAttribution{{ItemID: "P1", BeforeText: "Legacy.Save()", AfterText: "Modern.Save()"}, {ItemID: "P2", BeforeText: "Legacy.Save()", AfterText: "Modern.Save()"}}
 	plan := testPlan(0)
 	plan.Items = append(plan.Items, model.PlanItem{ID: "P2", RuleID: "R019", Location: "Legacy.Log", Change: "Replace logging", Expected: "No old logging", Status: "pending"})
 	turn, validations := 0, 0
@@ -67,6 +68,7 @@ func TestValidationFailureRepairsInSameConversation(t *testing.T) {
 				t.Error("premature final did not produce feedback")
 			}
 			candidate.Edits[0].ItemIDs = []string{"P1"}
+			candidate.Edits[0].Attributions = nil
 			candidate.Edits = append(candidate.Edits, model.Edit{OldText: "Legacy.Log()", NewText: "Modern.Log()", ItemIDs: []string{"P2"}})
 			respond(w, testCall("v2", "validate_candidate", candidate))
 		case 5:
@@ -83,9 +85,9 @@ func TestValidationFailureRepairsInSameConversation(t *testing.T) {
 	in.SaveRepairState = func(s model.RepairState) error { saved = s; return nil }
 	in.ValidateCandidate = func(_ context.Context, request model.CandidateRequest) (model.CandidateValidation, error) {
 		validations++
-		result := model.CandidateValidation{CandidateID: fmt.Sprintf("C%d", validations), PlanRevision: request.PlanRevision, Passed: validations == 2}
+		result := model.CandidateValidation{AttributionVersion: model.LineAttributionVersion, CandidateID: fmt.Sprintf("C%d", validations), PlanRevision: request.PlanRevision, Passed: validations == 2}
 		if validations == 1 {
-			result.Diagnostics = []model.CandidateDiagnostic{{Check: "legacy_symbols", Line: 2, LineBasis: "candidate", Excerpt: "Legacy.Log()", Message: "Legacy.Log remains"}}
+			result.Diagnostics = []model.CandidateDiagnostic{{Check: "edit_scope", Line: 2, LineBasis: "candidate", Excerpt: "Legacy.Log()", Message: "Legacy.Log remains"}}
 		} else if len(request.Edits) != 2 || request.Edits[0].OldText != "Legacy.Save()" {
 			t.Error("second candidate did not replace complete original-based proposal")
 		}
@@ -108,7 +110,7 @@ func TestRepairResumptionRestoresPlanRulesAndCumulativeBudgets(t *testing.T) {
 	prior.ValidationCount = 1
 	prior.ElapsedMS = 250
 	req := testCandidate()
-	prior.LastCandidate = &model.CandidateRecord{Request: req, Result: model.CandidateValidation{CandidateID: "C0", PlanRevision: 1, Passed: false, Diagnostics: []model.CandidateDiagnostic{{Message: "previous check failed"}}}}
+	prior.LastCandidate = &model.CandidateRecord{Request: req, Result: model.CandidateValidation{AttributionVersion: model.LineAttributionVersion, CandidateID: "C0", PlanRevision: 1, Passed: false, Diagnostics: []model.CandidateDiagnostic{{Message: "previous check failed"}}}}
 	calls, reads := 0, 0
 	var saved model.RepairState
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -176,6 +178,7 @@ func TestUnknownInFlightRequestPersistsAndNeedsAcknowledgment(t *testing.T) {
 func TestAcknowledgedUnpricedResumePreservesUsageUncertainty(t *testing.T) {
 	prior := initializedRepairState()
 	prior.Plan.Items[0].Status = "blocked"
+	prior.Plan.Items[0].SourceLocations = []model.SourceLocation{{StartLine: 1, EndLine: 1, Excerpt: "Legacy.Save()"}}
 	prior.Plan.Items[0].HoldReason = "呼び出し元のAPI契約を確認する必要があります。"
 	prior.RequestPending = true
 	prior.RequestID = "old"
@@ -333,7 +336,7 @@ func TestFinalCandidateRejectsStalePlanAndSkipBypass(t *testing.T) {
 	req := testCandidate()
 	in.BaseHash = req.BaseHash
 	state := initializedRepairState()
-	state.LastCandidate = &model.CandidateRecord{Request: req, Result: model.CandidateValidation{CandidateID: "C1", PlanRevision: 1, Passed: true}}
+	state.LastCandidate = &model.CandidateRecord{Request: req, Result: model.CandidateValidation{AttributionVersion: model.LineAttributionVersion, CandidateID: "C1", PlanRevision: 1, Passed: true}}
 	text := func(outcome, id string) string {
 		return fmt.Sprintf(`{"outcome":%q,"candidateId":%q,"note":"理由"}`, outcome, id)
 	}
@@ -383,11 +386,12 @@ func TestHugeValidationOutputKeepsFailureUsefulAndJournalBounded(t *testing.T) {
 			respond(w, testCall("validate", "validate_candidate", testCandidate()))
 		} else if calls == 1 {
 			last := history[len(history)-1].(map[string]any)["output"].(string)
-			if len(last) > maxToolBytes || !strings.Contains(last, "assertion failed") || !strings.Contains(last, "capturePayload") || strings.Contains(last, "response exceeds") {
+			if len(last) > maxToolBytes || !strings.Contains(last, "assertion failed") || !strings.Contains(last, "target scope differs") || strings.Contains(last, "response exceeds") {
 				t.Errorf("large stdout hid useful validator output: %s", bounded(last, 1000))
 			}
 			hold := testPlan(1)
 			hold.Items[0].Status = "blocked"
+			hold.Items[0].SourceLocations = []model.SourceLocation{{StartLine: 1, EndLine: 1, Excerpt: "Legacy.Save()"}}
 			hold.Items[0].HoldReason = "capturePayloadの代替API契約が資料にありません。"
 			respond(w, testCall("hold", "update_state", hold))
 		} else {
@@ -400,11 +404,11 @@ func TestHugeValidationOutputKeepsFailureUsefulAndJournalBounded(t *testing.T) {
 	in.RepairState = &state
 	in.SaveRepairState = func(s model.RepairState) error { state = s; return nil }
 	in.ValidateCandidate = func(context.Context, model.CandidateRequest) (model.CandidateValidation, error) {
-		result := model.CandidateValidation{CandidateID: "C1", PlanRevision: 1, Passed: false}
+		result := model.CandidateValidation{AttributionVersion: model.LineAttributionVersion, CandidateID: "C1", PlanRevision: 1, Passed: false}
 		for i := 0; i < 150; i++ {
 			result.Checks = append(result.Checks, model.Check{Name: fmt.Sprintf("command%d", i), Status: "fail", Detail: "assertion failed\n" + strings.Repeat("x\x00\"", 16<<10)})
 		}
-		result.Diagnostics = []model.CandidateDiagnostic{{Check: "legacy_symbols", Message: "capturePayload remains", Excerpt: strings.Repeat("y", 2<<20)}}
+		result.Diagnostics = []model.CandidateDiagnostic{{Check: "edit_scope", Message: "target scope differs", Excerpt: strings.Repeat("y", 2<<20)}}
 		return result, nil
 	}
 	out, err := Run(context.Background(), in)
@@ -432,7 +436,7 @@ func TestValidationReservesElapsedWithoutUnknownLLMUsage(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			state := initializedRepairState()
 			state.ElapsedMS = 200
-			state.LastCandidate = &model.CandidateRecord{Request: testCandidate(), Result: model.CandidateValidation{CandidateID: "previous-passed", PlanRevision: 1, Passed: true}}
+			state.LastCandidate = &model.CandidateRecord{Request: testCandidate(), Result: model.CandidateValidation{AttributionVersion: model.LineAttributionVersion, CandidateID: "previous-passed", PlanRevision: 1, Passed: true}}
 			calls, validations := 0, 0
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if calls == 0 {
@@ -460,7 +464,7 @@ func TestValidationReservesElapsedWithoutUnknownLLMUsage(t *testing.T) {
 				if mode == "validator_error" {
 					return model.CandidateValidation{}, errors.New("validation interrupted")
 				}
-				return model.CandidateValidation{CandidateID: "C1", PlanRevision: 1, Passed: true}, nil
+				return model.CandidateValidation{AttributionVersion: model.LineAttributionVersion, CandidateID: "C1", PlanRevision: 1, Passed: true}, nil
 			}
 			out, err := Run(context.Background(), in)
 			if mode == "passed" {

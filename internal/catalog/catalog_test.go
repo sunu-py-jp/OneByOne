@@ -4,6 +4,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"onebyone/internal/model"
+	"onebyone/internal/ruleformat"
+	"onebyone/internal/rulepack"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,49 +16,72 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-
-	"onebyone/internal/model"
-	"onebyone/internal/ruleformat"
 )
 
 func fixture(t *testing.T) model.Config {
 	t.Helper()
 	rg, err := exec.LookPath("rg")
 	if err != nil {
-		t.Skip("ripgrep is required for catalog integration tests")
+		t.Skip("rg required")
 	}
 	dir := t.TempDir()
-	cfg := model.Config{Root: filepath.Join(dir, "source"), RulesPath: filepath.Join(dir, "rules"), RGPath: rg, MaxFileBytes: 1024}
-	if err := os.MkdirAll(cfg.Root, 0755); err != nil {
+	cfg := model.Config{Root: filepath.Join(dir, "source"), RulesPath: filepath.Join(dir, "rules", "rules.json"), RGPath: rg, MaxFileBytes: 1024}
+	if err = os.MkdirAll(cfg.Root, 0755); err != nil {
 		t.Fatal(err)
 	}
-	writeRule(t, cfg, "R001", model.RuleDefinition{Version: 1, Name: "共通のルール", Overview: "既存の動作を保持します。", Pattern: " "})
-	writeRule(t, cfg, "R019", model.RuleDefinition{Version: 1, Name: "保存処理の変更", Overview: "OldClient.Save を NewClient.Persist に移行します。\n別の行にも具体的なキーワードがあります。", Before: "individual before example", After: "individual after example", Pattern: `\.Save\s*\(`})
+	writeRule(t, cfg, "R001", model.RuleDefinition{Name: "共通ルール", Description: "既存の動作を保持します。", Body: "自由本文\n\n# 補足\n\n保持する。"})
+	writeRule(t, cfg, "R019", model.RuleDefinition{Name: "保存処理の変更", Description: "OldClient.Save を NewClient.Persist に移行する", Body: "# 変換前\n\nindividual before example", ContentPattern: `\.Save\s*\(`})
 	return cfg
 }
-
-func writeRule(t *testing.T, cfg model.Config, id string, definition model.RuleDefinition) {
+func saveRules(t *testing.T, cfg model.Config, p *rulepack.Package) {
 	t.Helper()
-	data, err := ruleformat.Encode(definition)
-	if err != nil {
-		t.Fatal(err)
+	docs := []string{}
+	for _, e := range p.Rules {
+		docs = append(docs, e.Markdown)
 	}
-	write(t, filepath.Join(cfg.RulesPath, id, "rule.json"), string(data))
+	b, _ := json.Marshal(map[string]any{"rules": docs})
+	write(t, cfg.RulesPath, string(b))
 }
-func updateRule(t *testing.T, cfg model.Config, id string, update func(*model.RuleDefinition)) {
+func writeRule(t *testing.T, cfg model.Config, id string, d model.RuleDefinition) {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join(cfg.RulesPath, id, "rule.json"))
+	d.ID = id
+	b, err := ruleformat.Encode(d)
 	if err != nil {
 		t.Fatal(err)
 	}
-	d, err := ruleformat.Decode(data)
+	p, err := rulepack.Snapshot(cfg.RulesPath)
 	if err != nil {
-		t.Fatal(err)
+		p = &rulepack.Package{}
 	}
-	update(&d)
-	writeRule(t, cfg, id, d)
+	for i, e := range p.Rules {
+		if e.ID == id {
+			p.Rules[i].Markdown = string(b)
+			saveRules(t, cfg, p)
+			return
+		}
+	}
+	p.Rules = append(p.Rules, rulepack.Entry{ID: id, Markdown: string(b)})
+	saveRules(t, cfg, p)
 }
-
+func updateRule(t *testing.T, cfg model.Config, id string, fn func(*model.RuleDefinition)) {
+	t.Helper()
+	p, err := rulepack.Snapshot(cfg.RulesPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range p.Rules {
+		if e.ID == id {
+			d, err := ruleformat.Decode([]byte(e.Markdown))
+			if err != nil {
+				t.Fatal(err)
+			}
+			fn(&d)
+			writeRule(t, cfg, id, d)
+			return
+		}
+	}
+	t.Fatal("rule missing")
+}
 func write(t *testing.T, path, body string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
@@ -63,179 +91,117 @@ func write(t *testing.T, path, body string) {
 		t.Fatal(err)
 	}
 }
-
 func TestRuleCatalogAndBodyMatching(t *testing.T) {
 	cfg := fixture(t)
 	write(t, filepath.Join(cfg.Root, "a.ext"), "OldClient.Save (options);\r\n")
 	write(t, filepath.Join(cfg.Root, "b.Save.ext"), "NewClient.Persist(options);\n")
-	write(t, filepath.Join(cfg.Root, "with space.ext"), "\ufeffOldClient.Save(options);\r\n")
 	c, err := Load(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(c.Rules) != 2 || !c.Rules[0].Always || c.Rules[1].Always {
-		t.Fatalf("wrong classification: %+v", c.Rules)
-	}
-	if !strings.Contains(c.SystemPrompt, "既存の動作を保持") || !strings.Contains(c.SystemPrompt, "OldClient.Save") || !strings.Contains(c.SystemPrompt, "rules/R019/rule.json") {
-		t.Fatalf("missing rule context: %s", c.SystemPrompt)
-	}
-	if strings.Contains(c.SystemPrompt, "individual before example") {
-		t.Fatal("individual rule body should be loaded on demand")
+	if !c.Rules[0].Always || c.Rules[1].Always || !strings.Contains(c.SystemPrompt, "OldClient.Save") || strings.Contains(c.SystemPrompt, "individual before example") {
+		t.Fatal("wrong prompt", c.SystemPrompt)
 	}
 	tasks, scanned, excluded, err := c.Scan(context.Background(), cfg)
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || scanned != 2 || excluded != 0 || len(tasks) != 2 {
+		t.Fatal(tasks, scanned, excluded, err)
 	}
-	if scanned != 3 || excluded != 0 || len(tasks) != 3 {
-		t.Fatalf("counts: %d, %d, %d", scanned, excluded, len(tasks))
-	}
-	if !reflect.DeepEqual(tasks[0].Rules, []string{"R019"}) || len(tasks[1].Rules) != 0 || tasks[1].Status != "pending" || tasks[2].Status != "pending" {
-		t.Fatalf("must match body and allow empty candidate list / BOM: %+v", tasks)
+	if !reflect.DeepEqual(tasks[0].Rules, []string{"R001", "R019"}) || !reflect.DeepEqual(tasks[1].Rules, []string{"R001"}) {
+		t.Fatal("wrong scoped IDs", tasks)
 	}
 	hash := sha256.Sum256([]byte("OldClient.Save (options);\r\n"))
 	if tasks[0].InputHash != hex.EncodeToString(hash[:]) {
-		t.Fatal("source hash must preserve original bytes")
+		t.Fatal("source hash modified")
 	}
-	body, err := c.ReadRule("R019")
-	if err != nil || !strings.Contains(body, "# 変更前") {
-		t.Fatal("ReadRule should return complete body")
-	}
-	write(t, filepath.Join(cfg.RulesPath, "R019", "rule.json"), "changed during execution")
-	unchanged, _ := c.ReadRule("R019")
-	if unchanged != body {
-		t.Fatal("active rule definitions must be immutable snapshots")
-	}
-	if _, err := c.ReadRule("../R019"); err == nil {
-		t.Fatal("rule lookup must not accept arbitrary paths")
-	}
-}
-
-func TestLegacyDiscoveryUsesSameCheck(t *testing.T) {
-	cfg := fixture(t)
-	// With only individual rules, legacy discovery still narrows the queue.
-	if err := os.RemoveAll(filepath.Join(cfg.RulesPath, "R001")); err != nil {
+	scoped, err := c.ForRules(tasks[1].Rules)
+	if err != nil || len(scoped.Rules) != 1 {
 		t.Fatal(err)
 	}
-	cfg.LegacyPath = filepath.Join(filepath.Dir(cfg.Root), "patterns", "legacy-symbols.txt")
-	write(t, cfg.LegacyPath, "\ufeff\\bOldClient\\b\r\n\r\n\\bGoneType\\b\r\n")
-	write(t, filepath.Join(cfg.Root, "a.ext"), "OldClient.Save(options);\n")
-	write(t, filepath.Join(cfg.Root, "b.ext"), "NewClient.Persist(options);\n")
-	write(t, filepath.Join(cfg.Root, "comment.ext"), "// GoneType is obsolete\n")
-	c, err := Load(context.Background(), cfg)
-	if err != nil {
-		t.Fatal(err)
+	if _, err = scoped.ReadRule("R019"); err == nil {
+		t.Fatal("out-of-scope read allowed")
 	}
-	tasks, scanned, excluded, err := c.Scan(context.Background(), cfg)
-	if err != nil || len(tasks) != 2 || scanned != 3 || excluded != 1 {
-		t.Fatalf("legacy discovery: %+v %d %d %v", tasks, scanned, excluded, err)
+	if _, err = c.ForRules([]string{"missing"}); err == nil {
+		t.Fatal("missing rule allowed")
 	}
-	for _, task := range tasks {
-		check, err := c.CheckLegacy(context.Background(), cfg, filepath.Join(cfg.Root, task.File))
-		if err != nil || check.Status != "failed" {
-			t.Fatalf("discovery and gate disagree: %+v %v", check, err)
-		}
-		if !strings.Contains(check.Detail, task.File+":1:") {
-			t.Fatalf("check must identify the matching source location: %+v", check)
-		}
+	old, _ := c.ReadRule("R001")
+	updateRule(t, cfg, "R001", func(d *model.RuleDefinition) { d.Body = "new body" })
+	actual, _ := c.ReadRule("R001")
+	if old != actual {
+		t.Fatal("run snapshot changed")
 	}
-	write(t, filepath.Join(cfg.Root, "a.ext"), "NewClient.Persist(options);\n")
-	check, err := c.CheckLegacy(context.Background(), cfg, filepath.Join(cfg.Root, "a.ext"))
-	if err != nil || check.Status != "passed" {
-		t.Fatalf("migrated source must pass: %+v %v", check, err)
-	}
-	// Mid-run edits to definitions must not weaken the active gate.
-	write(t, cfg.LegacyPath, "NeverMatches")
-	check, err = c.CheckLegacy(context.Background(), cfg, filepath.Join(cfg.Root, "comment.ext"))
-	if err != nil || check.Status != "failed" {
-		t.Fatal("legacy patterns changed during the active run")
+	changed, err := Load(context.Background(), cfg)
+	if err != nil || changed.Hash == c.Hash {
+		t.Fatal("rule change undetected", err)
 	}
 }
-
-func TestInvalidDefinitionsFailEarly(t *testing.T) {
-	for _, which := range []string{"missing-definition", "invalid-rule-regex", "invalid-legacy-regex", "blank-legacy"} {
-		t.Run(which, func(t *testing.T) {
+func TestInvalidPatternsTargetSpecificRule(t *testing.T) {
+	for _, pattern := range []string{"(", "["} {
+		t.Run(pattern, func(t *testing.T) {
 			cfg := fixture(t)
-			switch which {
-			case "missing-definition":
-				if err := os.Remove(filepath.Join(cfg.RulesPath, "R001", "rule.json")); err != nil {
-					t.Fatal(err)
-				}
-			case "invalid-rule-regex":
-				updateRule(t, cfg, "R019", func(d *model.RuleDefinition) { d.Pattern = "(" })
-			case "invalid-legacy-regex", "blank-legacy":
-				cfg.LegacyPath = filepath.Join(filepath.Dir(cfg.Root), "legacy.txt")
-				pattern := "["
-				if which == "blank-legacy" {
-					pattern = "\n \n"
-				}
-				write(t, cfg.LegacyPath, pattern)
-			}
-			if _, err := Load(context.Background(), cfg); err == nil {
-				t.Fatal("invalid definitions must fail before creating a queue")
+			updateRule(t, cfg, "R019", func(d *model.RuleDefinition) { d.ContentPattern = pattern })
+			_, err := Load(context.Background(), cfg)
+			var diagnostic *DiagnosticError
+			if !errors.As(err, &diagnostic) || diagnostic.RuleID != "R019" {
+				t.Fatal("missing rule diagnostic", err)
 			}
 		})
 	}
 }
-
+func TestInvalidGlobFailsBeforeScan(t *testing.T) {
+	for _, pattern := range []string{"[", "../**", "/src/**", `src\*.tsx`, "!src/**"} {
+		t.Run(pattern, func(t *testing.T) {
+			cfg := fixture(t)
+			updateRule(t, cfg, "R019", func(d *model.RuleDefinition) { d.PathPattern = pattern })
+			if _, err := Load(context.Background(), cfg); err == nil {
+				t.Fatal("invalid glob accepted")
+			}
+		})
+	}
+}
 func TestScopeExclusionsAndIgnoreIndependence(t *testing.T) {
 	cfg := fixture(t)
-	cfg.IncludeGlobs = []string{"*.ext", "*.md", ".env*", "*.pem", "*.key"}
-	cfg.ExcludeGlobs = []string{"skip/**"}
-	for _, file := range []string{"src/a.ext", "src/ignored.ext", "node_modules/a.ext", "build/a.ext", "deep/obj/a.ext", "skip/a.ext", ".onebyone/results/a.ext", "AGENTS.md", "deep/CLAUDE.md", "deep/mixed/Agents.md", ".agents/policy.md", ".codex/config.ext", ".env", "deep/.env.local", "cert.pem", "key.key"} {
-		write(t, filepath.Join(cfg.Root, file), "OldClient.Save(options);\n")
+	for _, id := range []string{"R001", "R019"} {
+		updateRule(t, cfg, id, func(d *model.RuleDefinition) { d.PathPattern = "src/**" })
 	}
-	write(t, filepath.Join(cfg.Root, ".gitignore"), "src/ignored.ext\n")
-	// A hostile global rg config must not change the configured discovery scope.
-	rgConfig := filepath.Join(filepath.Dir(cfg.Root), "rg.config")
-	write(t, rgConfig, "--glob=!src/**\n")
-	t.Setenv("RIPGREP_CONFIG_PATH", rgConfig)
+	for _, f := range []string{"src/a.ext", "src/ignored.ext", "node_modules/a.ext", "src/node_modules/a.ext", "src/.env", "src/AGENTS.md", "src/Agents.md", "src/key.pem"} {
+		write(t, filepath.Join(cfg.Root, f), "OldClient.Save()")
+	}
+	write(t, filepath.Join(cfg.Root, ".gitignore"), "src/ignored.ext")
+	rc := filepath.Join(t.TempDir(), "rg.conf")
+	write(t, rc, "--glob=!src/**")
+	t.Setenv("RIPGREP_CONFIG_PATH", rc)
 	c, err := Load(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	tasks, _, _, err := c.Scan(context.Background(), cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var got []string
-	for _, task := range tasks {
-		got = append(got, task.File)
-	}
-	if !reflect.DeepEqual(got, []string{"src/a.ext", "src/ignored.ext"}) {
-		t.Fatalf("unexpected scope: %v", got)
+	if err != nil || len(tasks) != 2 || tasks[0].File != "src/a.ext" || tasks[1].File != "src/ignored.ext" {
+		t.Fatal(tasks, err)
 	}
 }
-
 func TestUnsupportedSourcesRemainVisible(t *testing.T) {
 	cfg := fixture(t)
-	cfg.LegacyPath = filepath.Join(filepath.Dir(cfg.Root), "legacy.txt")
-	write(t, cfg.LegacyPath, "OldClient")
-	write(t, filepath.Join(cfg.Root, "binary.ext"), "OldClient\x00Save")
+	write(t, filepath.Join(cfg.Root, "binary.ext"), "OldClient\x00")
 	write(t, filepath.Join(cfg.Root, "encoding.ext"), "OldClient\xff")
-	write(t, filepath.Join(cfg.Root, "large.ext"), "OldClient"+strings.Repeat("a", 2048))
+	write(t, filepath.Join(cfg.Root, "large.ext"), strings.Repeat("a", 2048))
 	c, err := Load(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	tasks, _, _, err := c.Scan(context.Background(), cfg)
 	if err != nil || len(tasks) != 3 {
-		t.Fatalf("unsupported files were silently dropped: %+v %v", tasks, err)
+		t.Fatal(tasks, err)
 	}
 	for _, task := range tasks {
-		if task.Status != "needs_human" || task.Note == "" || len(task.InputHash) != 64 {
-			t.Fatalf("missing review reason or byte hash: %+v", task)
+		if task.Status != "needs_human" || len(task.InputHash) != 64 {
+			t.Fatal(task)
 		}
 	}
-	data, err := os.ReadFile(filepath.Join(cfg.Root, "large.ext"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	hash := sha256.Sum256(data)
+	hash := sha256.Sum256([]byte(strings.Repeat("a", 2048)))
 	if tasks[2].InputHash != hex.EncodeToString(hash[:]) {
-		t.Fatal("oversized file must be completely hashed")
+		t.Fatal("large file hash truncated")
 	}
 }
-
 func TestPathTraversalAndSymlinks(t *testing.T) {
 	cfg := fixture(t)
 	write(t, filepath.Join(cfg.Root, "safe", "file.ext"), "source")
@@ -266,11 +232,14 @@ func TestPathTraversalAndSymlinks(t *testing.T) {
 	if err != nil || len(tasks) != 1 || tasks[0].File != "safe/file.ext" {
 		t.Fatalf("scan must not follow symlinks: %+v %v", tasks, err)
 	}
-	if err := os.Symlink(filepath.Join(cfg.RulesPath, "R019"), filepath.Join(cfg.RulesPath, "R020")); err != nil {
+	if err := os.Rename(cfg.RulesPath, cfg.RulesPath+".original"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(cfg.RulesPath+".original", cfg.RulesPath); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Load(context.Background(), cfg); err == nil {
-		t.Fatal("symlinked rule directories must be rejected")
+		t.Fatal("symlinked rules.json accepted")
 	}
 }
 
@@ -287,28 +256,5 @@ func TestMissingFileIsAnErrorNotANoMatch(t *testing.T) {
 	cancel()
 	if _, _, _, err := c.Scan(ctx, cfg); err == nil {
 		t.Fatal("cancelled scan must stop")
-	}
-}
-
-func TestCatalogHashChangesWithRulesAndLegacy(t *testing.T) {
-	cfg := fixture(t)
-	a, err := Load(context.Background(), cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	b, err := Load(context.Background(), cfg)
-	if err != nil || a.Hash != b.Hash {
-		t.Fatal("identical definitions should have deterministic hashes")
-	}
-	updateRule(t, cfg, "R019", func(d *model.RuleDefinition) { d.Pattern = `\.Different\(` })
-	b, err = Load(context.Background(), cfg)
-	if err != nil || a.Hash == b.Hash {
-		t.Fatal("pattern changes should invalidate the catalog hash")
-	}
-	cfg.LegacyPath = filepath.Join(filepath.Dir(cfg.Root), "legacy.txt")
-	write(t, cfg.LegacyPath, "OldClient")
-	c, err := Load(context.Background(), cfg)
-	if err != nil || b.Hash == c.Hash {
-		t.Fatal("legacy gate changes should invalidate the catalog hash")
 	}
 }

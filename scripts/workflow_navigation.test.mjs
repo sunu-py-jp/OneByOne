@@ -68,18 +68,20 @@ test('publication remains inspectable without an LLM, queue selection or valid c
   assert.match(workflowBlockReasons({ ...incomplete, running: true }).publish, /実行中/);
 });
 
-test('new execution counts pending and failed files regardless of past attempts, excluding completed, held, and deselected files', () => {
-  const task = (file, status, attempts = 0, excluded = false) => ({ file, status, attempts, excluded });
+test('confirmation counts pending, failed and selected held files without reopening completed tasks', () => {
+  const task = (file, status, attempts = 0, excluded = false) => ({ file, status, attempts, excluded, rules: ['R001'] });
   const stale = [task('finished.js', 'pending')];
   const reloaded = [task('finished.js', 'done', 1), task('ignored.js', 'pending', 0, true), task('exhausted.js', 'failed', 3), task('held.js', 'needs_human', 1), task('unchanged.js', 'skipped', 1), task('active.js', 'running', 1)];
   assert.equal(countReadyTargets(stale), 1);
-  assert.equal(countReadyTargets(reloaded), 1);
-  assert.equal(countReadyTargets([...reloaded, task('retry.js', 'failed', 2), task('next.js', 'pending')]), 3);
+  assert.equal(countReadyTargets(reloaded), 2);
+  assert.equal(countReadyTargets([...reloaded, task('retry.js', 'failed', 2), task('next.js', 'pending')]), 4);
   // Draft checkbox selection is respected before saving, while reload uses persisted exclusions.
   assert.equal(countReadyTargets(reloaded, new Set(['ignored.js'])), 1);
   assert.equal(countReadyTargets(stale, new Set()), 0);
   assert.equal(countReadyTargets([{ ...task('resume.js', 'pending', 3), resumeRequested: true }]), 1);
-  assert.equal(countReadyTargets([{ ...task('resume.js', 'needs_human', 3), resumeRequested: true }]), 0);
+  assert.equal(countReadyTargets([{ ...task('resume.js', 'needs_human', 3), resumeRequested: true }]), 1);
+  // A historical row outside the current rule scope cannot start a new execution.
+  assert.equal(countReadyTargets([{ ...task('out-of-scope.js', 'pending'), rules: [] }]), 0);
 });
 
 test('reloaded connection availability rejects removed or incomplete selected connections', () => {
@@ -101,4 +103,29 @@ test('OAuth execution requires a signed-in Azure account instead of an API-key f
   for (const change of [{ provider: 'openai' }, { oauthSignedIn: false, credentialSet: true }, { oauthSignedIn: undefined, credentialSet: true }, { oauthTenantId: '' }, { oauthClientId: '' }]) {
     assert.equal(hasReadyLLMConnection(readyState(change)), false, JSON.stringify(change));
   }
+});
+
+
+test('checking a held file enables confirmation but never bypasses stale setup or connection guards', () => {
+  const held = [{ file: 'held.js', status: 'needs_human', rules: ['R001'], excluded: true }];
+  const selected = new Set(['held.js']);
+  const state = { ...ready, readyCount: countReadyTargets(held, selected), selectedCount: selected.size };
+  assert.equal(state.readyCount, 1);
+  assert.equal(workflowAvailability(state).review, true);
+  assert.equal(countReadyTargets(held), 0);
+  assert.equal(countReadyTargets(held, new Set()), 0);
+  assert.equal(countReadyTargets([{ ...held[0], rules: [] }], selected), 0);
+  for (const blocking of [{ selectionCurrent: false }, { setupReady: false }, { targetReady: false }, { readOnly: true }, { connectionReady: false }, { running: true }]) {
+    assert.equal(workflowAvailability({ ...state, ...blocking }).review, false, JSON.stringify(blocking));
+  }
+});
+
+
+test('zero selected rules blocks confirmation but leaves execution settings open', () => {
+  const state = { ...ready, selectedRuleCount: 0 };
+  assert.equal(workflowAvailability(state).review, false);
+  assert.equal(workflowAvailability(state).run, true);
+  assert.equal(workflowBlockReasons(state).review, '適用するルールを1件以上選択してください。');
+  assert.equal(workflowAvailability({ ...state, selectedRuleCount: 1 }).review, true);
+  assert.equal(workflowAvailability({ ...state, selectedRuleCount: 1, selectionCurrent: false }).review, false);
 });

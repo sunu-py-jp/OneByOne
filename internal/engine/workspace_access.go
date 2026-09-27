@@ -49,61 +49,9 @@ func (s *Service) obtainWorkspaceLease(w model.Workspace) (*store.WorkspaceLease
 	if err != nil || owner != nil {
 		return lease, owner, lease != nil, err
 	}
-	owner, err = s.migrateWorkspaceLockFormat(w.ID)
-	if err != nil || owner != nil {
-		_ = lease.Release()
-		return nil, owner, false, err
-	}
 	return lease, nil, true, nil
 }
 
-// The caller already holds the new external lease. Upgrading version 1 also
-// requires the old in-directory lease so an older application cannot edit at
-// the same time. Publish version 2 before releasing the old lease: older apps
-// re-read settings after obtaining their lease and reject the new version.
-func (s *Service) migrateWorkspaceLockFormat(id string) (*store.WorkspaceOwner, error) {
-	path, err := s.workspacePath(id, "setting.json")
-	if err != nil {
-		return nil, err
-	}
-	var saved workspaceSetting
-	if err = decodeLocalJSON(path, &saved); os.IsNotExist(err) {
-		// New workspaces have no directory or settings yet. Do not create an
-		// old-style lock, and do not recreate a concurrently deleted workspace.
-		return nil, nil
-	} else if err != nil {
-		return nil, err
-	}
-	if saved.Version == workspaceSettingVersion {
-		return nil, nil
-	}
-	if saved.Version != 1 {
-		return nil, fmt.Errorf("setting.json の形式を確認してください")
-	}
-	oldPath, err := s.workspacePath(id, ".edit.lock")
-	if err != nil {
-		return nil, err
-	}
-	oldLease, owner, err := store.AcquireWorkspace(oldPath, currentWorkspaceOwner())
-	if err != nil || owner != nil {
-		return owner, err
-	}
-	defer oldLease.Release()
-	// The old owner may have changed the settings after our initial read.
-	// Validate again under both leases, then retain every stored setting.
-	if _, _, err = s.readWorkspaceSetting(id); err != nil {
-		return nil, err
-	}
-	saved = workspaceSetting{}
-	if err = decodeLocalJSON(path, &saved); err != nil {
-		return nil, err
-	}
-	saved.Version = workspaceSettingVersion
-	if err = store.WriteJSON(path, saved); err != nil {
-		return nil, fmt.Errorf("ワークスペースのロック形式を更新できません: %w", err)
-	}
-	return nil, nil
-}
 func (s *Service) adoptWorkspaceLease(w model.Workspace, lease *store.WorkspaceLease) {
 	if s.leaseID != w.ID || !sameRoot(s.leaseRoot, w.Root) {
 		s.releaseRuleLease()

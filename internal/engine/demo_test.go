@@ -141,7 +141,7 @@ func TestDemoRuleImportPreservesSourceConnectionHistoryAndUsesExistingWriteGuard
 	assertWorkspaceExecutionSettings(t, imported.Config, before.Config)
 	common, individual := 0, 0
 	for _, rule := range imported.Rules {
-		if rule.Always {
+		if rule.ContentPattern == "" {
 			common++
 		} else {
 			individual++

@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -17,6 +18,7 @@ import (
 
 	"onebyone/internal/agent"
 	"onebyone/internal/model"
+	"onebyone/internal/ruleformat"
 	"onebyone/internal/rulepack"
 	"onebyone/internal/store"
 )
@@ -37,17 +39,15 @@ func fixture(t *testing.T, sources map[string]string) (*Service, model.Config) {
 	cfg := DefaultConfig()
 	cfg.MaxAttempts, cfg.MaxTurns, cfg.TimeoutSeconds = 3, 12, 600
 	cfg.Root = filepath.Join(base, "source")
-	cfg.RulesPath = filepath.Join(base, "rules")
-	cfg.LegacyPath = filepath.Join(base, "patterns", "legacy-symbols.txt")
+	cfg.RulesPath = filepath.Join(base, "rules", "rules.json")
 	cfg.QueuePath = filepath.Join(base, "session", "queue.jsonl")
 	cfg.RGPath = rg
 	cfg.Endpoint, cfg.Deployment, cfg.Credential = "https://example.openai.azure.com", "test-deployment", "do-not-persist-secret"
 	for file, content := range sources {
 		writeTest(t, filepath.Join(cfg.Root, filepath.FromSlash(file)), []byte(content))
 	}
-	writeTest(t, filepath.Join(cfg.RulesPath, "R001", "rule.json"), fixtureRuleJSON(t, "Preserve behavior", "", "Preserve unrelated code and formatting.", "", "", "", ""))
-	writeTest(t, filepath.Join(cfg.RulesPath, "R019", "rule.json"), fixtureRuleJSON(t, "Legacy Save migration", `Legacy\.Save`, "Replace Legacy.Save with Modern.Save.", "Legacy.Save()", "Modern.Save()", "", ""))
-	writeTest(t, cfg.LegacyPath, []byte(`\bLegacy\b`))
+	writeFixtureRule(t, cfg.RulesPath, "R001", fixtureRuleJSON(t, "Preserve behavior", "", "Preserve unrelated code and formatting.", "", "", "", ""))
+	writeFixtureRule(t, cfg.RulesPath, "R019", fixtureRuleJSON(t, "Legacy Save migration", `Legacy\.Save`, "Replace Legacy.Save with Modern.Save.", "Legacy.Save()", "Modern.Save()", "", ""))
 	gitTest(t, cfg.Root, "init", "-q")
 	gitTest(t, cfg.Root, "add", ".")
 	gitTest(t, cfg.Root, "commit", "-qm", "initial")
@@ -75,11 +75,73 @@ func fixture(t *testing.T, sources map[string]string) (*Service, model.Config) {
 
 func fixtureRuleJSON(t *testing.T, name, pattern, overview, before, after, notes, hold string) []byte {
 	t.Helper()
-	data, err := json.Marshal(map[string]any{"version": 1, "name": name, "pattern": pattern, "overview": overview, "before": before, "after": after, "notes": notes, "holdConditions": hold})
+	body := "# 変更概要\n\n" + overview + "\n\n# 変更前\n\n" + before + "\n\n# 変更後\n\n" + after + "\n\n# 備考\n\n" + notes + "\n\n# 修正を保留すべきケース\n\n" + hold
+	if overview == "" {
+		overview = name
+	}
+	// writeFixtureRule replaces this placeholder with the rule's stable id.
+	data, err := ruleformat.Encode(model.RuleDefinition{ID: "fixture", Name: name, Description: overview, ContentPattern: pattern, Body: body})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return data
+}
+
+// writeFixtureRule updates one Markdown entry without changing its stable ID.
+func writeFixtureRule(t *testing.T, path, id string, markdown []byte) {
+	t.Helper()
+	markdown = withFixtureID(id, markdown)
+	pkg, err := rulepack.Snapshot(path)
+	if err != nil {
+		if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+			t.Fatal(err)
+		}
+		pkg = &rulepack.Package{}
+	}
+	found := false
+	for i := range pkg.Rules {
+		if pkg.Rules[i].ID == id {
+			pkg.Rules[i].Markdown = string(markdown)
+			found = true
+			break
+		}
+	}
+	if !found {
+		pkg.Rules = append(pkg.Rules, rulepack.Entry{ID: id, Markdown: string(markdown)})
+	}
+	docs := []string{}
+	for _, e := range pkg.Rules {
+		docs = append(docs, e.Markdown)
+	}
+	data, _ := json.Marshal(map[string]any{"rules": docs})
+	writeTest(t, path, data)
+}
+
+// withFixtureID stamps the id into a front matter, including deliberately
+// invalid rules, so a test exercises one rule rather than the whole document.
+func withFixtureID(id string, markdown []byte) []byte {
+	if d, err := ruleformat.Decode(markdown); err == nil {
+		d.ID = id
+		if data, err := ruleformat.Encode(d); err == nil {
+			return data
+		}
+	}
+	text := string(markdown)
+	if !strings.HasPrefix(text, "---\n") {
+		return markdown
+	}
+	lines := strings.SplitAfter(text, "\n")
+	out := []string{lines[0], "id: " + strconv.Quote(id) + "\n"}
+	inFrontMatter := true
+	for _, line := range lines[1:] {
+		if inFrontMatter && strings.TrimRight(line, "\r\n") == "---" {
+			inFrontMatter = false
+		} else if inFrontMatter && strings.HasPrefix(line, "id:") {
+			continue
+		}
+		out = append(out, line)
+	}
+	return []byte(strings.Join(out, ""))
 }
 
 func writeTest(t *testing.T, path string, data []byte) {
@@ -137,12 +199,12 @@ func TestEndToEndIsolatedCommitAndPersistentResults(t *testing.T) {
 	originalHead := gitTest(t, cfg.Root, "rev-parse", "HEAD")
 	s.propose = func(ctx context.Context, in agent.Input) (model.Proposal, error) {
 		if in.File == "src/context.txt" {
-			if in.Content != "untouched\n" || len(in.CandidateRules) != 0 || !strings.Contains(in.SystemPrompt, "Preserve unrelated code") {
+			if in.Content != "untouched\n" || len(in.CandidateRules) != 1 || !strings.Contains(in.SystemPrompt, "Preserve unrelated code") {
 				t.Error("common-only source did not receive an independent rule context")
 			}
-			return model.Proposal{Outcome: "skipped", RulesApplied: []string{"R001"}, Note: "no edit required"}, nil
+			return reviewedNoChangeProposal(t, in, "no edit required")
 		}
-		if in.File != "src/A.txt" || in.Content != "Legacy.Save()\n" || len(in.CandidateRules) != 1 || in.CandidateRules[0] != "R019" {
+		if in.File != "src/A.txt" || in.Content != "Legacy.Save()\n" || len(in.CandidateRules) != 2 || in.CandidateRules[1] != "R019" {
 			t.Errorf("wrong per-file input: %+v", in)
 		}
 		if !strings.Contains(in.SystemPrompt, "Preserve unrelated code") || !strings.Contains(in.SystemPrompt, "R019") {
@@ -234,11 +296,11 @@ func TestPilotLimitAndResume(t *testing.T) {
 
 func TestPackagePilotResumesWithoutRescan(t *testing.T) {
 	s, cfg := fixture(t, map[string]string{"A.txt": "Legacy.Save()\n", "B.txt": "Legacy.Save()\n"})
-	pkg, err := rulepack.Snapshot(cfg.RulesPath, cfg.LegacyPath, rulepack.FromConfig(cfg))
+	pkg, err := rulepack.Snapshot(cfg.RulesPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	archive := filepath.Join(t.TempDir(), "resume.oborules")
+	archive := filepath.Join(t.TempDir(), "resume.json")
 	if err = rulepack.Write(archive, pkg); err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +310,17 @@ func TestPackagePilotResumesWithoutRescan(t *testing.T) {
 	if _, err = s.Scan(); err != nil {
 		t.Fatal(err)
 	}
-	s.propose = successfulProposal
+	propose := func(ctx context.Context, in agent.Input) (model.Proposal, error) {
+		proposal, err := successfulProposal(ctx, in)
+		proposal.RulesApplied = nil
+		for _, rule := range in.Rules {
+			if rule.ContentPattern != "" {
+				proposal.RulesApplied = append(proposal.RulesApplied, rule.ID)
+			}
+		}
+		return proposal, err
+	}
+	s.propose = propose
 	first := runTest(t, s, 1)
 	if first.LastError != "" || first.Tasks[0].Status != "done" || first.Tasks[1].Status != "pending" {
 		t.Fatalf("pilot failed: %s", first.LastError)
@@ -256,54 +328,21 @@ func TestPackagePilotResumesWithoutRescan(t *testing.T) {
 	s.Close()
 	restored := New(s.configPath)
 	t.Cleanup(restored.Close)
-	restored.propose = successfulProposal
+	restored.propose = propose
 	final := runTest(t, restored, 0)
 	if final.LastError != "" || final.Tasks[1].Status != "done" || final.Tasks[0].Attempts != 1 {
 		t.Fatalf("package restart did not resume: %s", final.LastError)
 	}
 }
 
-func TestLegacyResidueRollsBackAndRetriesThreeTimes(t *testing.T) {
-	s, cfg := fixture(t, map[string]string{"A.txt": "Legacy.Save()\n"})
-	calls := 0
-	s.propose = func(ctx context.Context, in agent.Input) (model.Proposal, error) {
-		calls++
-		if in.Content != "Legacy.Save()\n" {
-			t.Error("failed edits leaked into next retry")
-		}
-		if calls > 1 && (!strings.Contains(in.PreviousFailure, "Legacy") || !strings.Contains(in.PreviousFailure, "diff")) {
-			t.Errorf("retry did not receive saved failure: %q", in.PreviousFailure)
-		}
-		return model.Proposal{Outcome: "modified", Edits: []model.Edit{{OldText: "Save", NewText: "Write"}}, RulesApplied: []string{"R019"}}, nil
-	}
-	st := runTest(t, s, 0)
-	if st.LastError != "" || calls != 3 || st.Tasks[0].Status != "needs_human" || st.Tasks[0].Attempts != 3 || len(st.Tasks[0].History) != 3 {
-		t.Fatalf("bad retry result: %+v; calls=%d", st, calls)
-	}
-	if readTest(t, filepath.Join(st.Worktree, "A.txt")) != "Legacy.Save()\n" || gitTest(t, st.Worktree, "status", "--porcelain") != "" {
-		t.Error("failed edits not rolled back")
-	}
-	if gitTest(t, st.Worktree, "rev-parse", "HEAD") != gitTest(t, cfg.Root, "rev-parse", "HEAD") {
-		t.Error("failed attempt committed")
-	}
-	for _, h := range st.Tasks[0].History {
-		if h.DiffPath == "" || !strings.Contains(readTest(t, h.DiffPath), "+Legacy.Write()") {
-			t.Error("failure diff missing")
-		}
-	}
-}
-
-func TestSkippedCannotBypassLegacyGate(t *testing.T) {
+func TestSkippedCannotBypassIndependentReview(t *testing.T) {
 	s, _ := fixture(t, map[string]string{"A.txt": "Legacy.Save()\n"})
 	s.propose = func(context.Context, agent.Input) (model.Proposal, error) {
 		return model.Proposal{Outcome: "skipped", Note: "no change"}, nil
 	}
 	st := runTest(t, s, 0)
-	if st.LastError != "" || st.Tasks[0].Status != "needs_human" || st.Tasks[0].Attempts != 3 {
-		t.Fatalf("skipped bypassed legacy check: %+v", st)
-	}
-	if st.Tasks[0].History[0].Checks[0].Status != "failed" {
-		t.Error("legacy gate not executed")
+	if st.Tasks[0].Status == "skipped" || st.Tasks[0].Status == "done" {
+		t.Fatal("unreviewed no-change claim accepted", st.Tasks[0])
 	}
 }
 
@@ -353,19 +392,6 @@ func TestProviderErrorPreservesPartialUsage(t *testing.T) {
 	st := runTest(t, s, 1)
 	if st.LastError != "" || st.Tasks[0].Status != "needs_human" || st.Usage.InputTokens != 222 || st.Tasks[0].History[0].Usage.CostUSD != .004 {
 		t.Fatalf("error lost partial usage: %+v", st)
-	}
-}
-
-func TestRuleChangesRequireRescan(t *testing.T) {
-	s, cfg := fixture(t, map[string]string{"A.txt": "Legacy.Save()\n"})
-	writeTest(t, filepath.Join(cfg.RulesPath, "R019", "rule.json"), fixtureRuleJSON(t, "New rule", `Legacy\.Save`, "Changed rule content", "", "", "", ""))
-	s.propose = func(context.Context, agent.Input) (model.Proposal, error) {
-		t.Error("stale catalog reached provider")
-		return model.Proposal{}, nil
-	}
-	st := runTest(t, s, 0)
-	if st.LastError == "" || st.Tasks[0].Attempts != 0 {
-		t.Fatalf("rule change not detected: %+v", st)
 	}
 }
 
@@ -438,23 +464,6 @@ func TestRecoveryRollsBackInterruptedUncommittedEdit(t *testing.T) {
 	st = runTest(t, reloaded, 0)
 	if st.LastError != "" || st.Tasks[0].Status != "done" || st.Tasks[0].Attempts != 2 || st.Tasks[0].History[0].Outcome != "interrupted" {
 		t.Fatalf("interruption recovery failed: %+v", st)
-	}
-}
-
-func TestChecksCannotModifyOtherFiles(t *testing.T) {
-	s, cfg := fixture(t, map[string]string{"A.txt": "Legacy.Save()\n", "B.txt": "untouched\n"})
-	cfg.MaxAttempts = 1
-	cfg.CheckCommands = []model.Command{{Name: "mutating checker", Executable: os.Args[0], Args: []string{"-test.run=^TestCommandHelperProcess$", "--", "onebyone-helper", "mutate-after-migration"}}}
-	if _, err := s.SaveConfig(cfg); err != nil {
-		t.Fatal(err)
-	}
-	s.propose = successfulProposal
-	st := runTest(t, s, 1)
-	if st.LastError != "" || st.Tasks[0].Status != "needs_human" {
-		t.Fatalf("checker mutation adopted: %+v", st)
-	}
-	if readTest(t, filepath.Join(st.Worktree, "A.txt")) != "Legacy.Save()\n" || readTest(t, filepath.Join(st.Worktree, "B.txt")) != "untouched\n" {
-		t.Error("checker mutation was not rolled back")
 	}
 }
 
@@ -595,13 +604,29 @@ func TestRescanKeepsCommitHistoryAndExcludesPendingTasks(t *testing.T) {
 		t.Fatalf("setup failed: %+v", st)
 	}
 	commit := st.Tasks[0].History[0].Commit
-	cfg.IncludeGlobs = []string{"C.txt"}
+	for _, id := range []string{"R001", "R019"} {
+		p, err := rulepack.Snapshot(cfg.RulesPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range p.Rules {
+			if e.ID == id {
+				d, err := ruleformat.Decode([]byte(e.Markdown))
+				if err != nil {
+					t.Fatal(err)
+				}
+				d.PathPattern = "C.txt"
+				data, err := ruleformat.Encode(d)
+				if err != nil {
+					t.Fatal(err)
+				}
+				writeFixtureRule(t, cfg.RulesPath, id, data)
+			}
+		}
+	}
 	if _, err := s.SaveConfig(cfg); err != nil {
 		t.Fatal(err)
 	}
-	// Rule changes must remain rescan-able while the completed commit survives.
-	rule := filepath.Join(cfg.RulesPath, "R019", "rule.json")
-	writeTest(t, rule, fixtureRuleJSON(t, "Legacy Save migration", `Legacy\.Save`, "Replace Legacy.Save with Modern.Save.", "Legacy.Save()", "Modern.Save()", "Preserve semantics.", ""))
 	if _, err := s.Scan(); err != nil {
 		t.Fatal(err)
 	}

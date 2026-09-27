@@ -161,7 +161,7 @@ func TestRepairPlanCanExplicitlyWithdrawAllChanges(t *testing.T) {
 
 func TestCandidatePlanRequiresCompleteCoverageAndNoUnresolvedBlock(t *testing.T) {
 	plan := checkedRepairPlan(t)
-	request := model.CandidateRequest{PlanRevision: plan.Revision, AddressedItemIDs: []string{"P01", "P02"}}
+	request := model.CandidateRequest{PlanRevision: plan.Revision, AddressedItemIDs: []string{"P01", "P02"}, Edits: []model.Edit{{OldText: "before", NewText: "after", ItemIDs: []string{"P01", "P02"}, Attributions: []model.EditAttribution{{ItemID: "P01", BeforeText: "before", AfterText: "after"}, {ItemID: "P02", BeforeText: "before", AfterText: "after"}}}}}
 	if err := CheckCandidatePlan(plan, request); err != nil {
 		t.Fatalf("pending items cannot be proposed for verification: %v", err)
 	}

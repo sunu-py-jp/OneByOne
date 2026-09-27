@@ -23,11 +23,11 @@ func testInput(endpoint string) Input {
 	// of the application's optional defaults.
 	return Input{Config: model.Config{Endpoint: endpoint, Deployment: "my-deployment", Credential: "test-secret", MaxAttempts: 3, MaxTurns: 5, MaxOutputTokens: 4096, TimeoutSeconds: 180},
 		File: "src/example.txt", Content: "Legacy.Save()\n", CandidateRules: []string{"R019"}, SystemPrompt: "R019: Replace Legacy.Save with Modern.Save",
-		Rules:           []model.Rule{{ID: "R019", Pattern: "Legacy"}},
+		Rules:           []model.Rule{{ID: "R019", ContentPattern: "Legacy"}},
 		SaveRepairState: func(model.RepairState) error { return nil },
 		ReviewCandidate: passedTestReview,
 		ValidateCandidate: func(_ context.Context, req model.CandidateRequest) (model.CandidateValidation, error) {
-			return model.CandidateValidation{CandidateID: "C1", CandidateHash: "candidate-hash", PlanRevision: req.PlanRevision, Passed: true}, nil
+			return model.CandidateValidation{AttributionVersion: model.LineAttributionVersion, CandidateID: "C1", CandidateHash: "candidate-hash", PlanRevision: req.PlanRevision, Passed: true}, nil
 		},
 		ReadRule: func(id string) (string, error) {
 			if id == "R019" {
@@ -76,9 +76,21 @@ func testPlan(revision int) model.PlanUpdate {
 }
 func testCandidate() model.CandidateRequest {
 	sum := sha256.Sum256([]byte("Legacy.Save()\n"))
-	return model.CandidateRequest{PlanRevision: 1, BaseHash: hex.EncodeToString(sum[:]), Edits: []model.Edit{{OldText: "Legacy.Save()", NewText: "Modern.Save()", ItemIDs: []string{"P1"}}}, AddressedItemIDs: []string{"P1"}}
+	return model.CandidateRequest{PlanRevision: 1, BaseHash: hex.EncodeToString(sum[:]), Edits: []model.Edit{{OldText: "Legacy.Save()", NewText: "Modern.Save()", ItemIDs: []string{"P1"}, Attributions: []model.EditAttribution{}}}, AddressedItemIDs: []string{"P1"}}
 }
 func testCall(id, name string, args any) map[string]any {
+	if request, ok := args.(model.CandidateRequest); ok {
+		request.Edits = append([]model.Edit{}, request.Edits...)
+		for i := range request.Edits {
+			if request.Edits[i].Attributions == nil {
+				request.Edits[i].Attributions = []model.EditAttribution{}
+			}
+		}
+		args = request
+	}
+	if update, ok := args.(model.PlanUpdate); ok {
+		args = testPlanWire(update)
+	}
 	b, _ := json.Marshal(args)
 	return map[string]any{"type": "function_call", "call_id": id, "name": name, "arguments": string(b)}
 }
@@ -460,4 +472,21 @@ func TestUnknownUsageClassificationSurvivesFatalWrapping(t *testing.T) {
 	if !IsUsageUnknown(err) || !out.Usage.Uncertain {
 		t.Fatalf("invalid usage not classified: %+v %v", out.Usage, err)
 	}
+}
+
+// Structured model fixtures include schema-required arrays even when their
+// archived representation omits empty optional properties.
+func testPlanWire(update model.PlanUpdate) map[string]any {
+	data, _ := json.Marshal(update)
+	var wire map[string]any
+	_ = json.Unmarshal(data, &wire)
+	if rows, ok := wire["items"].([]any); ok {
+		for _, row := range rows {
+			item := row.(map[string]any)
+			if _, exists := item["sourceLocations"]; !exists {
+				item["sourceLocations"] = []any{}
+			}
+		}
+	}
+	return wire
 }

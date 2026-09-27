@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"onebyone/internal/model"
 	"onebyone/internal/store"
 )
 
@@ -278,5 +279,22 @@ func TestWorkspaceFailedApplicationSelectionWriteKeepsOldLease(t *testing.T) {
 	}
 	if err := probe.Release(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestWorkspaceLeaseDoesNotCreateMissingWorkspaceDirectories(t *testing.T) {
+	s, source := workspaceTestService(t)
+	w := model.Workspace{ID: uid(), Name: "not created", Root: source}
+	lease, owner, fresh, err := s.obtainWorkspaceLease(w)
+	if err != nil || lease == nil || owner != nil || !fresh {
+		t.Fatalf("new workspace could not obtain its external lease: %v", err)
+	}
+	defer lease.Release()
+	setting, err := s.workspacePath(w.ID, "setting.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = os.Lstat(filepath.Dir(setting)); !os.IsNotExist(err) {
+		t.Fatal("acquiring a lease recreated the missing workspace directory")
 	}
 }

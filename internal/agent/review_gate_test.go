@@ -11,7 +11,7 @@ import (
 
 func reviewGateFixture() (Input, model.RepairState, model.Proposal) {
 	baseHash, candidateHash := strings.Repeat("a", 64), strings.Repeat("b", 64)
-	edits := []model.Edit{{OldText: "send();", NewText: "await send();"}}
+	edits := []model.Edit{{OldText: "send();", NewText: "await send();", ItemIDs: []string{"P1"}}}
 	plan := model.RepairPlan{Revision: 1,
 		RuleDecisions: []model.PlanDecision{{RuleID: "R101", Decision: "modify", Reason: "通知前に送信の完了を待つ"}},
 		Items:         []model.PlanItem{{ID: "P1", RuleID: "R101", Location: "send()", Change: "送信を待つ", Expected: "送信後に通知する", Status: "proposed"}},
@@ -23,7 +23,7 @@ func reviewGateFixture() (Input, model.RepairState, model.Proposal) {
 	state := model.RepairState{Version: 1, Plan: plan, ReadRuleIDs: []string{"R101"}, Usage: model.Usage{Turns: 6, InputTokens: 900, OutputTokens: 300, CostUSD: .01}, ReviewCount: 1, Reviews: []model.IndependentReview{review},
 		LastCandidate: &model.CandidateRecord{
 			Request: model.CandidateRequest{PlanRevision: 1, BaseHash: baseHash, Edits: edits, AddressedItemIDs: []string{"P1"}},
-			Result:  model.CandidateValidation{CandidateID: "candidate-1", CandidateHash: candidateHash, PlanRevision: 1, Passed: true},
+			Result:  model.CandidateValidation{AttributionVersion: model.LineAttributionVersion, CandidateID: "candidate-1", CandidateHash: candidateHash, PlanRevision: 1, Passed: true},
 			Review:  &review, ReviewRequested: true, ReviewNote: "送信完了を待つよう修正しました。",
 		},
 	}
@@ -76,8 +76,8 @@ func TestIndependentReviewDoesNotPreventOrdinaryNoChangeDecision(t *testing.T) {
 	}
 }
 
-func TestIndependentReviewDoesNotOverrideEditorHoldOrSkip(t *testing.T) {
-	for _, outcome := range []string{"needs_human", "skipped"} {
+func TestIndependentReviewDoesNotOverrideEditorHold(t *testing.T) {
+	for _, outcome := range []string{"needs_human"} {
 		t.Run(outcome, func(t *testing.T) {
 			in, state, _ := reviewGateFixture()
 			before := cloneRepairState(state)

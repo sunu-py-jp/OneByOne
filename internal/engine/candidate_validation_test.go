@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,13 +32,13 @@ func candidateFixture(t *testing.T, content string) candidateValidationInput {
 }
 
 func candidateRequest(in candidateValidationInput, oldText, newText string) model.CandidateRequest {
-	return model.CandidateRequest{PlanRevision: 1, BaseHash: in.InputHash, AddressedItemIDs: []string{"P01"}, Edits: []model.Edit{{OldText: oldText, NewText: newText}}}
+	return model.CandidateRequest{PlanRevision: 1, BaseHash: in.InputHash, AddressedItemIDs: []string{"P01"}, Edits: []model.Edit{{OldText: oldText, NewText: newText, ItemIDs: []string{"P01"}, Attributions: []model.EditAttribution{}}}}
 }
 
 func assertCandidateClean(t *testing.T, in candidateValidationInput) {
 	t.Helper()
 	if got := readTest(t, filepath.Join(in.Source, in.File)); got != string(in.Before) {
-		t.Fatalf("candidate was not rolled back: %q", got)
+		t.Fatalf("candidate validation touched the worktree: %q", got)
 	}
 	if got := readTest(t, filepath.Join(in.Config.Root, in.File)); got != string(in.Before) {
 		t.Fatalf("user checkout was changed: %q", got)
@@ -52,7 +51,7 @@ func assertCandidateClean(t *testing.T, in candidateValidationInput) {
 	}
 }
 
-func TestCandidateValidationRejectsResidueThenAcceptsCorrectedOriginalEdits(t *testing.T) {
+func TestCandidateValidationLeavesSemanticResidueForIndependentReview(t *testing.T) {
 	in := candidateFixture(t, "Legacy.Save()\nLegacy.Load()\n")
 	journalCalls := 0
 	in.Journal = func(result model.CandidateValidation) error {
@@ -63,23 +62,19 @@ func TestCandidateValidationRejectsResidueThenAcceptsCorrectedOriginalEdits(t *t
 		assertCandidateClean(t, in)
 		return nil
 	}
-	failed, err := validateCandidate(context.Background(), in, candidateRequest(in, "Legacy.Save()", "Modern.Save()"))
-	if err != nil || failed.Passed || len(failed.Diagnostics) != 1 {
-		t.Fatalf("residue was not a recoverable diagnostic: %+v, %v", failed, err)
-	}
-	diagnostic := failed.Diagnostics[0]
-	if diagnostic.Check != "legacy_symbols" || diagnostic.Line != 2 || diagnostic.LineBasis != "candidate" || diagnostic.Excerpt != "Legacy.Load()" || diagnostic.ItemID != "" {
-		t.Fatalf("wrong candidate coordinates or invented plan association: %+v", diagnostic)
+	partial, err := validateCandidate(context.Background(), in, candidateRequest(in, "Legacy.Save()", "Modern.Save()"))
+	if err != nil || !partial.Passed || len(partial.Diagnostics) != 0 {
+		t.Fatalf("valid edits should pass structural checks independently of semantic residue: %+v, %v", partial, err)
 	}
 	assertCandidateClean(t, in)
 	request := candidateRequest(in, "Legacy.Save()", "Modern.Save()")
-	request.Edits = append(request.Edits, model.Edit{OldText: "Legacy.Load()", NewText: "Modern.Load()"})
+	request.Edits = append(request.Edits, model.Edit{OldText: "Legacy.Load()", NewText: "Modern.Load()", ItemIDs: []string{"P01"}, Attributions: []model.EditAttribution{}})
 	passed, err := validateCandidate(context.Background(), in, request)
-	if err != nil || !passed.Passed || len(passed.Diagnostics) != 0 || passed.CandidateID == failed.CandidateID || journalCalls != 2 {
+	if err != nil || !passed.Passed || len(passed.Diagnostics) != 0 || passed.CandidateID == partial.CandidateID || journalCalls != 2 {
 		t.Fatalf("corrected full proposal failed: %+v, %v; journals %d", passed, err, journalCalls)
 	}
 	assertCandidateClean(t, in)
-	for _, result := range []model.CandidateValidation{failed, passed} {
+	for _, result := range []model.CandidateValidation{partial, passed} {
 		prefix := in.Artifact + ".candidate-" + result.CandidateID
 		if got := readTest(t, prefix+".diff"); !strings.Contains(got, "+Modern.Save()") {
 			t.Fatalf("candidate diff was not preserved: %q", got)
@@ -135,7 +130,7 @@ func TestCandidateValidationInvalidEditsAndStaleRequestAreRecoverable(t *testing
 	}
 }
 
-func TestCandidateValidationPreservesUnexpectedDirtyState(t *testing.T) {
+func TestCandidateValidationIgnoresAndPreservesUnadoptedWorktreeState(t *testing.T) {
 	for _, kind := range []string{"target", "other", "untracked", "new-head", "journal"} {
 		t.Run(kind, func(t *testing.T) {
 			in := candidateFixture(t, "Legacy.Save()\n")
@@ -158,13 +153,106 @@ func TestCandidateValidationPreservesUnexpectedDirtyState(t *testing.T) {
 				in.Journal = func(model.CandidateValidation) error { mutate(); return nil }
 			}
 			result, err := validateCandidate(context.Background(), in, candidateRequest(in, "Legacy.Save()", "Modern.Save()"))
-			if err == nil || result.Passed {
-				t.Fatalf("unexpected change did not stop validation: %+v, %v", result, err)
+			if err != nil || !result.Passed {
+				t.Fatalf("worktree state leaked into immutable candidate validation: %+v, %v", result, err)
 			}
 			if got := readTest(t, path); got != "user work\n" {
 				t.Fatalf("unexpected changes were destroyed: %q", got)
 			}
 		})
+	}
+}
+
+func TestCandidateValidationParallelSnapshotsDoNotInterfereWithAnotherCommit(t *testing.T) {
+	a := candidateFixture(t, "Legacy.Save()\n")
+	b := a
+	b.File, b.Relative = "src/B.txt", "src/B.txt"
+	b.Before, b.InputHash = []byte("untouched\n"), digest([]byte("untouched\n"))
+	b.Artifact = filepath.Join(filepath.Dir(a.Artifact), "second-attempt")
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	ready, release := make(chan struct{}, 2), make(chan struct{})
+	defer close(release)
+	journal := func(model.CandidateValidation) error {
+		ready <- struct{}{}
+		select {
+		case <-release:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	a.Journal, b.Journal = journal, journal
+	type completion struct {
+		input  candidateValidationInput
+		result model.CandidateValidation
+		err    error
+	}
+	completed := make(chan completion, 2)
+	for _, in := range []candidateValidationInput{a, b} {
+		go func(in candidateValidationInput) {
+			request := candidateRequest(in, strings.TrimSpace(string(in.Before)), "updated "+in.File)
+			result, err := validateCandidate(ctx, in, request)
+			completed <- completion{in, result, err}
+		}(in)
+	}
+	for range 2 {
+		select {
+		case <-ready:
+		case result := <-completed:
+			t.Fatalf("validation failed before its snapshot was ready: %+v", result)
+		case <-ctx.Done():
+			t.Fatal("parallel candidate validation did not reach both journals")
+		}
+	}
+	assertCandidateClean(t, a)
+	if got := readTest(t, filepath.Join(a.Source, b.File)); got != string(b.Before) {
+		t.Fatalf("parallel candidate was published into worktree: %q", got)
+	}
+	// Simulate serialized adoption of a different file while both candidates
+	// still reference the earlier immutable commit. Neither may reset it.
+	writeTest(t, filepath.Join(a.Worktree, "another.txt"), []byte("another adopted file\n"))
+	gitTest(t, a.Worktree, "add", "another.txt")
+	gitTest(t, a.Worktree, "commit", "-qm", "another file completed")
+	adoptedHead := gitTest(t, a.Worktree, "rev-parse", "HEAD")
+	// Each waiter consumes a value; the deferred close also releases failures.
+	for range 2 {
+		release <- struct{}{}
+	}
+	ids := map[string]bool{}
+	for range 2 {
+		got := <-completed
+		if got.err != nil || !got.result.Passed || ids[got.result.CandidateID] {
+			t.Fatalf("parallel snapshots interfered or used duplicate candidate IDs: %+v", got)
+		}
+		ids[got.result.CandidateID] = true
+		prefix := got.input.Artifact + ".candidate-" + got.result.CandidateID
+		if content := readTest(t, prefix+".after"); content != "updated "+got.input.File+"\n" {
+			t.Fatalf("candidate received another file's contents: %q", content)
+		}
+		if diff := readTest(t, prefix+".diff"); !strings.Contains(diff, "+++ b/"+got.input.Relative+"\n") || !strings.Contains(diff, "+updated "+got.input.File) {
+			t.Fatalf("candidate diff received another file's context: %q", diff)
+		}
+	}
+	if head := gitTest(t, a.Worktree, "rev-parse", "HEAD"); head != adoptedHead || head == a.Head {
+		t.Fatalf("candidate validation rolled back another file's adopted commit: %s", head)
+	}
+	if status := gitTest(t, a.Worktree, "status", "--porcelain=v1"); status != "" {
+		t.Fatalf("parallel validation polluted the shared worktree: %s", status)
+	}
+	for _, in := range []candidateValidationInput{a, b} {
+		if got := readTest(t, filepath.Join(in.Source, in.File)); got != string(in.Before) {
+			t.Fatalf("candidate changed %s: %q", in.File, got)
+		}
+	}
+	entries, err := os.ReadDir(filepath.Dir(a.Artifact))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".onebyone-candidate-diff-") {
+			t.Fatalf("private diff temporary directory was not removed: %s", entry.Name())
+		}
 	}
 }
 
@@ -192,74 +280,16 @@ func TestCandidateValidationRejectsMismatchedCleanBase(t *testing.T) {
 	}
 }
 
-func candidateHelperCommand(mode string, args ...string) model.Command {
-	return model.Command{Name: "candidate test", Executable: os.Args[0], Args: append([]string{"-test.run=^TestCandidateValidationHelperProcess$", "--", "candidate-validation-helper", mode}, args...)}
-}
-
-func TestCandidateValidationFailedCheckAndMutatingChecksRollback(t *testing.T) {
-	for _, mode := range []string{"fail", "change-target", "change-other", "create-other"} {
-		t.Run(mode, func(t *testing.T) {
-			in := candidateFixture(t, "Legacy.Save()\n")
-			in.Config.CheckCommands = []model.Command{candidateHelperCommand(mode)}
-			result, err := validateCandidate(context.Background(), in, candidateRequest(in, "Legacy.Save()", "Modern.Save()"))
-			if err != nil || result.Passed || len(result.Diagnostics) == 0 {
-				t.Fatalf("check failure was adopted: %+v, %v", result, err)
-			}
-			assertCandidateClean(t, in)
-			if got := readTest(t, filepath.Join(in.Source, "src/B.txt")); got != "untouched\n" {
-				t.Fatalf("other file not restored: %q", got)
-			}
-		})
-	}
-}
-
-func TestCandidateValidationCanceledCheckStillRollsBack(t *testing.T) {
+func TestCandidateValidationCanceledBeforePublicationPreservesSource(t *testing.T) {
 	in := candidateFixture(t, "Legacy.Save()\n")
-	marker := filepath.Join(t.TempDir(), "started")
-	in.Config.CheckCommands = []model.Command{candidateHelperCommand("wait", marker)}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	done := make(chan error, 1)
-	go func() {
-		_, err := validateCandidate(ctx, in, candidateRequest(in, "Legacy.Save()", "Modern.Save()"))
-		done <- err
-	}()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if _, err := os.Stat(marker); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			cancel()
-			<-done
-			t.Fatal("checker never started")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	cancel()
-	if err := <-done; !errors.Is(err, context.Canceled) {
-		t.Fatalf("cancellation was not propagated: %v", err)
+	in.Journal = func(model.CandidateValidation) error { cancel(); return nil }
+	result, err := validateCandidate(ctx, in, candidateRequest(in, "Legacy.Save()", "Modern.Save()"))
+	if err == nil || result.Passed {
+		t.Fatalf("canceled validation was accepted: %+v, %v", result, err)
 	}
 	assertCandidateClean(t, in)
-}
-
-func TestCandidateValidationUnexpectedCommitStopsWithoutResettingIt(t *testing.T) {
-	in := candidateFixture(t, "Legacy.Save()\n")
-	in.Config.CheckCommands = []model.Command{candidateHelperCommand("commit")}
-	result, err := validateCandidate(context.Background(), in, candidateRequest(in, "Legacy.Save()", "Modern.Save()"))
-	if err == nil || result.Passed || !strings.Contains(err.Error(), "想定外のコミット") {
-		t.Fatalf("unexpected commit did not stop the runner: %+v, %v", result, err)
-	}
-	if got := gitTest(t, in.Worktree, "rev-parse", "HEAD"); got == in.Head {
-		t.Fatal("unknown commit was destructively rolled back")
-	}
-	if got := readTest(t, filepath.Join(in.Config.Root, in.File)); got != string(in.Before) {
-		t.Fatalf("user source changed: %q", got)
-	}
-	var stored model.CandidateValidation
-	if err := json.Unmarshal([]byte(readTest(t, in.Artifact+".candidate-"+result.CandidateID+".validation.json")), &stored); err != nil || stored.Passed {
-		t.Fatalf("failed cleanup retained a passing validation: %+v, %v", stored, err)
-	}
 }
 
 func TestCandidateDiagnosticsAreBoundedAndDoNotInventSourceCoordinates(t *testing.T) {
@@ -273,40 +303,5 @@ func TestCandidateDiagnosticsAreBoundedAndDoNotInventSourceCoordinates(t *testin
 		if len(diagnostic.Message) > 203 || !utf8.ValidString(diagnostic.Message) || diagnostic.Line != 0 || diagnostic.LineBasis != "" || diagnostic.ItemID != "" {
 			t.Fatalf("unbounded or invented diagnostic: %+v", diagnostic)
 		}
-	}
-}
-
-func TestCandidateValidationHelperProcess(t *testing.T) {
-	for i, arg := range os.Args {
-		if arg != "candidate-validation-helper" || i+1 >= len(os.Args) {
-			continue
-		}
-		var err error
-		switch os.Args[i+1] {
-		case "fail":
-			fmt.Fprintln(os.Stderr, "expected assertion failed")
-			os.Exit(2)
-		case "change-target":
-			err = os.WriteFile("src/A.txt", []byte("checker changed proposal\n"), 0600)
-		case "change-other":
-			err = os.WriteFile("src/B.txt", []byte("checker changed sibling\n"), 0600)
-		case "create-other":
-			err = os.WriteFile("src/generated.txt", []byte("checker created file\n"), 0600)
-		case "commit":
-			_, err = git(context.Background(), ".", "add", "src/A.txt")
-			if err == nil {
-				_, err = git(context.Background(), ".", "commit", "-qm", "unexpected checker commit")
-			}
-		case "wait":
-			err = os.WriteFile(os.Args[i+2], []byte("started"), 0600)
-			if err == nil {
-				time.Sleep(30 * time.Second)
-			}
-		}
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(3)
-		}
-		os.Exit(0)
 	}
 }

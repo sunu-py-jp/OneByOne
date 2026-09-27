@@ -38,7 +38,7 @@ type options struct {
 	endpoint, deployment, authMode, rule, connection string
 	output, runID, directory, name                   string
 	files                                            stringList
-	limit, attempt                                   int
+	limit, attempt, concurrency                      int
 	json, all, none, yes                             bool
 	commandArgs                                      []string
 	set                                              map[string]bool
@@ -234,13 +234,21 @@ func prepareCLIWorkspace(s *engine.Service, o options) error {
 		}
 	}
 	if o.connection != "" {
-		_, err := s.SelectLLMConnection(o.connection)
-		return err
-	}
-	if o.set["provider"] || o.set["endpoint"] || o.set["deployment"] || o.set["auth-mode"] {
+		if _, err := s.SelectLLMConnection(o.connection); err != nil {
+			return err
+		}
+	} else if o.set["provider"] || o.set["endpoint"] || o.set["deployment"] || o.set["auth-mode"] {
 		cfg := s.Snapshot().Config
 		applyOptions(&cfg, o)
-		return applyCLIConnection(s, cfg)
+		if err := applyCLIConnection(s, cfg); err != nil {
+			return err
+		}
+	}
+	if o.set["concurrency"] {
+		cfg := s.Snapshot().Config
+		cfg.Concurrency = o.concurrency
+		_, err := s.SaveConfig(cfg)
+		return err
 	}
 	return nil
 }
@@ -395,6 +403,7 @@ func parseOptions(args []string, stdout, stderr io.Writer) (options, bool, error
 		f.StringVar(&o.root, "root", "", "対象フォルダ（新規作成または対象変更）")
 	case "run":
 		f.IntVar(&o.limit, "limit", 0, "処理ファイル数（0で選択した全件）")
+		f.IntVar(&o.concurrency, "concurrency", 0, "並列実行数（1〜10・ワークスペースへ保存。省略時は保存済み設定）")
 	case "retry":
 		f.Var(&o.files, "file", "再試行対象の相対パス（複数指定可能）")
 		f.StringVar(&o.rule, "rule", "", "適用済みルールIDで再試行対象を指定")
@@ -443,6 +452,9 @@ func parseOptions(args []string, stdout, stderr io.Writer) (options, bool, error
 	}
 	if o.limit < 0 {
 		return o, false, errors.New("--limit は0以上で指定してください")
+	}
+	if o.set["concurrency"] && (o.concurrency < 1 || o.concurrency > 10) {
+		return o, false, errors.New("--concurrency は1〜10で指定してください")
 	}
 	if o.set["root"] && strings.TrimSpace(o.root) == "" {
 		return o, false, errors.New("--root が空です")
@@ -602,8 +614,8 @@ func printHelp(w io.Writer) {
 
   workspace  ワークスペースの作成・一覧・選択・変更・削除
   llm        LLM接続の登録・選択・テスト・OAuthサインイン
-  rules      ルールの追加・編集・削除、.oborulesの取り込み・書き出し
-  settings   実行上限・料金・絞り込み・検証コマンドの表示と変更
+  rules      ルールの追加・編集・削除、rules.json・CSVの取り込み、rules.jsonの書き出し
+  settings   並列数・対象ルール・実行上限・料金の表示と変更
   files      対象フォルダまたは実行コピーのファイル一覧・内容
   scan       対象と候補ルールを抽出（選択・履歴を保持）
   selection  --file PATH / --all / --none で処理対象を確定
@@ -629,8 +641,8 @@ func printGroupHelp(w io.Writer, group string) {
 	help := map[string]string{
 		"workspace": "list | create --name NAME --root PATH | select --id ID | rename --name NAME | duplicate --name NAME | delete --id ID --yes | target --root PATH | validate --root PATH",
 		"llm":       "list | save --input JSON_FILE|- | select --id ID | test --id ID | login --id ID | logout --id ID | clear --id ID --yes | delete --id ID --yes",
-		"rules":     "list | show --id ID | create --input JSON_FILE|- | update --input JSON_FILE|- | delete --id ID --yes | import --input FILE.oborules [--mode replace|merge] | export --output FILE.oborules",
-		"settings":  "show | update --input JSON_FILE|-（指定した項目だけ変更。0で上限解除）",
+		"rules":     "list | show --id ID | create --input JSON_FILE|- | update --input JSON_FILE|- | delete --id ID --yes | import --input rules.json|rules.csv [--mode replace|merge] | export --output rules.json",
+		"settings":  "show | update --input JSON_FILE|-（指定した項目だけ変更。concurrencyは1〜10、0で既定2）",
 		"files":     "list | show --file PATH [--source target|execution]",
 		"runs":      "list | show --id EXECUTION_ID",
 		"publish":   "preview | diff --input JSON_FILE|-（workspaceId・revision・file必須） | create --input JSON_FILE|-（workspaceId・revision・branch・title必須）",

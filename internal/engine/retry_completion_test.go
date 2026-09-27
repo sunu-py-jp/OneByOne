@@ -26,8 +26,8 @@ func TestNoAdditionalChangeReflectsRemainingAcceptedChanges(t *testing.T) {
 		t.Run(scenario.name, func(t *testing.T) {
 			const original = "Modern.Save()\n"
 			s, cfg := fixture(t, map[string]string{"A.txt": original})
-			edit := func(before, after string) func(context.Context, agent.Input) (model.Proposal, error) {
-				return func(context.Context, agent.Input) (model.Proposal, error) {
+			edit := func(before, after string) func(_ context.Context, in agent.Input) (model.Proposal, error) {
+				return func(_ context.Context, in agent.Input) (model.Proposal, error) {
 					return model.Proposal{Outcome: "modified", Edits: []model.Edit{{OldText: before, NewText: after}}, RulesApplied: []string{"R001"}, Note: "updated"}, nil
 				}
 			}
@@ -61,8 +61,8 @@ func TestNoAdditionalChangeReflectsRemainingAcceptedChanges(t *testing.T) {
 			if before.Worktree != "" {
 				head = gitTest(t, before.Worktree, "rev-parse", "HEAD")
 			}
-			s.propose = func(context.Context, agent.Input) (model.Proposal, error) {
-				return model.Proposal{Outcome: "skipped", RulesApplied: []string{"R001"}, Note: "no additional changes"}, nil
+			s.propose = func(_ context.Context, in agent.Input) (model.Proposal, error) {
+				return reviewedNoChangeProposal(t, in, "no additional changes")
 			}
 			st := runTest(t, s, 0)
 			task := st.Tasks[0]
@@ -105,7 +105,7 @@ func TestAcceptedChangesDoNotHideRetryFailureOrHumanReview(t *testing.T) {
 			if _, err := s.RetryTasks([]string{"A.txt"}); err != nil {
 				t.Fatal(err)
 			}
-			s.propose = func(context.Context, agent.Input) (model.Proposal, error) {
+			s.propose = func(_ context.Context, in agent.Input) (model.Proposal, error) {
 				return model.Proposal{Outcome: outcome, Note: "cannot complete this retry"}, nil
 			}
 			st := runTest(t, s, 0)

@@ -112,7 +112,7 @@ export function DeleteConfirmation({
             ? "このファイルの作業コピーを、最初の処理を始める前の内容に戻し、再試行に追加します。過去の試行・差分・料金の記録は残ります。"
             : kind === "workspace"
             ? "このワークスペースを一覧から削除します。処理対象フォルダとソースファイルは削除されません。"
-            : "このルールをワークスペースから削除します。実行済みの結果と元のルールパッケージは保持されます。"}
+            : "このルールをワークスペースから削除します。実行済みの結果と読み込み元のルールファイルは保持されます。"}
         </p>
         {error && <p className="delete-confirmation-error" role="alert">{error}</p>}
         <div className="delete-confirmation-actions">

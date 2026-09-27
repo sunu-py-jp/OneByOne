@@ -1,8 +1,3 @@
-export interface Command {
-  name: string;
-  executable: string;
-  args: string[];
-}
 export interface TargetFileList {
   workspaceId: string;
   root: string;
@@ -19,12 +14,12 @@ export interface TargetFileContent {
   unavailableReason: string;
 }
 export interface Config {
+  concurrency: number;
   llmConnectionId?: string;
   provider: "openai" | "azure" | "claude";
   root: string;
   rulesPath: string;
-  rulePackageName: string;
-  legacyPath: string;
+  excludedRuleIds?: string[];
   queuePath: string;
   rgPath: string;
   endpoint: string;
@@ -32,9 +27,6 @@ export interface Config {
   authMode: string;
   credential: string;
   credentialSet: boolean;
-  includeGlobs: string[];
-  excludeGlobs: string[];
-  checkCommands: Command[];
   maxAttempts: number;
   maxTurns: number;
   maxOutputTokens: number;
@@ -46,12 +38,9 @@ export interface Config {
   outputPricePerMillion: number;
 }
 export interface RuleContent {
-  overview: string;
-  before: string;
-  after: string;
-  notes: string;
-  holdConditions: string;
-  pattern: string;
+  pathPattern: string;
+  contentPattern: string;
+  body: string;
 }
 export interface Rule extends RuleContent {
   id: string;
@@ -64,6 +53,7 @@ export interface Rule extends RuleContent {
 export interface RuleEdit extends RuleContent {
   id: string;
   name: string;
+  description: string;
   expectedRevision?: string;
 }
 export interface RuleEditor {
@@ -93,10 +83,11 @@ export interface IndependentReview {
   baseHash: string;
   candidateHash: string;
   planRevision: number;
-  verdict: "passed" | "needs_changes" | "needs_human" | "running" | "error";
+  verdict: "passed" | "passed_with_holds" | "needs_changes" | "needs_human" | "running" | "error";
   summary: string;
   assessments: { ruleId: string; status: string; reason: string }[];
-  issues: { ruleId: string; location: string; lineBasis: "before" | "after"; excerpt: string; reason: string; requestedChange: string }[];
+  issues: { ruleId: string; kind?: "needs_changes" | "needs_human"; location: string; lineBasis: "before" | "after"; startLine?: number; endLine?: number; excerpt: string; reason: string; requestedChange: string }[];
+  holdAssessments?: { itemId: string; status: "preserved" | "unsafe"; reason: string }[];
   usage: Usage;
   startedAt: string;
   finishedAt: string;
@@ -108,6 +99,7 @@ export interface ChangeLineRange {
   afterEnd: number;
 }
 export interface ChangeReportItem {
+  attributionVersion?: number;
   sourceAttemptId?: string;
   origin?: "latest" | "previous" | "mixed";
   lineRanges?: ChangeLineRange[];
@@ -134,6 +126,7 @@ export interface Attempt {
   usage: Usage;
   diffPath: string;
   commit: string;
+  partial?: boolean;
   repairPath?: string;
   reviews?: IndependentReview[];
   changes?: ChangeReportItem[];
@@ -213,6 +206,7 @@ export interface ExecutionRunResult {
 }
 export interface ResultPublicationFile {
   file: string;
+  linkPath?: string;
   rulesApplied: string[];
   summary: string;
   diff?: string;
@@ -260,6 +254,8 @@ export interface State {
   running: boolean;
   phase: string;
   currentFile: string;
+  currentFiles: string[];
+  filePhases: Record<string, string>;
   worktree: string;
   branch: string;
   scannedCount: number;
@@ -299,8 +295,7 @@ export interface Backend {
   DeleteRule(id: string): Promise<State>;
   GetState(): Promise<State>;
   SaveConfig(config: Config): Promise<State>;
-  ChooseDirectory(kind: "root" | "demo" | "rules"): Promise<string>;
-  ChooseLegacy(): Promise<string>;
+  ChooseDirectory(kind: "root" | "demo"): Promise<string>;
   ChooseRulePackage(): Promise<string>;
   ImportRulePackage(path: string, mode: "replace" | "merge"): Promise<State>;
   ExportRulePackage(): Promise<string>;
@@ -342,12 +337,14 @@ export const emptyLLMConnection: LLMConnection = {
   authMode: "api_key", credential: "", credentialSet: false,
   oauthTenantId: "", oauthClientId: "", oauthUsername: "", oauthSignedIn: false,
 };
+export function normalizeConcurrency(value: number | undefined): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.min(10, Math.max(1, Math.trunc(value))) : 2;
+}
 export const defaultConfig: Config = {
+  concurrency: 2,
   provider: "azure",
   root: "",
   rulesPath: "",
-  rulePackageName: "",
-  legacyPath: "",
   queuePath: "",
   rgPath: "",
   endpoint: "",
@@ -355,15 +352,6 @@ export const defaultConfig: Config = {
   authMode: "api_key",
   credential: "",
   credentialSet: false,
-  includeGlobs: [],
-  excludeGlobs: [
-    ".git/**",
-    "node_modules/**",
-    "vendor/**",
-    "dist/**",
-    "build/**",
-  ],
-  checkCommands: [],
   maxAttempts: 0,
   maxTurns: 0,
   maxOutputTokens: 0,
@@ -396,6 +384,8 @@ export const emptyState: State = {
   running: false,
   phase: "idle",
   currentFile: "",
+  currentFiles: [],
+  filePhases: {},
   worktree: "",
   branch: "",
   scannedCount: 0,
@@ -433,10 +423,10 @@ export function normalizeState(state: State): State {
     config: {
       ...defaultConfig,
       ...state.config,
-      includeGlobs: state.config?.includeGlobs || [],
-      excludeGlobs: state.config?.excludeGlobs || [],
-      checkCommands: state.config?.checkCommands || [],
+      concurrency: normalizeConcurrency(state.config?.concurrency),
     },
+    currentFiles: state.currentFiles || [],
+    filePhases: state.filePhases || {},
     workspaces: state.workspaces || [],
     llmConnections: (state.llmConnections || []).map((connection) => ({
       ...emptyLLMConnection,

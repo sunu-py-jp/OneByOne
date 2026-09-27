@@ -48,8 +48,6 @@ func TestTargetFilesBrowseOriginalDirtyRootWithoutRulesOrQueue(t *testing.T) {
 	s.mu.Lock()
 	s.state.Worktree = worktree
 	s.meta.Worktree = worktree
-	s.state.Config.IncludeGlobs = []string{"*.not-a-source-extension"}
-	s.state.Config.ExcludeGlobs = []string{"**"}
 	s.state.Running = true // Reading is safe during execution and in read-only mode.
 	s.state.ReadOnly = true
 	s.mu.Unlock()

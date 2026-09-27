@@ -1,7 +1,5 @@
 .rule-preview-pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; border-left: 1px solid var(--line); background: #fff; }
 .rule-preview-header { display: flex; align-items: center; gap: 7px; flex: none; min-height: 38px; padding: 5px 10px; border-bottom: 1px solid var(--line); background: #fafbfe; font-size: 11px; }
-.rule-preview-kind { display: flex; flex: none; color: var(--accent); }
-.rule-preview-kind.is-common { color: #609788; }
 .rule-preview-id { flex: none; color: var(--accent); font-weight: 600; }
 .rule-preview-header > strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; color: #4e566d; }
 .rule-preview-header > .icon-button { flex: none; margin-left: auto; width: 26px; height: 26px; }
@@ -19,3 +17,6 @@
 .rule-preview-comparison > svg { align-self: center; color: #a39cb8; transform: rotate(90deg); }
 .rule-preview-message { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; flex: 1; min-width: 0; min-height: 90px; padding: 20px; color: #939caf; font-size: 12px; text-align: center; overflow-wrap: anywhere; }
 .rule-preview-message.is-error { color: #b04d59; }
+
+.rule-preview-description { margin: 0 0 16px; color: #727b90; font-size: 12px; line-height: 1.65; white-space: pre-wrap; }
+.rule-preview-patterns { margin-top: 20px; padding-top: 12px; border-top: 1px solid var(--line); }

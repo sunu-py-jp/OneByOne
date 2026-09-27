@@ -14,15 +14,43 @@ import (
 // The review is invoked after the editor submits its final candidate. Reviewer
 // messages are never part of the editor's history; only a rejection is returned.
 func reviewFinal(ctx context.Context, in Input, state *model.RepairState, final model.Proposal, checkpoint, reserveElapsed func() error) (model.Proposal, bool, error) {
-	if final.Outcome != "modified" {
+	if final.Outcome != "modified" && final.Outcome != "skipped" {
 		return final, true, nil
 	}
+	if final.Outcome == "skipped" {
+		if err := noChangePlan(state.Plan, in); err != nil {
+			return model.Proposal{}, false, err
+		}
+		if !currentNoChangeCandidate(state.LastCandidate, state.Plan, in.BaseHash) {
+			id, err := repairRequestID()
+			if err != nil {
+				return model.Proposal{}, false, &fatalError{err}
+			}
+			state.LastCandidate = &model.CandidateRecord{
+				NoChange: true,
+				Request:  model.CandidateRequest{PlanRevision: state.Plan.Revision, BaseHash: in.BaseHash, Edits: []model.Edit{}, AddressedItemIDs: []string{}},
+				Result:   model.CandidateValidation{CandidateID: id, CandidateHash: in.BaseHash, PlanRevision: state.Plan.Revision, Passed: true, Checks: []model.Check{}},
+			}
+		}
+		// The public final schema keeps candidateId empty for skipped. The harness
+		// attaches the review identity for the adoption gate and durable recovery.
+		final.CandidateID = state.LastCandidate.Result.CandidateID
+	}
 	candidate := state.LastCandidate
-	if candidate == nil || !candidate.Result.Passed || candidate.Result.CandidateID != final.CandidateID || candidate.Request.PlanRevision != state.Plan.Revision || candidate.Result.PlanRevision != state.Plan.Revision || candidate.Request.BaseHash != in.BaseHash {
-		return model.Proposal{}, false, errors.New("Independent review requires the current mechanically validated candidate")
+	if candidate == nil || (!candidate.NoChange && candidate.Result.AttributionVersion != model.LineAttributionVersion) || candidate.NoChange != (final.Outcome == "skipped") || !candidate.Result.Passed || candidate.Result.CandidateID != final.CandidateID || candidate.Request.PlanRevision != state.Plan.Revision || candidate.Result.PlanRevision != state.Plan.Revision || candidate.Request.BaseHash != in.BaseHash {
+		return model.Proposal{}, false, errors.New("Independent review requires the current validated edit or unchanged-source review target")
+	}
+	holds, err := CandidateHolds(state.Plan)
+	if err != nil {
+		return model.Proposal{}, false, err
+	}
+	if !candidate.NoChange {
+		if err := CheckCandidateHolds(state.Plan, candidate.Request, in.Content); err != nil {
+			return model.Proposal{}, false, err
+		}
 	}
 	if candidate.Review != nil && candidate.Review.Verdict != "running" && candidate.Review.Verdict != "error" {
-		return reviewedOutcome(final, candidate)
+		return reviewedOutcome(final, candidate, state.Plan, in.Content)
 	}
 	limit := in.Config.MaxAttempts
 	if limit > 0 && in.BudgetBaseline.used(*state).ReviewCount >= limit {
@@ -31,9 +59,13 @@ func reviewFinal(ctx context.Context, in Input, state *model.RepairState, final 
 	if in.Config.MaxTurns > 0 && in.BudgetBaseline.used(*state).Turns >= in.Config.MaxTurns {
 		return model.Proposal{}, false, fmt.Errorf("独立レビューを実行するための残りターンがありません: %w", TurnLimitError(in.BudgetBaseline.used(*state).Turns, in.Config.MaxTurns))
 	}
-	after, err := reviewCandidateText(in.Content, candidate.Request.Edits)
-	if err != nil {
-		return model.Proposal{}, false, err
+	after := in.Content
+	if !candidate.NoChange {
+		var err error
+		after, err = reviewCandidateText(in.Content, candidate.Request.Edits)
+		if err != nil {
+			return model.Proposal{}, false, err
+		}
 	}
 	rules, err := reviewRules(in, state.Plan)
 	if err != nil {
@@ -66,7 +98,7 @@ func reviewFinal(ctx context.Context, in Input, state *model.RepairState, final 
 	if in.Log != nil {
 		in.Log("独立レビューを開始します")
 	}
-	result, reviewErr := reviewer(ctx, ReviewInput{Config: in.Config, File: in.File, Before: in.Content, After: after, BaseHash: in.BaseHash, CandidateHash: candidate.Result.CandidateHash, Rules: rules, Usage: state.Usage, TurnBaseline: in.BudgetBaseline.Turns, Log: in.Log,
+	result, reviewErr := reviewer(ctx, ReviewInput{Config: in.Config, File: in.File, Before: in.Content, After: after, BaseHash: in.BaseHash, CandidateHash: candidate.Result.CandidateHash, Rules: rules, Holds: holds, Usage: state.Usage, TurnBaseline: in.BudgetBaseline.Turns, Log: in.Log,
 		BeforeRequest: func(requestID string) error {
 			state.ReviewCount++
 			state.Usage.Turns++
@@ -98,7 +130,7 @@ func reviewFinal(ctx context.Context, in Input, state *model.RepairState, final 
 		}
 		return model.Proposal{}, false, reviewErr
 	}
-	record.Verdict, record.Summary, record.Assessments, record.Issues = result.Verdict, result.Summary, result.Assessments, result.Issues
+	record.Verdict, record.Summary, record.Assessments, record.Issues, record.HoldAssessments = result.Verdict, result.Summary, result.Assessments, result.Issues, result.HoldAssessments
 	publish()
 	if err := checkpoint(); err != nil {
 		return model.Proposal{}, false, err
@@ -106,7 +138,31 @@ func reviewFinal(ctx context.Context, in Input, state *model.RepairState, final 
 	if in.Log != nil {
 		in.Log("独立レビュー: " + record.Verdict)
 	}
-	return reviewedOutcome(final, candidate)
+	return reviewedOutcome(final, candidate, state.Plan, in.Content)
+}
+
+func currentNoChangeCandidate(candidate *model.CandidateRecord, plan model.RepairPlan, baseHash string) bool {
+	return candidate != nil && candidate.NoChange && candidate.Result.Passed && candidate.Result.CandidateID != "" && candidate.Request.BaseHash == baseHash && candidate.Result.CandidateHash == baseHash && candidate.Request.PlanRevision == plan.Revision && candidate.Result.PlanRevision == plan.Revision && len(candidate.Request.Edits) == 0 && len(candidate.Request.AddressedItemIDs) == 0
+}
+
+func noChangePlan(plan model.RepairPlan, in Input) error {
+	if plan.Revision < 1 || len(plan.Items) != 0 || len(plan.RuleDecisions) != len(in.Rules) {
+		return errors.New("Unchanged-source review requires a complete no_change plan with no edit items")
+	}
+	wanted := map[string]bool{}
+	for _, rule := range in.Rules {
+		wanted[rule.ID] = true
+	}
+	for _, decision := range plan.RuleDecisions {
+		if !wanted[decision.RuleID] || decision.Decision != "no_change" || strings.TrimSpace(decision.Reason) == "" {
+			return errors.New("Unchanged-source review requires a no_change decision for every applicable rule")
+		}
+		delete(wanted, decision.RuleID)
+	}
+	if len(wanted) != 0 {
+		return errors.New("Unchanged-source review is missing applicable rules")
+	}
+	return nil
 }
 
 // Plan updates and replacement candidates cannot erase an unresolved review.
@@ -118,17 +174,32 @@ func hasUnresolvedReview(state model.RepairState) bool {
 	return state.LastCandidate != nil && state.LastCandidate.Review != nil && state.LastCandidate.Review.Verdict != "passed"
 }
 
-func reviewedOutcome(final model.Proposal, candidate *model.CandidateRecord) (model.Proposal, bool, error) {
+func reviewedOutcome(final model.Proposal, candidate *model.CandidateRecord, plan model.RepairPlan, original string) (model.Proposal, bool, error) {
 	r := candidate.Review
 	if r == nil || r.ID == "" || r.CandidateID != candidate.Result.CandidateID || r.BaseHash != candidate.Request.BaseHash || r.CandidateHash != candidate.Result.CandidateHash || r.PlanRevision != candidate.Request.PlanRevision {
 		return model.Proposal{}, false, errors.New("Independent review does not match the current candidate")
 	}
 	switch r.Verdict {
 	case "passed":
+		holds, err := CandidateHolds(plan)
+		if err != nil || len(holds) != 0 {
+			return model.Proposal{}, false, errors.New("Independent review cannot clear declared human holds with passed")
+		}
+		return final, true, nil
+	case "passed_with_holds":
+		if candidate.NoChange {
+			return model.Proposal{}, false, errors.New("partial approval requires a modified candidate")
+		}
+		if err := CheckPartialReview(*r, plan); err != nil {
+			return model.Proposal{}, false, err
+		}
 		return final, true, nil
 	case "needs_changes":
 		return final, false, nil
 	case "needs_human":
+		if canReplanReviewHold(*r, candidate, original) {
+			return final, false, nil
+		}
 		return model.Proposal{Outcome: "needs_human", Note: "独立レビューで判断保留: " + r.Summary}, true, nil
 	default:
 		return model.Proposal{}, false, errors.New("Independent review has not passed")
@@ -141,7 +212,7 @@ func reviewFeedback(state model.RepairState) string {
 	}
 	r := state.LastCandidate.Review
 	// Never feed the reviewer its predecessor's findings. Only the editor sees this.
-	return "Independent review requests changes. Inspect each issue, update the plan if necessary, validate a NEW complete original-based candidate, and submit that candidate. You cannot reuse this rejected candidate.\n" + string(raw(map[string]any{"verdict": r.Verdict, "summary": r.Summary, "assessments": r.Assessments, "issues": r.Issues}))
+	return "Independent review requests changes. Inspect each issue. Preserve localized human holds as blocked items with original sourceLocations and holdReason, and continue all independent safe edits. If a held location was changed by the rejected candidate, restore its original code in the NEW complete original-based candidate. Correct repairable findings even when human holds also exist. If the hold genuinely prevents any safe subset or concerns the entire file, record that blocker and return needs_human. Validate and submit a NEW candidate; you cannot reuse this rejected candidate.\n" + string(raw(map[string]any{"verdict": r.Verdict, "summary": r.Summary, "assessments": r.Assessments, "issues": r.Issues}))
 }
 
 func reviewRules(in Input, plan model.RepairPlan) ([]ReviewRule, error) {

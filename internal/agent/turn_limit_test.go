@@ -128,7 +128,7 @@ func TestTurnLimitReportsOnlyUncorrectedValidationRejection(t *testing.T) {
 			validations := 0
 			in.ValidateCandidate = func(_ context.Context, req model.CandidateRequest) (model.CandidateValidation, error) {
 				validations++
-				result := model.CandidateValidation{CandidateID: fmt.Sprintf("C%d", validations), PlanRevision: req.PlanRevision, Passed: validations == 2}
+				result := model.CandidateValidation{AttributionVersion: model.LineAttributionVersion, CandidateID: fmt.Sprintf("C%d", validations), PlanRevision: req.PlanRevision, Passed: validations == 2}
 				if !result.Passed {
 					result.Diagnostics = []model.CandidateDiagnostic{{Message: "Modern.Flush must run after saving"}}
 				}

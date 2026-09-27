@@ -29,8 +29,8 @@ func TestExecutionHistoryKeepsTargetsAndResultsAtTheirExecutionBoundary(t *testi
 	if run1.State.Tasks[0].History[0].ExecutionID != id1 {
 		t.Fatal("attempt was not associated with its execution")
 	}
-	s.propose = func(context.Context, agent.Input) (model.Proposal, error) {
-		return model.Proposal{Outcome: "skipped", Note: "Already compliant"}, nil
+	s.propose = func(_ context.Context, in agent.Input) (model.Proposal, error) {
+		return reviewedNoChangeProposal(t, in, "Already compliant")
 	}
 	second := runTest(t, s, 0)
 	id2 := second.ExecutionRuns[1].ID
@@ -140,7 +140,9 @@ func TestExecutionHistorySeparatesExplicitResumeWithSameAttemptID(t *testing.T) 
 func TestExecutionHistoryRecordsPreparationFailureStopAndInterruptedRestart(t *testing.T) {
 	t.Run("preparation failure", func(t *testing.T) {
 		s, cfg := fixture(t, map[string]string{"A.txt": "Legacy.Save()\n"})
-		writeTest(t, filepath.Join(cfg.RulesPath, "R001", "rule.json"), []byte("invalid json"))
+		// Invalid rules are rejected before Start; an uncommitted source fails
+		// while the execution prepares its isolated worktree.
+		writeTest(t, filepath.Join(cfg.Root, "untracked.txt"), []byte("not committed\n"))
 		st := runTest(t, s, 0)
 		if len(st.ExecutionRuns) != 1 || st.ExecutionRuns[0].Status != "failed" || st.ExecutionRuns[0].Error == "" {
 			t.Fatalf("preparation failure disappeared: %+v", st.ExecutionRuns)
@@ -196,10 +198,10 @@ func TestExecutionHistoryRecordsPreparationFailureStopAndInterruptedRestart(t *t
 func TestExecutionHistoryArchiveFailureBlocksMutationsUntilSaved(t *testing.T) {
 	s, cfg := fixture(t, map[string]string{"A.txt": "Modern.Save()\n"})
 	entered, release := make(chan struct{}), make(chan struct{})
-	s.propose = func(context.Context, agent.Input) (model.Proposal, error) {
+	s.propose = func(_ context.Context, in agent.Input) (model.Proposal, error) {
 		close(entered)
 		<-release
-		return model.Proposal{Outcome: "skipped", Note: "Compliant"}, nil
+		return reviewedNoChangeProposal(t, in, "Compliant")
 	}
 	if err := s.Start(0); err != nil {
 		t.Fatal(err)

@@ -24,6 +24,7 @@ func copyReviews(reviews []model.IndependentReview) []model.IndependentReview {
 	for i := range out {
 		out[i].Assessments = append([]model.ReviewAssessment{}, out[i].Assessments...)
 		out[i].Issues = append([]model.ReviewIssue{}, out[i].Issues...)
+		out[i].HoldAssessments = append([]model.ReviewHoldAssessment(nil), out[i].HoldAssessments...)
 	}
 	return out
 }

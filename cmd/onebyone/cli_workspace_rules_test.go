@@ -42,7 +42,7 @@ func workspaceRulesCreate(t *testing.T, s *engine.Service, root string) model.St
 }
 
 func workspaceRulesEdit() model.RuleEdit {
-	return model.RuleEdit{ID: "R001", Name: "Preserve behavior", Overview: "Keep observable behavior while updating the storage API.", Before: "client.save(value)", After: "await client.write(value)", Notes: "Preserve call order.", HoldConditions: "An external caller must change.", Pattern: ""}
+	return model.RuleEdit{ID: "R001", Name: "Preserve behavior", Description: "Keep observable behavior while updating the storage API.", Body: "# Transform\n\nclient.save -> await client.write\n\n# Hold\n\nAn external caller must change."}
 }
 
 func workspaceRulesJSON(t *testing.T, value any) *bytes.Reader {
@@ -141,7 +141,7 @@ func TestCLIWorkspaceRulesRouterPreflightDoesNotChangeGlobalSelection(t *testing
 		{"workspace", "rename", "--name", "no", "unexpected"},
 		{"rules", "delete", "--id", "R001", "--yes", "--unknown"},
 		{"rules", "create", "--input", "-", "unexpected"},
-		{"rules", "import", "--input", "missing.oborules", "--mode", "invalid"},
+		{"rules", "import", "--input", "missing.json", "--mode", "invalid"},
 		{"rules", "list", "--help=false"},
 	} {
 		var out, logs bytes.Buffer
@@ -243,7 +243,7 @@ func TestCLIRulesImportRequiresModeAndMergesConflictingIDs(t *testing.T) {
 	if _, err := executeRulesCommand(ctx, s, []string{"create", "--input", "-"}, workspaceRulesJSON(t, edit)); err != nil {
 		t.Fatal(err)
 	}
-	archive := filepath.Join(base, "rules.oborules")
+	archive := filepath.Join(base, "rules.json")
 	result, err := executeRulesCommand(ctx, s, []string{"export", "--output", archive}, nil)
 	if err != nil || result.(map[string]string)["path"] == "" {
 		t.Fatalf("export failed: %v", err)
@@ -277,10 +277,12 @@ func TestCLIRulesDeleteCanRepairWorkspaceWithInvalidRule(t *testing.T) {
 	if _, err := executeRulesCommand(ctx, s, []string{"create", "--input", "-"}, workspaceRulesJSON(t, edit)); err != nil {
 		t.Fatal(err)
 	}
-	badRule := filepath.Join(s.Snapshot().Config.RulesPath, edit.ID, "rule.json")
-	if err := os.WriteFile(badRule, []byte(`{"version":999,"name":"invalid rule"}`), 0600); err != nil {
+	badRule := s.Snapshot().Config.RulesPath
+	data, _ := json.Marshal(map[string]any{"rules": []string{"---\nid: R001\nname: Broken\ndescription: \n---\n"}})
+	if err := os.WriteFile(badRule, data, 0600); err != nil {
 		t.Fatal(err)
 	}
+
 	s.Close()
 	reopened := engine.New(filepath.Join(base, "app", "settings.json"))
 	defer reopened.Close()
@@ -290,7 +292,8 @@ func TestCLIRulesDeleteCanRepairWorkspaceWithInvalidRule(t *testing.T) {
 	if _, err := executeRulesCommand(ctx, reopened, []string{"delete", "--id", edit.ID, "--yes"}, nil); err != nil {
 		t.Fatalf("workspace diagnostic prevented deleting the invalid rule: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(reopened.Snapshot().Config.RulesPath, edit.ID)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("invalid rule remains in the active package: %v", err)
+	if len(reopened.Snapshot().Rules) != 0 {
+		t.Fatal("invalid rule remains")
 	}
+
 }
