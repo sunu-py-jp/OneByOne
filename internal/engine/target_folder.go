@@ -122,6 +122,9 @@ func (s *Service) ChangeTargetFolder(root string) (model.State, error) {
 	index := -1
 	for i, item := range items {
 		if item.ID == id {
+			if item.LoadError != nil {
+				return s.Snapshot(), item.LoadError
+			}
 			index = i
 		}
 	}

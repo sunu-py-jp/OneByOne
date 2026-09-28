@@ -97,7 +97,7 @@ func TestLiveCandidateRequiresAttributionAndCanRepairWithoutValidationCharge(t *
 
 func TestCandidateToolRequiresPerEditItemIDs(t *testing.T) {
 	for _, tool := range toolDefinitions() {
-		if tool["name"] != "validate_candidate" {
+		if tool["name"] != "stage_edits" {
 			continue
 		}
 		props := tool["parameters"].(map[string]any)["properties"].(map[string]any)
@@ -107,7 +107,7 @@ func TestCandidateToolRequiresPerEditItemIDs(t *testing.T) {
 		}
 		return
 	}
-	t.Fatal("validate_candidate tool missing")
+	t.Fatal("stage_edits tool missing")
 }
 
 func TestCandidateFragmentAttributionRequiresCoverageAndNoDuplicateClaims(t *testing.T) {
@@ -171,7 +171,7 @@ func TestLegacyAttributionCandidateIsRebuiltWithinSameRun(t *testing.T) {
 		history := requestHistory(t, r)
 		switch calls {
 		case 0:
-			if !strings.Contains(fmt.Sprint(history), "attributionUpgrade") || state.LastCandidate != nil || state.Plan.Revision != 1 || state.Usage.InputTokens != 200 || state.ValidationCount != 1 {
+			if !strings.Contains(fmt.Sprint(history), "Previous attribution was obsolete") || state.LastCandidate != nil || state.Plan.Revision != 1 || state.Usage.InputTokens != 200 || state.ValidationCount != 1 {
 				t.Errorf("old candidate did not resume with preserved state: %+v", state)
 			}
 			respond(w, testCall("revalidate", "validate_candidate", testCandidate()))
@@ -185,7 +185,6 @@ func TestLegacyAttributionCandidateIsRebuiltWithinSameRun(t *testing.T) {
 	}))
 	defer srv.Close()
 	in := testInput(srv.URL)
-	in.Config.MaxTurns = 10
 	in.RepairState = &state
 	in.SaveRepairState = func(saved model.RepairState) error { state = saved; return nil }
 	validate := in.ValidateCandidate
@@ -220,7 +219,7 @@ func TestFailedUnversionedCandidateKeepsDiagnosticsOnResume(t *testing.T) {
 		history := requestHistory(t, r)
 		switch calls {
 		case 0:
-			if state.LastCandidate == nil || state.LastCandidate.Result.CandidateID != "failed" || !strings.Contains(fmt.Sprint(history), "exact fragment did not match") || strings.Contains(fmt.Sprint(history), "attributionUpgrade") {
+			if state.LastCandidate == nil || state.LastCandidate.Result.CandidateID != "failed" || !strings.Contains(fmt.Sprint(history), "exact fragment did not match") || strings.Contains(fmt.Sprint(history), "Previous attribution was obsolete") {
 				t.Errorf("failed candidate lost its diagnostics: history=%v candidate=%+v", history, state.LastCandidate)
 			}
 			respond(w, testCall("corrected", "validate_candidate", testCandidate()))

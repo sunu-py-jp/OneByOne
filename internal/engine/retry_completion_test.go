@@ -105,14 +105,19 @@ func TestAcceptedChangesDoNotHideRetryFailureOrHumanReview(t *testing.T) {
 			if _, err := s.RetryTasks([]string{"A.txt"}); err != nil {
 				t.Fatal(err)
 			}
+			calls := 0
 			s.propose = func(_ context.Context, in agent.Input) (model.Proposal, error) {
-				return model.Proposal{Outcome: outcome, Note: "cannot complete this retry"}, nil
+				calls++
+				if outcome == "invalid" && calls == 1 {
+					return model.Proposal{Outcome: "invalid", Note: "malformed injected proposal"}, nil
+				}
+				return model.Proposal{Outcome: "needs_human", Note: "External API contract needs confirmation."}, nil
 			}
 			st := runTest(t, s, 0)
 			task := st.Tasks[0]
 			wantAttempt := "needs_human"
-			if outcome == "invalid" {
-				wantAttempt = "failed"
+			if outcome == "invalid" && (calls != 2 || len(task.History) < 3 || task.History[len(task.History)-2].Outcome != "failed") {
+				t.Fatalf("failed retry was lost before the terminal human blocker: %+v", task.History)
 			}
 			if st.LastError != "" || task.Status != "needs_human" || !task.CanDiscardChanges || task.History[len(task.History)-1].Outcome != wantAttempt || !reflect.DeepEqual(task.History[0], before.Tasks[0].History[0]) {
 				t.Fatalf("previously accepted changes concealed the retry problem: %+v", task)

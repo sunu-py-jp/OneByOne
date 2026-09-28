@@ -327,7 +327,7 @@ func (s *Service) recover(ctx context.Context) error {
 			}
 			if h.InputHash != "" {
 				rel := filepath.ToSlash(filepath.Join(m.SourceRelative, t.File))
-				data, err := readSnapshotFile(ctx, m.Worktree, head, rel, m.Config.EffectiveMaxFileBytes())
+				data, err := readSnapshotFile(ctx, m.Worktree, head, rel)
 				if err != nil || digest(data) != h.InputHash {
 					return fmt.Errorf("中断後に対象ファイルが変更されています: %s", t.File)
 				}
@@ -338,9 +338,6 @@ func (s *Service) recover(ctx context.Context) error {
 			h.Note = "前回の処理が中断しました。APIの未報告使用量がある可能性があります"
 			t.Status = "needs_human"
 			t.Note = h.Note
-			if m.Config.MaxCostUSD > 0 {
-				t.Status = "needs_human"
-			}
 			if h.RepairPath != "" {
 				checkpoint, err := loadRepairCheckpoint(m.Config, h)
 				if err != nil {
@@ -360,7 +357,7 @@ func (s *Service) recover(ctx context.Context) error {
 					}
 				}
 				h.Reviews = copyReviews(checkpoint.State.Reviews)
-				h.Note = "処理が中断しました。再実行を指定すると保存済みの計画から復帰します（計画・履歴を保持し、次の実行の処理上限は0から数えます）"
+				h.Note = "処理が中断しました。再実行を指定すると保存済みの計画から復帰します（計画・編集案・履歴を保持します）"
 				if h.Usage.Uncertain {
 					h.Note += "。応答待ちだったAPIの使用量は未確認です"
 				}

@@ -167,8 +167,7 @@ func TestWorkspaceRestoresAllSettingsWithoutPlaintextConnection(t *testing.T) {
 	}
 	cfg := created.Config
 	cfg.RGPath = filepath.Join(t.TempDir(), "custom-rg") // Restoration must not execute this path.
-	cfg.MaxAttempts, cfg.MaxTurns, cfg.MaxOutputTokens, cfg.MaxFileBytes, cfg.TimeoutSeconds = 2, 8, 4096, 65536, 120
-	cfg.MaxCostUSD, cfg.InputPricePerMillion, cfg.CachedInputPricePerMillion, cfg.OutputPricePerMillion = 0.5, 2.5, 0.25, 10
+	cfg.InputPricePerMillion, cfg.CachedInputPricePerMillion, cfg.OutputPricePerMillion = 2.5, 0.25, 10
 	saved, err := s.SaveConfig(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -298,9 +297,9 @@ func TestWorkspaceTargetAndQueueRemainIndependent(t *testing.T) {
 		"cleared queue":         "",
 	} {
 		cfg := second.Config
-		cfg.QueuePath, cfg.MaxTurns = path, 14
+		cfg.QueuePath, cfg.InputPricePerMillion = path, 14
 		saved, err := s.SaveConfig(cfg)
-		if err != nil || saved.Config.QueuePath != second.Config.QueuePath || saved.Config.MaxTurns != 14 {
+		if err != nil || saved.Config.QueuePath != second.Config.QueuePath || saved.Config.InputPricePerMillion != 14 {
 			t.Fatalf("%s should preserve the managed queue and save unrelated settings: %v", name, err)
 		}
 	}
@@ -362,20 +361,20 @@ func TestWorkspaceKeepsExistingQueueAndHistoryAcrossSettingsSave(t *testing.T) {
 	}
 	assertHistory(selected)
 	selected.Config.QueuePath = other.Config.QueuePath
-	selected.Config.MaxTurns = 18
+	selected.Config.InputPricePerMillion = 18
 	saved, err := s.SaveConfig(selected.Config)
-	if err != nil || saved.Config.MaxTurns != 18 {
+	if err != nil || saved.Config.InputPricePerMillion != 18 {
 		t.Fatalf("unrelated workspace setting was not saved: %v", err)
 	}
 	assertHistory(saved)
 	_, stored, err := s.readWorkspaceSetting(created.ActiveWorkspaceID)
-	if err != nil || stored.QueuePath != cfg.QueuePath || stored.MaxTurns != 18 {
+	if err != nil || stored.QueuePath != cfg.QueuePath || stored.InputPricePerMillion != 18 {
 		t.Fatalf("workspace file did not retain queue ownership: %v", err)
 	}
 	s.Close()
 	reloaded := workspaceNewService(t, s.configPath)
 	restored := reloaded.Snapshot()
-	if restored.LastError != "" || restored.ActiveWorkspaceID != created.ActiveWorkspaceID || restored.Config.MaxTurns != 18 {
+	if restored.LastError != "" || restored.ActiveWorkspaceID != created.ActiveWorkspaceID || restored.Config.InputPricePerMillion != 18 {
 		t.Fatalf("workspace restart failed: %s", restored.LastError)
 	}
 	assertHistory(restored)

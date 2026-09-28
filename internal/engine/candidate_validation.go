@@ -91,9 +91,9 @@ func validateCandidate(ctx context.Context, in candidateValidationInput, request
 		result.Checks = append(result.Checks, model.Check{Name: "変更案の適用", Status: "failed", Detail: err.Error()})
 		return result, nil
 	}
-	after := original.encode(afterText)
-	if len(after) > in.Config.EffectiveMaxFileBytes() {
-		result.Checks = append(result.Checks, model.Check{Name: "ファイルサイズ", Status: "failed", Detail: "修正後のファイルがサイズ上限を超えています"})
+	after, err := original.encode(afterText, request.Edits)
+	if err != nil {
+		result.Checks = append(result.Checks, model.Check{Name: "文字コードの保持", Status: "failed", Detail: err.Error()})
 		return result, nil
 	}
 	result.CandidateHash = digest(after)

@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"reflect"
-	"strings"
 	"testing"
 
 	"onebyone/internal/agent"
@@ -28,7 +27,6 @@ func seedHistoricalTurnUsage(t *testing.T, s *Service) []model.Attempt {
 
 func TestTurnBudgetHistoricalUsageDoesNotConsumeNewExecution(t *testing.T) {
 	s, cfg := fixture(t, map[string]string{"A.txt": "Legacy.Save()\n"})
-	cfg.MaxTurns = 20
 	if _, err := s.SaveConfig(cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +59,6 @@ func TestTurnBudgetHistoricalUsageDoesNotConsumeNewExecution(t *testing.T) {
 
 func TestTurnBudgetRestartRetainsPlanAndAttemptWithFreshRuntimeAllowance(t *testing.T) {
 	s, cfg := fixture(t, map[string]string{"A.txt": "Legacy.Save()\nLegacy.Load()\n"})
-	cfg.MaxTurns = 3
 	if _, err := s.SaveConfig(cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -77,8 +74,8 @@ func TestTurnBudgetRestartRetainsPlanAndAttemptWithFreshRuntimeAllowance(t *test
 			state.Plan = engineRepairPlan()
 			state.ReadRuleIDs = []string{"R019"}
 			state.Usage = model.Usage{Turns: 3, InputTokens: 100}
-			state.ToolCalls, state.ElapsedMS, state.ReadBytes = 32, int64(cfg.EffectiveTimeoutSeconds())*1000, 512<<10
-			state.ValidationCount, state.ReviewCount = cfg.EffectiveMaxAttempts(), cfg.EffectiveMaxAttempts()
+			state.ToolCalls, state.ElapsedMS, state.ReadBytes = 32, 900000, 512<<10
+			state.ValidationCount, state.ReviewCount = 500, 500
 			state.LastCandidate = &model.CandidateRecord{Request: model.CandidateRequest{PlanRevision: 1, BaseHash: in.BaseHash}, Result: model.CandidateValidation{CandidateID: "saved-candidate", PlanRevision: 1}}
 			saved = state
 		} else {
@@ -103,51 +100,27 @@ func TestTurnBudgetRestartRetainsPlanAndAttemptWithFreshRuntimeAllowance(t *test
 	}
 }
 
-func TestTurnBudgetAutomaticRetriesShareAllowanceUntilNextStart(t *testing.T) {
-	s, cfg := fixture(t, map[string]string{"A.txt": "Legacy.Save()\n"})
-	cfg.MaxAttempts, cfg.MaxTurns = 2, 2
-	if _, err := s.SaveConfig(cfg); err != nil {
-		t.Fatal(err)
-	}
+func TestAutomaticRetriesKeepAccountingUntilCompletion(t *testing.T) {
+	s, _ := fixture(t, map[string]string{"A.txt": "Legacy.Save()\n"})
 	calls := 0
-	s.propose = func(_ context.Context, in agent.Input) (model.Proposal, error) {
+	s.propose = func(ctx context.Context, in agent.Input) (model.Proposal, error) {
 		state := *in.RepairState
-		expectedBaseline := calls / 2 * 2
-		if state.Usage.Turns != calls || in.BudgetBaseline.Turns != expectedBaseline || state.Usage.Turns-in.BudgetBaseline.Turns != calls%2 {
-			t.Errorf("automatic retry reset its budget: call=%d state=%+v baseline=%+v", calls, state, in.BudgetBaseline)
+		if state.Usage.Turns != calls || in.BudgetBaseline.Turns != 0 {
+			t.Errorf("automatic retry lost usage: calls=%d state=%+v", calls, state)
 		}
 		calls++
 		state.Usage.Turns++
 		if err := in.SaveRepairState(state); err != nil {
 			return model.Proposal{}, err
 		}
-		// An edit absent from the original is rejected mechanically and triggers an automatic retry.
-		return model.Proposal{Outcome: "modified", Edits: []model.Edit{{OldText: "Missing.Save()", NewText: "Modern.Save()"}}, Note: "force mechanical rejection"}, nil
-	}
-	first := runTest(t, s, 1)
-	if first.LastError != "" || calls != 2 || first.Tasks[0].Status != "needs_human" || sumUsage(first.Tasks[0].History).Turns != 2 || first.Usage.Turns != 2 {
-		t.Fatalf("first execution did not enforce its own attempt limit: calls=%d state=%+v", calls, first)
-	}
-	if _, err := s.RetryTasks([]string{"A.txt"}); err != nil {
-		t.Fatal(err)
-	}
-	second := runTest(t, s, 1)
-	if second.LastError != "" || calls != 4 || second.Tasks[0].Status != "needs_human" || sumUsage(second.Tasks[0].History).Turns != 4 || second.Usage.Turns != 4 {
-		t.Fatalf("historical attempts consumed the next allowance: calls=%d state=%+v", calls, second)
-	}
-	for _, state := range []model.State{first, second} {
-		found := false
-		for _, workspace := range state.Workspaces {
-			if workspace.ID != state.ActiveWorkspaceID {
-				continue
-			}
-			for _, issue := range workspace.Issues {
-				found = found || strings.Contains(issue.Message, state.Tasks[0].Note)
-			}
+		if calls <= 4 {
+			return model.Proposal{Outcome: "modified", Edits: []model.Edit{{OldText: "Missing.Save()", NewText: "Modern.Save()"}}}, nil
 		}
-		if !found {
-			t.Fatalf("workspace issue did not reflect final attempt-limit status: %+v", state.Workspaces)
-		}
+		return successfulProposal(ctx, in)
+	}
+	result := runTest(t, s, 1)
+	if result.LastError != "" || calls != 5 || result.Tasks[0].Status != "done" || sumUsage(result.Tasks[0].History).Turns != 5 {
+		t.Fatalf("retry stopped or lost usage: calls=%d state=%+v", calls, result)
 	}
 }
 
@@ -201,16 +174,15 @@ func TestTurnBudgetBaselineUsesGreaterQueueOrCheckpointUsage(t *testing.T) {
 	}
 }
 
-func TestTurnBudgetSettingsMatchOnlyIgnoresTurnLimit(t *testing.T) {
+func TestRepairSettingsMatchIgnoresConcurrencyOnly(t *testing.T) {
 	cfg := DefaultConfig()
 	current, previous := repairSettingsHash(cfg), fullRepairSettingsHash(cfg)
-	cfg.MaxTurns = 32
 	for _, stored := range []string{current, previous} {
 		if !repairSettingsMatch(stored, cfg) {
 			t.Fatal("turn adjustment discarded saved settings")
 		}
 		changed := cfg
-		changed.TimeoutSeconds++
+		changed.InputPricePerMillion++
 		if repairSettingsMatch(stored, changed) {
 			t.Fatal("execution settings change reused saved work")
 		}
@@ -219,12 +191,5 @@ func TestTurnBudgetSettingsMatchOnlyIgnoresTurnLimit(t *testing.T) {
 		if repairSettingsMatch(stored, changed) {
 			t.Fatal("model change reused saved work")
 		}
-	}
-}
-
-func TestTurnBudgetErrorExplainsFreshExecutionWithoutNewQueue(t *testing.T) {
-	message := agent.TurnLimitError(32, 32).Error()
-	if !strings.Contains(message, "再実行") || !strings.Contains(message, "0") || strings.Contains(message, "別のキュー保存先") || strings.Contains(message, "累計使用数より増やして") {
-		t.Fatalf("recovery still requires a cumulative cap or replacement queue: %s", message)
 	}
 }

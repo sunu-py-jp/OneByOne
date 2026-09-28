@@ -615,7 +615,7 @@ func printHelp(w io.Writer) {
   workspace  ワークスペースの作成・一覧・選択・変更・削除
   llm        LLM接続の登録・選択・テスト・OAuthサインイン
   rules      ルールの追加・編集・削除、rules.json・CSVの取り込み、rules.jsonの書き出し
-  settings   並列数・対象ルール・実行上限・料金の表示と変更
+  settings   並列数・対象ルール・料金単価の表示と変更
   files      対象フォルダまたは実行コピーのファイル一覧・内容
   scan       対象と候補ルールを抽出（選択・履歴を保持）
   selection  --file PATH / --all / --none で処理対象を確定

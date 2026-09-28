@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"onebyone/internal/processutil"
+	"onebyone/internal/sourceencoding"
 )
 
 func findRG(configured string) (string, error) {
@@ -66,11 +67,62 @@ func (c *Catalog) validate(ctx context.Context, patterns []string) error {
 }
 
 func (c *Catalog) matchFiles(ctx context.Context, root string, files, patterns []string) (map[string]bool, error) {
+	return c.matchFilesEncoded(ctx, root, files, patterns, map[string]sourceencoding.Encoding{})
+}
+
+func (c *Catalog) matchFilesEncoded(ctx context.Context, root string, files, patterns []string, cache map[string]sourceencoding.Encoding) (map[string]bool, error) {
+	groups := map[sourceencoding.Encoding][]string{}
+	for _, file := range files {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		encoding, known := cache[file]
+		if !known {
+			path, err := PathWithin(root, file)
+			if err != nil {
+				return nil, err
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return nil, err
+			}
+			encoding, err = sourceencoding.Detect(data)
+			if err != nil {
+				encoding = ""
+			} // Keep byte-matching unsupported inputs visible for diagnosis.
+			cache[file] = encoding
+		}
+		groups[encoding] = append(groups[encoding], file)
+	}
+	matches := make(map[string]bool)
+	for _, encoding := range []sourceencoding.Encoding{sourceencoding.UTF8, sourceencoding.ShiftJIS, ""} {
+		if len(groups[encoding]) == 0 {
+			continue
+		}
+		label := "none"
+		if encoding == sourceencoding.UTF8 {
+			label = "utf-8"
+		}
+		if encoding == sourceencoding.ShiftJIS {
+			label = "shift_jis"
+		}
+		found, err := c.matchEncodedFiles(ctx, root, groups[encoding], patterns, label)
+		if err != nil {
+			return nil, err
+		}
+		for file := range found {
+			matches[file] = true
+		}
+	}
+	return matches, nil
+}
+
+func (c *Catalog) matchEncodedFiles(ctx context.Context, root string, files, patterns []string, encoding string) (map[string]bool, error) {
 	matches := make(map[string]bool)
 	if len(files) == 0 || len(patterns) == 0 {
 		return matches, nil
 	}
-	base := []string{"--files-with-matches", "--null", "--text", "--no-config", "--color", "never", "--encoding", "none"}
+	base := []string{"--files-with-matches", "--null", "--text", "--no-config", "--color", "never", "--encoding", encoding}
 	baseBytes := 0
 	for _, pattern := range patterns {
 		base = append(base, "-e", pattern)

@@ -13,7 +13,6 @@ import (
 
 func noChangeFixture() (Input, model.RepairState, model.Proposal) {
 	in := testInput("http://127.0.0.1:1")
-	in.Config.MaxTurns = 0
 	in.BaseHash = testCandidate().BaseHash
 	state := model.RepairState{Version: 1, ReadRuleIDs: []string{"R019"}, Plan: model.RepairPlan{Revision: 1, RuleDecisions: []model.PlanDecision{{RuleID: "R019", Decision: "no_change", Reason: "既に条件を満たしています。"}}, Items: []model.PlanItem{}}}
 	return in, state, model.Proposal{Outcome: "skipped", Note: "変更不要です。"}
@@ -131,7 +130,6 @@ func TestNoChangeReviewRejectionContinuesTheSameEditorLoop(t *testing.T) {
 	}))
 	defer srv.Close()
 	in := testInput(srv.URL)
-	in.Config.MaxTurns = 0
 	in.ReviewCandidate = func(ctx context.Context, review ReviewInput) (model.IndependentReview, error) {
 		reviews++
 		result, err := passedTestReview(ctx, review)

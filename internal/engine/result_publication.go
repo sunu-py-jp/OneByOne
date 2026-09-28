@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"onebyone/internal/model"
 	"onebyone/internal/store"
@@ -74,7 +75,7 @@ func (s *Service) GetResultPublicationPreview() (model.ResultPublicationPreview,
 
 func buildResultPublicationPreview(ctx context.Context, snapshot resultPublicationSnapshot) (model.ResultPublicationPreview, error) {
 	cfg, m := snapshot.config, snapshot.meta
-	p := model.ResultPublicationPreview{WorkspaceID: snapshot.workspaceID, Files: []model.ResultPublicationFile{}, Publications: []model.ResultPublication{}}
+	p := model.ResultPublicationPreview{WorkspaceID: snapshot.workspaceID, MessageFileThreshold: publicationMessageFileThreshold, Files: []model.ResultPublicationFile{}, ReportFiles: []model.ResultPublicationFile{}, Publications: []model.ResultPublication{}}
 	if m.Worktree == "" {
 		return p, nil
 	}
@@ -106,7 +107,9 @@ func buildResultPublicationPreview(ctx context.Context, snapshot resultPublicati
 		p.Files = append(p.Files, file)
 	}
 	sort.Slice(p.Files, func(i, j int) bool { return p.Files[i].File < p.Files[j].File })
-	p.Message, err = publicationCommitMessage(p.Files, publicationReportContext(snapshot))
+	report := publicationReportContext(snapshot)
+	p.ReportFiles = publicationReportFiles(p.Files, report)
+	p.Message, err = publicationCommitMessage(p.Files, report)
 	if err != nil {
 		return p, err
 	}
@@ -240,12 +243,24 @@ func (s *Service) GetResultPublicationFileDiff(workspaceID, revision, file strin
 	if workspaceID != preview.WorkspaceID || revision == "" || revision != preview.Revision {
 		return "", fmt.Errorf("反映内容が変更されています。プレビューを更新してください")
 	}
-	for _, candidate := range preview.Files {
+	for _, candidate := range preview.ReportFiles {
 		if candidate.File != file {
 			continue
 		}
 		rel := filepath.ToSlash(filepath.Join(snapshot.meta.SourceRelative, file))
-		return git(ctx, snapshot.meta.Worktree, "diff", "--no-ext-diff", "--no-textconv", "--no-color", "--no-renames", preview.BaseCommit, preview.SourceCommit, "--", rel)
+		diff, err := git(ctx, snapshot.meta.Worktree, "diff", "--no-ext-diff", "--no-textconv", "--no-color", "--no-renames", preview.BaseCommit, preview.SourceCommit, "--", rel)
+		if err != nil || diff == "" {
+			return diff, err
+		}
+		before, err := git(ctx, snapshot.meta.Worktree, "cat-file", "blob", preview.BaseCommit+":"+rel)
+		if err != nil {
+			return "", err
+		}
+		after, err := git(ctx, snapshot.meta.Worktree, "cat-file", "blob", preview.SourceCommit+":"+rel)
+		if err != nil {
+			return "", err
+		}
+		return sourceDiffDisplay([]byte(diff), []byte(before), []byte(after))
 	}
 	return "", fmt.Errorf("反映対象にないファイルです: %s", file)
 }
@@ -265,7 +280,7 @@ func (s *Service) PublishResults(req model.PublishResultsRequest) (model.ResultP
 	if req.Title == "" || strings.ContainsAny(req.Title, "\r\n\x00") {
 		return result, fmt.Errorf("コミットタイトルを1行で入力してください")
 	}
-	if strings.ContainsRune(req.Message, '\x00') || len(req.Message) > maxPublicationMessageBytes || len(req.Title) > 1024 {
+	if strings.ContainsRune(req.Message, '\x00') || !utf8.ValidString(req.Message) || len(req.Title) > 1024 {
 		return result, fmt.Errorf("コミットメッセージが不正、または長すぎます")
 	}
 	snapshot := s.publicationSnapshot()
@@ -292,7 +307,8 @@ func (s *Service) PublishResults(req model.PublishResultsRequest) (model.ResultP
 	if req.Revision != preview.Revision {
 		return result, fmt.Errorf("反映内容が変更されています。プレビューを更新してください")
 	}
-	if len(preview.Files) == 0 {
+	messageAsFile := req.MessageAsFile || utf8.RuneCountInString(req.Message) > publicationMessageFileThreshold
+	if len(preview.Files) == 0 && !(messageAsFile && len(preview.ReportFiles) > 0) {
 		return result, fmt.Errorf("反映できる採用済みの変更がありません")
 	}
 	exists, err := publicationBranchExists(ctx, snapshot.meta.Worktree, req.Branch)
@@ -317,15 +333,24 @@ func (s *Service) PublishResults(req model.PublishResultsRequest) (model.ResultP
 	if err != nil {
 		return result, err
 	}
+	body := strings.TrimSpace(req.Message)
+	reportPath, reportBlob := "", ""
+	if messageAsFile {
+		tree, reportPath, reportBlob, err = createPublicationReport(ctx, snapshot.meta.Worktree, preview.SourceCommit, req.Message, preview.ReportFiles, time.Now())
+		if err != nil {
+			return result, err
+		}
+		body = fmt.Sprintf("処理結果の詳細: [%s](%s)", reportPath, reportPath)
+	}
 	message := req.Title + "\n"
-	if strings.TrimSpace(req.Message) != "" {
-		message += "\n" + strings.TrimSpace(req.Message) + "\n"
+	if body != "" {
+		message += "\n" + body + "\n"
 	}
 	commit, err := publicationGitInput(ctx, snapshot.meta.Worktree, message, "commit-tree", trim(tree), "-p", preview.BaseCommit, "-F", "-")
 	if err != nil {
 		return result, err
 	}
-	result = model.ResultPublication{Branch: req.Branch, Commit: trim(commit), BaseCommit: preview.BaseCommit, SourceCommit: preview.SourceCommit, CreatedAt: now(), FileCount: len(preview.Files), Title: req.Title, Message: strings.TrimSpace(req.Message)}
+	result = model.ResultPublication{Branch: req.Branch, Commit: trim(commit), BaseCommit: preview.BaseCommit, SourceCommit: preview.SourceCommit, CreatedAt: now(), FileCount: len(preview.Files), Title: req.Title, Message: body, ReportPath: reportPath, ReportBlob: reportBlob}
 	journal, err := loadResultPublications(ctx, snapshot.config, snapshot.meta)
 	if err != nil {
 		return model.ResultPublication{}, err
@@ -378,7 +403,11 @@ func loadResultPublications(ctx context.Context, cfg model.Config, m manifest) (
 	recovered := journal.Records[:0]
 	for _, record := range journal.Records {
 		p := record.Publication
-		if !isImmutableCommitID(p.Commit) || !isImmutableCommitID(p.BaseCommit) || !isImmutableCommitID(p.SourceCommit) || p.BaseCommit != m.BaseCommit || p.Branch == "" || p.FileCount < 1 {
+		hasReport := p.ReportPath != "" || p.ReportBlob != ""
+		if hasReport && (!publicationReportPathPattern.MatchString(p.ReportPath) || !isImmutableCommitID(p.ReportBlob)) {
+			return journal, fmt.Errorf("結果ファイルの記録が不正です")
+		}
+		if !isImmutableCommitID(p.Commit) || !isImmutableCommitID(p.BaseCommit) || !isImmutableCommitID(p.SourceCommit) || p.BaseCommit != m.BaseCommit || p.Branch == "" || p.FileCount < 0 || (p.FileCount == 0 && !hasReport) {
 			return journal, fmt.Errorf("結果反映履歴の記録が不正です")
 		}
 		switch record.State {
@@ -468,6 +497,12 @@ func validatePreparedPublication(ctx context.Context, repo string, p model.Resul
 	if err != nil {
 		return err
 	}
+	if p.ReportPath != "" || p.ReportBlob != "" {
+		tree, err = publicationTreeWithReport(ctx, repo, p.SourceCommit, p.ReportPath, p.ReportBlob)
+		if err != nil {
+			return err
+		}
+	}
 	message := p.Title
 	if strings.TrimSpace(p.Message) != "" {
 		message += "\n\n" + strings.TrimSpace(p.Message)
@@ -488,76 +523,109 @@ func createResultPublicationBranch(ctx context.Context, m manifest, p model.Resu
 	return err
 }
 
-const maxPublicationMessageBytes = 64 << 20
+const publicationMessageFileThreshold = 10000
 
 type publicationRuleReport struct {
-	Title      string
 	Changes    []string
+	Holds      []string
+	Unchanged  []string
+	Fixed      bool
 	Assessment *model.ReviewAssessment
 }
 
 type publicationReport struct {
-	Tasks          []model.Task
-	SourceRelative string
-	Rules          map[string]map[string]publicationRuleReport
+	Tasks           []model.Task
+	SourceRelative  string
+	Rules           map[string]map[string]publicationRuleReport
+	ReviewSummaries map[string]string
 }
 
 func publicationReportContext(snapshot resultPublicationSnapshot) publicationReport {
-	report := publicationReport{Tasks: snapshot.tasks, SourceRelative: snapshot.meta.SourceRelative, Rules: map[string]map[string]publicationRuleReport{}}
-	current := map[string]model.Rule{}
-	for _, rule := range snapshot.rules {
-		current[rule.ID] = rule
-	}
-	// Cache only rule metadata, not entire per-execution queues. The immutable
-	// execution snapshot keeps titles correct after subsequent rule edits.
-	byExecution := map[string]map[string]model.Rule{}
+	report := publicationReport{Tasks: snapshot.tasks, SourceRelative: snapshot.meta.SourceRelative, Rules: map[string]map[string]publicationRuleReport{}, ReviewSummaries: map[string]string{}}
 	for _, task := range snapshot.tasks {
 		rules := map[string]publicationRuleReport{}
-		for _, attempt := range repairHistory(task) {
-			if !attempt.AdoptedChanges() && attempt.Outcome != "skipped" {
+		history := repairHistory(task)
+		latest := publicationLatestAttempt(history)
+		for index, attempt := range history {
+			adopted := attempt.AdoptedChanges()
+			unchanged := attempt.Outcome == "skipped"
+			isLatest := index == latest
+			if !adopted && !unchanged && !isLatest {
 				continue
 			}
-			definitions := current
-			if attempt.ExecutionID != "" {
-				if _, exists := byExecution[attempt.ExecutionID]; !exists {
-					byExecution[attempt.ExecutionID] = map[string]model.Rule{}
-					if record, err := readExecutionRecord(snapshot.config.QueuePath, attempt.ExecutionID); err == nil {
-						for _, rule := range record.State.Rules {
-							byExecution[attempt.ExecutionID][rule.ID] = rule
+			// Applied history accumulates. Failed/rejected candidates never become fixes.
+			if adopted {
+				if len(attempt.Changes) == 0 {
+					for _, id := range attempt.RulesApplied {
+						if id == "" {
+							continue
 						}
+						entry := rules[id]
+						entry.Fixed = true
+						rules[id] = entry
 					}
 				}
-				definitions = byExecution[attempt.ExecutionID]
+				for _, change := range attempt.Changes {
+					if change.Status != "fixed" {
+						continue
+					}
+					entry := rules[change.RuleID]
+					entry.Fixed = true
+					entry.Changes = publicationAppendUnique(entry.Changes, change.Change)
+					rules[change.RuleID] = entry
+				}
 			}
-			for _, id := range attempt.RulesApplied {
-				entry := rules[id]
-				if rule, ok := definitions[id]; ok {
-					entry.Title = rule.Title
+			// Only the latest attempt contributes unresolved work. A retry which fixes
+			// a previous hold must not leave the old hold in the commit report.
+			if isLatest {
+				for _, change := range attempt.Changes {
+					entry := rules[change.RuleID]
+					switch change.Status {
+					case "needs_human":
+						text := strings.TrimSpace(change.Change)
+						reason := strings.TrimSpace(change.Reason)
+						if reason != "" && reason != text {
+							if text != "" {
+								text += " — "
+							}
+							text += reason
+						}
+						if text == "" {
+							text = firstReportText(change.Location, attempt.Note, "判断が保留されています")
+						}
+						entry.Holds = publicationAppendUnique(entry.Holds, text)
+						// A previous approval is not evidence that this new hold was reviewed.
+						entry.Assessment = nil
+					case "unchanged":
+						entry.Unchanged = publicationAppendUnique(entry.Unchanged, firstReportText(change.Reason, "修正不要と判断しました"))
+					default:
+						continue
+					}
+					rules[change.RuleID] = entry
 				}
-				rules[id] = entry
 			}
-			for _, change := range attempt.Changes {
-				if !attempt.AdoptedChanges() || change.Status != "fixed" || change.RuleID == "" {
-					continue
-				}
-				entry := rules[change.RuleID]
-				if rule, ok := definitions[change.RuleID]; ok {
-					entry.Title = rule.Title
-				}
-				if strings.TrimSpace(change.Change) != "" {
-					entry.Changes = append(entry.Changes, strings.TrimSpace(change.Change))
-				}
-				rules[change.RuleID] = entry
-			}
-			for _, review := range attempt.Reviews {
-				if (review.Verdict != "passed" && !(attempt.Partial && attempt.AdoptedChanges() && review.Verdict == "passed_with_holds")) || review.CandidateHash != attempt.OutputHash || review.BaseHash != attempt.InputHash || attempt.OutputHash == "" {
-					continue
-				}
+			if review := publicationAttemptReview(attempt, isLatest); review != nil {
+				report.ReviewSummaries[task.File] = review.Summary
 				for _, assessment := range review.Assessments {
 					entry := rules[assessment.RuleID]
-					entry.Assessment = &assessment
+					if !isLatest && !entry.Fixed {
+						continue
+					}
+					copy := assessment
+					entry.Assessment = &copy
+					if isLatest && (assessment.Status == "needs_human" || assessment.Status == "needs_changes" || assessment.Status == "violated") && len(entry.Holds) == 0 {
+						entry.Holds = publicationAppendUnique(entry.Holds, firstReportText(assessment.Reason, "独立レビューで確認が必要と判断しました"))
+					}
+					// Assessments of unaffected rules are useful for skipped files too, but
+					// are not advertised as applied fixes.
+					if !entry.Fixed && len(entry.Holds) == 0 && (assessment.Status == "satisfied" || assessment.Status == "not_applicable") {
+						entry.Unchanged = publicationAppendUnique(entry.Unchanged, "修正不要と判断しました")
+					}
 					rules[assessment.RuleID] = entry
 				}
+			} else if isLatest && !adopted && !unchanged {
+				// An unreviewed final hold must not display an older whole-file approval.
+				delete(report.ReviewSummaries, task.File)
 			}
 		}
 		report.Rules[task.File] = rules
@@ -565,98 +633,294 @@ func publicationReportContext(snapshot resultPublicationSnapshot) publicationRep
 	return report
 }
 
+func publicationLatestAttempt(history []model.Attempt) int {
+	for i := len(history) - 1; i >= 0; i-- {
+		switch history[i].Outcome {
+		case "", "running", "validated":
+			continue
+		default:
+			return i
+		}
+	}
+	return -1
+}
+
+// Select the latest completed review for this attempt's identified candidate.
+// Rejections are included only for the current held/failed attempt, never as
+// approval evidence for an adopted file. In-flight/error reviews are ignored.
+func publicationAttemptReview(attempt model.Attempt, latest bool) *model.IndependentReview {
+	for i := len(attempt.Reviews) - 1; i >= 0; i-- {
+		review := attempt.Reviews[i]
+		if attempt.InputHash == "" || review.BaseHash != attempt.InputHash || review.CandidateHash == "" {
+			continue
+		}
+		accepted := attempt.AdoptedChanges() || attempt.Outcome == "skipped"
+		if accepted {
+			if attempt.OutputHash == "" || review.CandidateHash != attempt.OutputHash {
+				continue
+			}
+			if review.Verdict != "passed" && !(attempt.Partial && attempt.AdoptedChanges() && review.Verdict == "passed_with_holds") {
+				continue
+			}
+		} else {
+			if !latest || (attempt.Outcome != "needs_human" && attempt.Outcome != "failed" && attempt.Outcome != "interrupted") {
+				continue
+			}
+			if review.Verdict != "needs_human" && review.Verdict != "needs_changes" {
+				continue
+			}
+			if attempt.OutputHash != "" && review.CandidateHash != attempt.OutputHash {
+				continue
+			}
+		}
+		return &review
+	}
+	return nil
+}
+
+func publicationAppendUnique(values []string, value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return values
+	}
+	for _, previous := range values {
+		if previous == value {
+			return values
+		}
+	}
+	return append(values, value)
+}
+
+// Report-only paths are deliberately separate from the actual changed-file
+// set used to construct the commit. Unchanged and held-only files still need
+// navigable explanations without claiming they were committed changes.
+func publicationReportFiles(files []model.ResultPublicationFile, report publicationReport) []model.ResultPublicationFile {
+	result := make([]model.ResultPublicationFile, 0, len(files)+len(report.Tasks))
+	positions := map[string]int{}
+	for _, file := range files {
+		if _, exists := positions[file.File]; exists {
+			continue
+		}
+		file.LinkPath = filepath.ToSlash(filepath.Join(report.SourceRelative, file.File))
+		positions[file.File] = len(result)
+		result = append(result, file)
+	}
+	for _, task := range report.Tasks {
+		history := repairHistory(task)
+		latest := publicationLatestAttempt(history)
+		status := task.Status
+		if latest >= 0 {
+			status = history[latest].Outcome
+		}
+		processed := status == "done" || status == "skipped" || status == "needs_human" || status == "failed" || status == "interrupted"
+		position, alreadyChanged := positions[task.File]
+		if !alreadyChanged && (!processed || task.Excluded && len(history) == 0) {
+			continue
+		}
+		if !alreadyChanged {
+			file := publicationFileSummary(task)
+			file.LinkPath = filepath.ToSlash(filepath.Join(report.SourceRelative, task.File))
+			position = len(result)
+			positions[task.File] = position
+			result = append(result, file)
+		}
+		if latest >= 0 && strings.TrimSpace(history[latest].Note) != "" {
+			result[position].Summary = history[latest].Note
+		} else if !alreadyChanged {
+			result[position].Summary = firstReportText(task.Note, publicationFileFallbackSummary(status))
+		}
+	}
+	sort.SliceStable(result, func(i, j int) bool { return result[i].File < result[j].File })
+	return result
+}
+
+func publicationFileFallbackSummary(status string) string {
+	switch status {
+	case "skipped":
+		return "修正不要と判断しました"
+	case "needs_human", "failed", "interrupted":
+		return "確認が必要です"
+	default:
+		return "修正を完了しました"
+	}
+}
+
+func publicationFileHeld(task model.Task, rules map[string]publicationRuleReport) bool {
+	for _, rule := range rules {
+		if len(rule.Holds) > 0 {
+			return true
+		}
+	}
+	history := repairHistory(task)
+	if latest := publicationLatestAttempt(history); latest >= 0 {
+		switch history[latest].Outcome {
+		case "needs_human", "failed", "interrupted":
+			return true
+		case "done", "skipped":
+			return false
+		}
+	}
+	return task.Status == "needs_human" || task.Status == "failed" || task.Status == "interrupted"
+}
+
+func publicationTableCell(text string) string {
+	text = strings.ReplaceAll(strings.ReplaceAll(text, "\r\n", "\n"), "\r", "\n")
+	text = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", "`", "&#96;", "\\", "\\\\", "|", "&#124;").Replace(text)
+	return strings.ReplaceAll(text, "\n", "<br>")
+}
+
+func publicationRuleStatus(rule publicationRuleReport) string {
+	if len(rule.Holds) > 0 {
+		if rule.Fixed {
+			return "⚠️一部修正完了/要確認"
+		}
+		return "⚠️要確認"
+	}
+	if rule.Fixed {
+		return "✅完了"
+	}
+	if len(rule.Unchanged) > 0 {
+		return "☑️修正不要"
+	}
+	return "⚠️記録なし"
+}
+
+func publicationFileStatus(changed, held bool) (int, string) {
+	if held {
+		if changed {
+			return 1, "⚠️一部修正済み要確認"
+		}
+		return 1, "⚠️要確認"
+	}
+	if changed {
+		return 0, "✅完了"
+	}
+	return 2, "☑️修正不要"
+}
+
+func publicationFileLink(labelPath, targetPath string, table bool) string {
+	label := strings.NewReplacer("\\", "\\\\", "[", "\\[", "]", "\\]").Replace(labelPath)
+	if table {
+		label = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", "`", "&#96;", "|", "&#124;", "\r", "&#13;", "\n", "&#10;").Replace(label)
+	}
+	return fmt.Sprintf("[%s](<%s>)", label, (&url.URL{Path: targetPath}).EscapedPath())
+}
+
 func publicationCommitMessage(files []model.ResultPublicationFile, report publicationReport) (string, error) {
-	if len(files) == 0 {
+	reportFiles := publicationReportFiles(files, report)
+	if len(reportFiles) == 0 {
 		return "", nil
 	}
 	changed := map[string]bool{}
 	for _, file := range files {
 		changed[file.File] = true
 	}
-	total, unchanged, partialHeld := len(files), 0, 0
-	tasksByFile := make(map[string]model.Task, len(report.Tasks))
+	tasks := map[string]model.Task{}
 	for _, task := range report.Tasks {
-		tasksByFile[task.File] = task
-		if changed[task.File] && task.Status != "done" && task.Status != "skipped" {
-			history := repairHistory(task)
-			if len(history) > 0 {
-				for _, change := range history[len(history)-1].Changes {
-					if change.Status == "needs_human" {
-						partialHeld++
-						break
-					}
-				}
+		tasks[task.File] = task
+	}
+	fileRanks, fileLabels := map[string]int{}, map[string]string{}
+	unchanged, held, partial := 0, 0, 0
+	for _, file := range reportFiles {
+		needsHuman := publicationFileHeld(tasks[file.File], report.Rules[file.File])
+		fileRanks[file.File], fileLabels[file.File] = publicationFileStatus(changed[file.File], needsHuman)
+		if needsHuman {
+			held++
+			if changed[file.File] {
+				partial++
 			}
-		}
-		if changed[task.File] || (task.Excluded && len(repairHistory(task)) == 0) {
-			continue
-		}
-		total++
-		if task.Status == "skipped" {
+		} else if !changed[file.File] {
 			unchanged++
 		}
 	}
+	sort.SliceStable(reportFiles, func(i, j int) bool {
+		if fileRanks[reportFiles[i].File] != fileRanks[reportFiles[j].File] {
+			return fileRanks[reportFiles[i].File] < fileRanks[reportFiles[j].File]
+		}
+		return reportFiles[i].File < reportFiles[j].File
+	})
 	var body strings.Builder
-	fmt.Fprintf(&body, "# 全体サマリー\n\n対象ファイル数：%d\n修正済みファイル数：%d\n修正不要ファイル数：%d\n", total, len(files), unchanged)
-	if partialHeld > 0 {
-		fmt.Fprintf(&body, "修正済みのうち要確認が残るファイル数：%d\n", partialHeld)
+	heldSummary := fmt.Sprintf("⚠️ 要確認：%d", held)
+	if partial > 0 {
+		heldSummary += fmt.Sprintf("（うち一部修正済み：%d）", partial)
 	}
-	if remaining := total - len(files) - unchanged; remaining > 0 {
-		fmt.Fprintf(&body, "未完了・要確認ファイル数：%d\n", remaining)
+	summaryLines := []string{
+		fmt.Sprintf("📄 対象ファイル数：%d", len(reportFiles)),
+		fmt.Sprintf("✅ 修正完了：%d", len(changed)-partial),
+		heldSummary,
+		fmt.Sprintf("☑️ 修正不要：%d", unchanged),
+	}
+	// Markdown soft newlines collapse into spaces. Hard breaks also survive when
+	// this body is viewed outside the app in the committed Markdown report.
+	fmt.Fprintf(&body, "# 全体サマリー\n\n%s\n\n# 修正サマリー\n\n| ファイル名 | ステータス |\n| --- | --- |\n", strings.Join(summaryLines, "  \n"))
+	for _, file := range reportFiles {
+		fmt.Fprintf(&body, "| %s | %s |\n", publicationFileLink(file.LinkPath, file.LinkPath, true), fileLabels[file.File])
 	}
 	body.WriteString("\n# 修正一覧\n")
-	for _, file := range files {
-		path := filepath.ToSlash(filepath.Join(report.SourceRelative, file.File))
-		label := strings.NewReplacer("\\", "\\\\", "[", "\\[", "]", "\\]").Replace(path)
-		link := (&url.URL{Path: path}).EscapedPath()
-		fmt.Fprintf(&body, "\n---\n\n## 修正ファイル\n\n[%s](<%s>)\n\n### 修正概要\n\n%s\n\n### 適用ルール一覧\n", label, link, file.Summary)
-		if len(file.RulesApplied) == 0 {
-			body.WriteString("\nルール別の対応記録なし\n")
+	for _, file := range reportFiles {
+		rules := report.Rules[file.File]
+		status := fileLabels[file.File]
+		path := file.LinkPath
+		summary := firstReportText(file.Summary, "修正概要の記録なし")
+		reviewSummary := firstReportText(report.ReviewSummaries[file.File], "独立レビューの記録なし")
+		fmt.Fprintf(&body, "\n---\n\n## ファイル　%s\n\n%s\n\n### 修正概要\n\n%s\n\n### レビュー結果\n\n%s\n\n### 一覧\n\n| ルールID | ステータス | 修正内容 | レビュー結果 |\n| --- | --- | --- | --- |\n", status, publicationFileLink(path, path, false), summary, reviewSummary)
+		rows := map[string]publicationRuleReport{}
+		for id, rule := range rules {
+			rows[id] = rule
 		}
 		for _, id := range file.RulesApplied {
-			rule := report.Rules[file.File][id]
-			title := strings.TrimSpace(rule.Title)
-			if title == "" {
-				title = "Titleの記録なし"
-			}
-			title = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ").Replace(title)
-			fmt.Fprintf(&body, "\n#### %s：%s\n\n**修正の内容**\n\n", id, title)
-			if len(rule.Changes) == 0 {
-				body.WriteString("修正内容の記録なし\n")
-			} else {
-				for _, change := range rule.Changes {
-					fmt.Fprintf(&body, "- %s\n", strings.ReplaceAll(change, "\n", "\n  "))
-				}
-			}
-			body.WriteString("\n**修正後レビュー結果**\n\n")
-			if rule.Assessment == nil {
-				body.WriteString("独立レビューの記録なし\n")
-			} else {
-				fmt.Fprintf(&body, "%s\n", rule.Assessment.Reason)
+			if _, exists := rows[id]; !exists {
+				rows[id] = publicationRuleReport{Fixed: changed[file.File]}
 			}
 		}
-		// A published safe subset is not a claim that the whole file is complete.
-		// Include its outstanding decisions separately from the applied rules.
-		if task, exists := tasksByFile[file.File]; exists && task.Status != "done" && task.Status != "skipped" {
-			history := repairHistory(task)
-			printed := false
-			var outstanding []model.ChangeReportItem
-			if len(history) > 0 {
-				outstanding = history[len(history)-1].Changes
-			}
-			for _, change := range outstanding {
-				if change.Status != "needs_human" {
-					continue
-				}
-				if !printed {
-					body.WriteString("\n### 要確認の箇所\n\n")
-					printed = true
-				}
-				fmt.Fprintf(&body, "- %s（%s）：%s\n", change.RuleID, change.Location, strings.ReplaceAll(change.Reason, "\n", "\n  "))
-			}
+		if len(rows) == 0 {
+			note := "ルール別の対応記録なし"
+			fmt.Fprintf(&body, "| — | %s | %s | 独立レビューの記録なし |\n", status, note)
+			continue
 		}
-		if body.Len() > maxPublicationMessageBytes {
-			return "", fmt.Errorf("コミット本文が上限（64 MiB）を超えています。省略せず出力するため、対象を分割してください")
+		ids := make([]string, 0, len(rows))
+		for id := range rows {
+			ids = append(ids, id)
+		}
+		rank := func(rule publicationRuleReport) int {
+			if len(rule.Holds) > 0 || (!rule.Fixed && len(rule.Unchanged) == 0) {
+				return 1
+			}
+			if rule.Fixed {
+				return 0
+			}
+			return 2
+		}
+		sort.Slice(ids, func(i, j int) bool {
+			if rank(rows[ids[i]]) != rank(rows[ids[j]]) {
+				return rank(rows[ids[i]]) < rank(rows[ids[j]])
+			}
+			return ids[i] < ids[j]
+		})
+		for _, id := range ids {
+			rule := rows[id]
+			changes := append([]string{}, rule.Changes...)
+			if rule.Fixed && len(changes) == 0 {
+				changes = append(changes, "修正内容の記録なし")
+			}
+			for _, hold := range rule.Holds {
+				changes = append(changes, "保留："+hold)
+			}
+			if !rule.Fixed && len(rule.Holds) == 0 {
+				changes = append(changes, rule.Unchanged...)
+			}
+			if len(changes) == 0 {
+				changes = append(changes, "対応内容の記録なし")
+			}
+			reason := "独立レビューの記録なし"
+			if rule.Assessment != nil {
+				reason = rule.Assessment.Reason
+			}
+			displayID := id
+			if displayID == "" {
+				displayID = "—"
+			}
+			fmt.Fprintf(&body, "| %s | %s | %s | %s |\n", publicationTableCell(displayID), publicationRuleStatus(rule), publicationTableCell(strings.Join(changes, "\n")), publicationTableCell(reason))
 		}
 	}
 	return strings.TrimSpace(body.String()), nil

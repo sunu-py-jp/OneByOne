@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -15,49 +17,31 @@ import (
 // This contains explicit work state, never raw model conversations or credentials.
 // PriorUsage separates this attempt's usage from the file's cumulative budget.
 type repairCheckpoint struct {
-	Version      int               `json:"version"`
-	AttemptID    string            `json:"attemptId"`
-	File         string            `json:"file"`
-	BaseCommit   string            `json:"baseCommit"`
-	InputHash    string            `json:"inputHash"`
-	RuleHash     string            `json:"ruleHash"`
-	SettingsHash string            `json:"settingsHash"`
-	RuleTitles   map[string]string `json:"ruleTitles,omitempty"`
-	PriorUsage   model.Usage       `json:"priorUsage"`
-	State        model.RepairState `json:"state"`
+	Version       int               `json:"version"`
+	AttemptID     string            `json:"attemptId"`
+	File          string            `json:"file"`
+	BaseCommit    string            `json:"baseCommit"`
+	InputHash     string            `json:"inputHash"`
+	RuleHash      string            `json:"ruleHash"`
+	SettingsHash  string            `json:"settingsHash"`
+	RuleTitles    map[string]string `json:"ruleTitles,omitempty"`
+	PriorUsage    model.Usage       `json:"priorUsage"`
+	State         model.RepairState `json:"state"`
+	ReviewRecords []string          `json:"reviewRecords,omitempty"`
 }
 
-func repairSettingsHash(cfg model.Config) string {
-	// A turn-limit adjustment authorizes more/fewer requests, but does not change
-	// the source, rules, model or validations of the saved plan and candidate.
-	cfg.MaxTurns = 0
-	return fullRepairSettingsHash(cfg)
-}
+func repairSettingsHash(cfg model.Config) string { return fullRepairSettingsHash(cfg) }
 
 func fullRepairSettingsHash(cfg model.Config) string {
-	// Hash execution semantics without storing a credential or its fingerprint.
-	// Worker count changes scheduling, never the contents of a saved proposal.
+	cfg = model.EffectiveExecutionConfig(cfg)
 	cfg.Concurrency = 0
-	cfg.Credential = ""
-	cfg.CredentialSet = false
+	cfg.Credential, cfg.CredentialSet = "", false
 	b, _ := json.Marshal(cfg)
 	return digest(b)
 }
 
 func repairSettingsMatch(stored string, cfg model.Config) bool {
-	if stored == repairSettingsHash(cfg) {
-		return true
-	}
-	// Existing journals hashed MaxTurns with execution settings. Only this
-	// bounded field may differ; changing any execution setting still invalidates
-	// the plan. New journals always store the turn-independent fingerprint.
-	for turns := 1; turns <= 32; turns++ {
-		cfg.MaxTurns = turns
-		if stored == fullRepairSettingsHash(cfg) {
-			return true
-		}
-	}
-	return false
+	return stored == repairSettingsHash(cfg)
 }
 
 func repairPath(cfg model.Config, id string) (string, error) {
@@ -85,7 +69,7 @@ func loadRepairCheckpoint(cfg model.Config, h model.Attempt) (*repairCheckpoint,
 	if err != nil {
 		return nil, fmt.Errorf("修復状態を読み込めません: %w", err)
 	}
-	if !info.Mode().IsRegular() || info.Size() > 4<<20 {
+	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("修復状態ファイルの形式またはサイズが不正です")
 	}
 	b, err := store.ReadFile(path)
@@ -98,6 +82,28 @@ func loadRepairCheckpoint(cfg model.Config, h model.Attempt) (*repairCheckpoint,
 	}
 	if c.Version != 1 || c.State.Version != 1 || c.AttemptID != h.ID || c.State.ElapsedMS < 0 || c.State.ToolCalls < 0 || c.State.ValidationCount < 0 || c.State.Usage.Turns < 0 {
 		return nil, fmt.Errorf("修復状態のバージョン・試行・使用量が不正です")
+	}
+	if len(c.ReviewRecords) > 0 {
+		c.State.Reviews = nil
+		for _, ref := range c.ReviewRecords {
+			if decoded, e := hex.DecodeString(ref); e != nil || len(decoded) != 32 {
+				return nil, fmt.Errorf("レビュー履歴の参照が不正です")
+			}
+			recordPath := path + ".reviews/" + ref + ".json"
+			recordPath, err = catalog.PathWithin(filepath.Dir(path), filepath.Base(path)+".reviews/"+ref+".json")
+			if err != nil {
+				return nil, err
+			}
+			data, e := store.ReadFile(recordPath)
+			if e != nil {
+				return nil, fmt.Errorf("レビュー履歴を読み込めません: %w", e)
+			}
+			var review model.IndependentReview
+			if e = json.Unmarshal(data, &review); e != nil || digest([]byte(review.ID)) != ref {
+				return nil, fmt.Errorf("レビュー履歴が一致しません")
+			}
+			c.State.Reviews = append(c.State.Reviews, review)
+		}
 	}
 	return &c, nil
 }
@@ -125,11 +131,31 @@ func saveRepairCheckpoint(cfg model.Config, c *repairCheckpoint) (string, error)
 	if err != nil {
 		return "", err
 	}
-	b, err := json.MarshalIndent(c, "", "  ")
+	saved := *c
+	saved.State = c.State
+	saved.State.Reviews = nil
+	saved.ReviewRecords = nil
+	source := filepath.Join(cfg.Root, filepath.FromSlash(c.File))
+	for _, review := range c.State.Reviews {
+		ref := digest([]byte(review.ID))
+		recordPath := path + ".reviews/" + ref + ".json"
+		data, e := json.Marshal(review)
+		if e != nil {
+			return "", e
+		}
+		prior, readErr := store.ReadFile(recordPath)
+		if readErr != nil || !bytes.Equal(prior, data) {
+			if e = writeSharedArtifact(cfg, recordPath, data, source); e != nil {
+				return "", e
+			}
+		}
+		saved.ReviewRecords = append(saved.ReviewRecords, ref)
+	}
+	b, err := json.MarshalIndent(saved, "", "  ")
 	if err != nil {
 		return "", err
 	}
-	err = writeSharedArtifact(cfg, path, b, filepath.Join(cfg.Root, filepath.FromSlash(c.File)))
+	err = writeSharedArtifact(cfg, path, b, source)
 	return path, err
 }
 
@@ -164,8 +190,10 @@ func resetRepairPlan(c *repairCheckpoint, cfg model.Config, cat *catalog.Catalog
 	changed := c.File != file || c.BaseCommit != head || c.InputHash != inputHash || c.RuleHash != cat.Hash || !repairSettingsMatch(c.SettingsHash, cfg)
 	if changed {
 		c.State.Plan = model.RepairPlan{}
+		c.State.StagedEdits = nil
 		c.State.LastCandidate = nil
 		c.State.ReadRuleIDs = nil
+		c.State.RuleReadOffsets = nil
 	}
 	if changed || c.RuleTitles == nil {
 		c.RuleTitles = changeReportTitles(cat.Rules)

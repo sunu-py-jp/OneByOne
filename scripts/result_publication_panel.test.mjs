@@ -24,7 +24,7 @@ const bundle = await build({
 
 // Run the actual panel's event/effect code with native I/O replaced. Layout and
 // child components are outside this harness; no browser or real Git is touched.
-function harness() {
+function harness(storage = new Map()) {
   const cells = [], cleanups = new Map();
   let cursor = 0, effects = [];
   const hooks = { ...React,
@@ -46,8 +46,9 @@ function harness() {
   const listeners = new Map();
   const windowMock = { addEventListener(name, callback) { listeners.set(name, callback); }, removeEventListener(name, callback) { if (listeners.get(name) === callback) listeners.delete(name); } };
   const module = { exports: {} };
-  new Function('require', 'module', 'exports', 'window', bundle.outputFiles[0].text)(
-    name => name === 'react' ? hooks : requireFrontend(name), module, module.exports, windowMock);
+  const globals = { localStorage: { getItem(key) { return storage.get(key) ?? null; }, setItem(key, value) { storage.set(key, value); } } };
+  new Function('require', 'module', 'exports', 'window', 'globalThis', bundle.outputFiles[0].text)(
+    name => name === 'react' ? hooks : requireFrontend(name), module, module.exports, windowMock, globals);
   const { ResultPublicationPanel, publicationLinkFile, api } = module.exports;
   return {
     api, publicationLinkFile, key(event) { listeners.get("keydown")?.(event); },
@@ -119,7 +120,7 @@ test('publication panel requires title, sends the reviewed snapshot and blocks d
   assert.equal(button(tree).props.disabled, false);
   form(tree).props.onSubmit({ preventDefault() {} });
   form(tree).props.onSubmit({ preventDefault() {} });
-  assert.deepEqual(requests, [{ workspaceId: 'a', revision: 'a-revision', branch: 'review/a', title: '保存処理を改善', message: '編集したサマリー\n- R019' }]);
+  assert.deepEqual(requests, [{ workspaceId: 'a', revision: 'a-revision', branch: 'review/a', title: '保存処理を改善', message: '編集したサマリー\n- R019', messageAsFile: false }]);
   pending.resolve({ ...requests[0], commit: 'a'.repeat(40), createdAt: '2026-09-23T00:00:00Z', fileCount: 2 });
   tree = await h.settle(p);
   assert.equal(button(tree).props.disabled, true, 'same branch cannot be published again');
@@ -207,5 +208,83 @@ test('publication file links match only the exact decoded repository path', () =
   assert.equal(h.publicationLinkFile('app/../app/src/%E6%97%A5%E6%9C%AC%20%E8%AA%9E%23%25.js', [f]), undefined);
   assert.equal(h.publicationLinkFile('app/src/%broken', [f]), undefined);
   assert.equal(h.publicationLinkFile('src/a.js', [{ file: 'src/a.js' }]), undefined, 'do not infer missing provenance from a filename');
+  h.close();
+});
+
+test('manual file mode survives preview refresh and reload within its workspace', async () => {
+  const storage = new Map(), h = harness(storage), requests = [];
+  h.api.GetResultPublicationPreview = async () => preview();
+  const p = props({ onPublish: async request => { requests.push(request); return { ...request, commit: 'b'.repeat(40), reportPath: 'OneByOne/20260928123456_results.md' }; } });
+  let tree = await h.settle(p);
+  assert.equal(field(tree, 'message-as-file').props.checked, false);
+  field(tree, 'message-as-file').props.onChange({ target: { checked: true } });
+  tree = await h.settle(p);
+  find(tree, node => node.type === 'button' && node.props.children?.some?.(child => child === '再読み込み')).props.onClick();
+  tree = await h.settle(p);
+  assert.equal(field(tree, 'message-as-file').props.checked, true);
+  assert.equal(field(tree, 'message-as-file').props.disabled, false);
+  field(tree, 'title').props.onChange({ target: { value: 'Report as file' } });
+  tree = await h.settle(p);
+  form(tree).props.onSubmit({ preventDefault() {} });
+  tree = await h.settle(p);
+  assert.equal(requests[0].messageAsFile, true);
+  assert.ok(elements(tree).some(node => node.props.title === 'OneByOne/20260928123456_results.md'));
+  h.close();
+  const reloaded = harness(storage);
+  reloaded.api.GetResultPublicationPreview = async () => preview();
+  tree = await reloaded.settle(props());
+  assert.equal(field(tree, 'message-as-file').props.checked, true);
+  reloaded.api.GetResultPublicationPreview = async () => preview('b');
+  tree = await reloaded.settle(props({ state: { ...p.state, activeWorkspaceId: 'b' } }));
+  assert.equal(field(tree, 'message-as-file').props.checked, false);
+  reloaded.close();
+});
+
+test('long body forces file mode without overwriting the voluntary preference', async () => {
+  const h = harness(), requests = [];
+  h.api.GetResultPublicationPreview = async () => ({ ...preview(), message: '😀😀😀', messageFileThreshold: 3 });
+  const p = props({ onPublish: async request => { requests.push(request); return { ...request, commit: 'b'.repeat(40) }; } });
+  let tree = await h.settle(p);
+  assert.equal(field(tree, 'message-as-file').props.checked, false);
+  messageToggle(tree, '原文').props.onClick();
+  tree = await h.settle(p);
+  field(tree, 'title').props.onChange({ target: { value: 'Long report' } });
+  field(tree, 'message').props.onChange({ target: { value: '😀😀😀あ' } });
+  tree = await h.settle(p);
+  assert.equal(field(tree, 'message-as-file').props.checked, true);
+  assert.equal(field(tree, 'message-as-file').props.disabled, true);
+  assert.ok(elements(tree).some(node => node.props.id === 'publication-test-message-file-note'));
+  field(tree, 'message').props.onChange({ target: { value: '😀😀😀' } });
+  tree = await h.settle(p);
+  assert.equal(field(tree, 'message-as-file').props.checked, false);
+  assert.equal(field(tree, 'message-as-file').props.disabled, false);
+  field(tree, 'message').props.onChange({ target: { value: '😀😀😀あ' } });
+  tree = await h.settle(p);
+  form(tree).props.onSubmit({ preventDefault() {} });
+  await h.settle(p);
+  assert.equal(requests[0].messageAsFile, true);
+  assert.equal(requests[0].message, '😀😀😀あ');
+  h.close();
+});
+
+test('report-only file links open unchanged detail and do not count as committable changes', async () => {
+  const h = harness(), requests = [];
+  const unchanged = { file: 'src/unchanged.js', linkPath: 'project/src/unchanged.js', rulesApplied: [], summary: '変更不要' };
+  h.api.GetResultPublicationPreview = async () => ({ ...preview(), files: [], reportFiles: [unchanged] });
+  h.api.GetResultPublicationFileDiff = async (...args) => { requests.push(args); return ''; };
+  const p = props();
+  let tree = await h.settle(p);
+  field(tree, 'title').props.onChange({ target: { value: 'No code changes' } });
+  tree = await h.settle(p);
+  assert.equal(button(tree).props.disabled, true);
+  openLink(tree, unchanged.linkPath);
+  tree = await h.settle(p);
+  assert.deepEqual(requests, [['a', 'a-revision', unchanged.file]]);
+  assert.equal(drawer(tree).props['aria-hidden'], false);
+  assert.ok(elements(drawer(tree)).some(node => node.props.children === '変更はありません'));
+  assert.equal(button(tree).props.disabled, true);
+  field(tree, 'message-as-file').props.onChange({ target: { checked: true } });
+  tree = await h.settle(p);
+  assert.equal(button(tree).props.disabled, false, 'report-only publication is allowed when the report is committed as a file');
   h.close();
 });

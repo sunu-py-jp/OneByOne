@@ -27,12 +27,6 @@ export interface Config {
   authMode: string;
   credential: string;
   credentialSet: boolean;
-  maxAttempts: number;
-  maxTurns: number;
-  maxOutputTokens: number;
-  maxFileBytes: number;
-  timeoutSeconds: number;
-  maxCostUSD: number;
   inputPricePerMillion: number;
   cachedInputPricePerMillion: number;
   outputPricePerMillion: number;
@@ -220,6 +214,8 @@ export interface ResultPublication {
   fileCount: number;
   title: string;
   message: string;
+  reportPath?: string;
+  reportBlob?: string;
 }
 export interface ResultPublicationPreview {
   workspaceId: string;
@@ -229,6 +225,8 @@ export interface ResultPublicationPreview {
   suggestedBranch: string;
   message: string;
   files: ResultPublicationFile[];
+  reportFiles: ResultPublicationFile[];
+  messageFileThreshold: number;
   publications: ResultPublication[];
 }
 export interface PublishResultsRequest {
@@ -237,6 +235,7 @@ export interface PublishResultsRequest {
   branch: string;
   title: string;
   message: string;
+  messageAsFile: boolean;
 }
 export interface State {
   executionRuns: ExecutionRun[];
@@ -352,12 +351,6 @@ export const defaultConfig: Config = {
   authMode: "api_key",
   credential: "",
   credentialSet: false,
-  maxAttempts: 0,
-  maxTurns: 0,
-  maxOutputTokens: 0,
-  maxFileBytes: 0,
-  timeoutSeconds: 0,
-  maxCostUSD: 0,
   inputPricePerMillion: 0,
   cachedInputPricePerMillion: 0,
   outputPricePerMillion: 0,

@@ -80,14 +80,14 @@ func TestPartialAdoptionReportsPublishesAndRetriesWithoutLosingHistory(t *testin
 		t.Fatalf("cumulative partial diff: %+v %v", detail, err)
 	}
 	preview, err := s.GetResultPublicationPreview()
-	if err != nil || len(preview.Files) != 1 || len(preview.Files[0].RulesApplied) != 1 || !strings.Contains(preview.Message, "修正済みのうち要確認が残るファイル数：1") || !strings.Contains(preview.Message, "外部のLoad契約") {
+	if err != nil || len(preview.Files) != 1 || len(preview.Files[0].RulesApplied) != 1 || !strings.Contains(preview.Message, "うち一部修正済み：1") || !strings.Contains(preview.Message, "外部のLoad契約") {
 		t.Fatalf("publication loses partial status: %+v %v", preview, err)
 	}
 	if _, err = s.RetryTasks([]string{"A.txt"}); err != nil {
 		t.Fatal(err)
 	}
 	preview, err = s.GetResultPublicationPreview()
-	if err != nil || !strings.Contains(preview.Message, "修正済みのうち要確認が残るファイル数：1") {
+	if err != nil || !strings.Contains(preview.Message, "うち一部修正済み：1") {
 		t.Fatalf("requeue cleared unresolved holds: %v %s", err, preview.Message)
 	}
 	s.propose = func(ctx context.Context, in agent.Input) (model.Proposal, error) {

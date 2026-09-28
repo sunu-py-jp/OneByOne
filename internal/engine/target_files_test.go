@@ -147,11 +147,11 @@ func TestTargetFilePreviewBoundsAndEncoding(t *testing.T) {
 		content, reason string
 	}{
 		{"empty.txt", nil, "", ""},
-		{"text.txt", []byte("\xef\xbb\xbf日本語\r\nsecond\n"), "日本語\r\nsecond\n", ""},
+		{"text.txt", []byte("\xef\xbb\xbf日本語\r\nsecond\n"), "日本語\nsecond\n", ""},
 		{"binary.dat", []byte{'x', 0, 'y'}, "", "バイナリ"},
-		{"shiftjis.txt", []byte{0x82, 0xa0}, "", "UTF-8以外"},
-		{"large.txt", bytes.Repeat([]byte{'a'}, targetFileContentLimit+1), "", "1 MiB"},
-		{"limit.txt", bytes.Repeat([]byte{'b'}, targetFileContentLimit), strings.Repeat("b", targetFileContentLimit), ""},
+		{"shiftjis.txt", []byte{0x82, 0xa0}, "あ", ""},
+		{"large.txt", bytes.Repeat([]byte{'a'}, (1<<20)+1), strings.Repeat("a", (1<<20)+1), ""},
+		{"limit.txt", bytes.Repeat([]byte{'b'}, (1 << 20)), strings.Repeat("b", (1 << 20)), ""},
 	}
 	for _, fixture := range fixtures {
 		writeTest(t, filepath.Join(root, fixture.file), fixture.data)

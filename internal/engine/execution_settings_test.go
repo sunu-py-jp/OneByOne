@@ -14,7 +14,7 @@ import (
 
 func TestUnspecifiedExecutionSettingsSurviveSaveRunAndRestart(t *testing.T) {
 	s, cfg := fixture(t, map[string]string{"A.txt": "Legacy.Save()\n"})
-	cfg.MaxAttempts, cfg.MaxTurns, cfg.TimeoutSeconds = 0, 0, 0
+
 	if _, err := s.SaveConfig(cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestUnspecifiedExecutionSettingsSurviveSaveRunAndRestart(t *testing.T) {
 
 func TestUnspecifiedExecutionAttemptsContinuePastThreeUntilSuccess(t *testing.T) {
 	s, cfg := fixture(t, map[string]string{"A.txt": "Legacy.Save()\n"})
-	cfg.MaxAttempts, cfg.MaxTurns, cfg.TimeoutSeconds = 0, 0, 0
+
 	if _, err := s.SaveConfig(cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestUnspecifiedExecutionAttemptsContinuePastThreeUntilSuccess(t *testing.T)
 
 func TestUnspecifiedExecutionTimeCanStillBeStopped(t *testing.T) {
 	s, cfg := fixture(t, map[string]string{"A.txt": "Legacy.Save()\n"})
-	cfg.MaxAttempts, cfg.MaxTurns, cfg.TimeoutSeconds = 0, 0, 0
+
 	if _, err := s.SaveConfig(cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -121,31 +121,28 @@ func TestUnspecifiedExecutionTimeCanStillBeStopped(t *testing.T) {
 	}
 }
 
-func TestNormalizeExecutionSettingsAllowsUnsetWithoutAcceptingInvalidValues(t *testing.T) {
-	unset, err := normalizeConfig(DefaultConfig())
+func TestExecutionSettingsExposeNoRetiredLimits(t *testing.T) {
+	cfg, err := normalizeConfig(DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertWorkspaceExecutionSettings(t, unset, model.Config{})
-	for _, test := range []struct {
-		name string
-		set  func(*model.Config)
-	}{
-		{"attempts negative", func(c *model.Config) { c.MaxAttempts = -1 }},
-		{"attempts too large", func(c *model.Config) { c.MaxAttempts = 4 }},
-		{"turns negative", func(c *model.Config) { c.MaxTurns = -1 }},
-		{"turns too large", func(c *model.Config) { c.MaxTurns = 33 }},
-		{"output too small", func(c *model.Config) { c.MaxOutputTokens = 255 }},
-		{"file too small", func(c *model.Config) { c.MaxFileBytes = 1023 }},
-		{"timeout too short", func(c *model.Config) { c.TimeoutSeconds = 9 }},
-		{"cost without rates", func(c *model.Config) { c.MaxCostUSD = 1 }},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			cfg := DefaultConfig()
-			test.set(&cfg)
-			if _, err := normalizeConfig(cfg); err == nil {
-				t.Fatal("invalid explicitly specified value was accepted")
-			}
-		})
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"maxAttempts", "maxTurns", "maxOutputTokens", "maxFileBytes", "timeoutSeconds", "maxCostUSD"} {
+		if _, exists := fields[key]; exists {
+			t.Errorf("retired setting exposed: %s", key)
+		}
+	}
+	for _, n := range []int{-1, 11} {
+		cfg.Concurrency = n
+		if _, err := normalizeConfig(cfg); err == nil {
+			t.Errorf("invalid concurrency %d accepted", n)
+		}
 	}
 }

@@ -18,6 +18,7 @@ import (
 type workspaceRecord struct {
 	model.Workspace
 	QueuePath string
+	LoadError error
 }
 
 type workspaceSetting struct {
@@ -203,15 +204,19 @@ func (s *Service) writeWorkspaceSetting(w model.Workspace, c model.Config) error
 	return store.WriteJSON(path, saved)
 }
 
-func decodeLocalJSON(path string, out any) error {
+func readLocalJSON(path string) ([]byte, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if !info.Mode().IsRegular() || info.Size() > 1<<20 {
-		return fmt.Errorf("ローカル設定ファイルの形式を確認してください")
+		return nil, fmt.Errorf("ローカル設定ファイルの形式を確認してください")
 	}
-	data, err := store.ReadFile(path)
+	return store.ReadFile(path)
+}
+
+func decodeLocalJSON(path string, out any) error {
+	data, err := readLocalJSON(path)
 	if err != nil {
 		return err
 	}
@@ -277,7 +282,8 @@ func (s *Service) listLocalWorkspaces() ([]workspaceRecord, error) {
 			continue
 		}
 		if e != nil {
-			return nil, e
+			items = append(items, s.unreadableWorkspace(entry.Name(), e))
+			continue
 		}
 		items = append(items, workspaceRecord{Workspace: w, QueuePath: c.QueuePath})
 	}
@@ -287,8 +293,13 @@ func (s *Service) listLocalWorkspaces() ([]workspaceRecord, error) {
 func (s *Service) publishWorkspacesLocked() {
 	s.state.Workspaces = make([]model.Workspace, len(s.workspaces))
 	for i, w := range s.workspaces {
+		s.setWorkspaceIssueLocked(w.ID, "settings", w.LoadError, "target", "")
 		s.state.Workspaces[i] = w.Workspace
 		s.state.Workspaces[i].Issues = s.cachedWorkspaceIssuesLocked(w.ID)
+		if w.LoadError != nil {
+			// Diagnostics from a previously readable config are no longer current.
+			s.state.Workspaces[i].Issues = []model.WorkspaceIssue{s.workspaceIssues[w.ID]["settings"]}
+		}
 	}
 }
 
@@ -341,9 +352,7 @@ func (s *Service) initializeWorkspaces() error {
 			return e
 		}
 	}
-	if active == "" && len(items) > 0 {
-		active = items[0].ID
-	}
+	active = availableWorkspaceID(items, active)
 	if active != "" {
 		return s.activateWorkspace(active, false)
 	}
@@ -374,9 +383,15 @@ func (s *Service) saveWorkspaceConfig(cfg *model.Config) error {
 	index := -1
 	for i, item := range items {
 		if item.ID == active {
+			if item.LoadError != nil {
+				return item.LoadError
+			}
 			index = i
 			w = item.Workspace
 		}
+	}
+	if active != "" && index < 0 {
+		return fmt.Errorf("ワークスペースの設定が見つかりません。ワークスペースを開き直してください")
 	}
 	if active == "" {
 		w.ID = uid()
@@ -447,6 +462,12 @@ func (s *Service) activateWorkspace(id string, persist bool) error {
 	if err != nil {
 		return err
 	}
+	// Refresh per-workspace errors even when the requested selection fails. Do
+	// not change the current configuration or editing lease until it succeeds.
+	s.mu.Lock()
+	s.workspaces = items
+	s.publishWorkspacesLocked()
+	s.mu.Unlock()
 	w, c, err := s.readWorkspaceSetting(id)
 	if err != nil {
 		return fmt.Errorf("ワークスペースが見つからないか、設定を読み込めません: %w", err)

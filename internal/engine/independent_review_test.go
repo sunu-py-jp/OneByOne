@@ -98,7 +98,7 @@ func TestIndependentReviewRepairsSemanticFailureInSameEditorConversation(t *test
 	if _, err := s.Scan(); err != nil {
 		t.Fatal(err)
 	}
-	cfg.MaxFileBytes = 1024
+
 	if _, err := s.SaveConfig(cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -171,10 +171,10 @@ func TestIndependentReviewRepairsSemanticFailureInSameEditorConversation(t *test
 			engineRepairResponse(w, engineRepairCall("plan", "update_state", independentReviewPlan()))
 		case 3:
 			oversized := independentReviewCandidate(original, true, true)
-			oversized.Edits[0].NewText = strings.Repeat("x", cfg.MaxFileBytes+1)
+			oversized.Edits[0].OldText = "absent source text"
 			engineRepairResponse(w, engineRepairCall("oversize", "validate_candidate", oversized))
 		case 4:
-			if reviewRequests.Load() != 0 || checkpoint.State.LastCandidate == nil || checkpoint.State.LastCandidate.Result.Passed {
+			if reviewRequests.Load() != 0 || (checkpoint.State.LastCandidate != nil && checkpoint.State.LastCandidate.Result.Passed) {
 				t.Error("mechanical failure was reviewed or accepted")
 			}
 			engineRepairResponse(w, engineRepairCall("bad-semantics", "validate_candidate", independentReviewCandidate(original, true, false)))
@@ -218,7 +218,7 @@ func TestIndependentReviewRepairsSemanticFailureInSameEditorConversation(t *test
 		t.Fatalf("independent review did not stay inside one repair attempt: %+v; sessions=%d requests=%d reviews=%d", state, editorSessions.Load(), requests.Load(), reviewRequests.Load())
 	}
 	checkpoint, err := loadRepairCheckpoint(cfg, task.History[0])
-	if err != nil || checkpoint.State.ValidationCount != 3 || checkpoint.State.ReviewCount != 2 || checkpoint.State.RequestPending || checkpoint.State.Usage.Turns != 9 || task.History[0].Usage.InputTokens != 900 || len(task.History[0].Reviews) != 2 {
+	if err != nil || checkpoint.State.ValidationCount != 2 || checkpoint.State.ReviewCount != 2 || checkpoint.State.RequestPending || checkpoint.State.Usage.Turns != 9 || task.History[0].Usage.InputTokens != 900 || len(task.History[0].Reviews) != 2 {
 		t.Fatalf("review reset/dropped the shared validation/request budget: %+v, %v", checkpoint, err)
 	}
 
@@ -230,10 +230,10 @@ func TestIndependentReviewRepairsSemanticFailureInSameEditorConversation(t *test
 	}
 }
 
-func TestIndependentReviewUnknownTransportStopsWithoutCommitOrAutomaticReplay(t *testing.T) {
+func TestIndependentReviewRecoversUnknownTransportAndRetainsUsageUncertainty(t *testing.T) {
 	original := "Legacy.Save()\nLegacy.Load()\nflush()\n"
 	s, cfg := fixture(t, map[string]string{"A.txt": original})
-	cfg.MaxCostUSD, cfg.InputPricePerMillion, cfg.OutputPricePerMillion = 100, 1, 1
+	cfg.InputPricePerMillion, cfg.OutputPricePerMillion = 1, 1
 	if _, err := s.SaveConfig(cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -249,7 +249,11 @@ func TestIndependentReviewUnknownTransportStopsWithoutCommitOrAutomaticReplay(t 
 			return
 		}
 		if len(body.Tools) == 0 {
-			reviewRequests.Add(1)
+			reviewTurn := reviewRequests.Add(1)
+			if reviewTurn > 1 {
+				independentReviewReply(t, w, original, true)
+				return
+			}
 			queue, err := store.LoadQueue(cfg.QueuePath)
 			if err != nil || len(queue) != 1 || len(queue[0].History) != 1 {
 				t.Errorf("review request has no durable attempt: %+v, %v", queue, err)
@@ -290,7 +294,7 @@ func TestIndependentReviewUnknownTransportStopsWithoutCommitOrAutomaticReplay(t 
 			}
 			independentReviewFinal(w, map[string]string{"outcome": "modified", "candidateId": checkpoint.State.LastCandidate.Result.CandidateID, "note": "Calls updated."})
 		default:
-			t.Errorf("uncertain review was replayed automatically, request %d", turn)
+			t.Errorf("unexpected editor request %d", turn)
 			w.WriteHeader(500)
 		}
 	}))
@@ -301,27 +305,15 @@ func TestIndependentReviewUnknownTransportStopsWithoutCommitOrAutomaticReplay(t 
 	}
 	state := runTest(t, s, 1)
 	task := state.Tasks[0]
-	if task.Status != "needs_human" || requests.Load() != 5 || reviewRequests.Load() != 1 || task.History[0].Commit != "" || !task.History[0].Usage.Uncertain {
-		t.Fatalf("uncertain review was accepted or retried: %+v, calls=%d", state, requests.Load())
+	if task.Status != "done" || requests.Load() != 6 || reviewRequests.Load() != 2 || task.History[0].Commit == "" || !task.History[0].Usage.Uncertain {
+		t.Fatalf("review retry lost uncertainty or did not complete: %+v calls=%d", state, requests.Load())
 	}
 	checkpoint, err := loadRepairCheckpoint(cfg, task.History[0])
-	if err != nil || checkpoint == nil || !checkpoint.State.RequestPending || !checkpoint.State.Usage.Uncertain || checkpoint.State.Usage.Turns != 5 || checkpoint.State.Usage.InputTokens != 400 || checkpoint.State.ReviewCount != 1 || len(task.History[0].Reviews) != 1 {
-		t.Fatalf("uncertain reviewer accounting was not durable: %+v, %v", checkpoint, err)
+	if err != nil || checkpoint == nil || checkpoint.State.RequestPending || !checkpoint.State.Usage.Uncertain || checkpoint.State.Usage.Turns != 6 || checkpoint.State.Usage.InputTokens != 500 || checkpoint.State.ReviewCount != 1 || len(task.History[0].Reviews) != 1 {
+		t.Fatalf("review retry accounting was not durable: %+v %v", checkpoint, err)
 	}
-	if got := readTest(t, filepath.Join(state.Worktree, "A.txt")); got != original {
-		t.Fatalf("unreviewed candidate was adopted: %q", got)
-	}
-	if err := s.Start(1); err == nil {
-		s.Stop()
-		s.Wait()
-		t.Fatal("ordinary Start unexpectedly resumed a held review")
-	}
-	if _, err := s.RetryTasks([]string{"A.txt"}); err != nil {
-		t.Fatal(err)
-	}
-	state = runTest(t, s, 1)
-	if state.Tasks[0].Status != "needs_human" || requests.Load() != 5 {
-		t.Fatalf("explicit resume ignored unknown costs or reset the budget: %+v, calls=%d", state, requests.Load())
+	if got := readTest(t, filepath.Join(state.Worktree, "A.txt")); got != "Modern.Save()\nModern.Load()\nflush()\n" {
+		t.Fatalf("reviewed candidate not adopted: %q", got)
 	}
 }
 

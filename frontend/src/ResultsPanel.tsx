@@ -8,7 +8,7 @@ import { useResultsSplitter } from "./useResultsSplitter";
 import { useResultSnapshot } from "./useResultSnapshot";
 import { RulePreviewPane } from "./RulePreviewPane";
 import { TaskFileList } from "./TaskFileList";
-import { attemptStatusLabel, isCompletedTask, isPartialAdoption, taskDisplayStatus, taskStatusLabel } from "./task-state";
+import { activeFilePhases, attemptStatusLabel, isCompletedTask, isPartialAdoption, taskDisplayStatus, taskStatusLabel } from "./task-state";
 import { diffRuleAnnotations, recordedChanges, rulesForLine, ruleOrigins, originLabel, changeNote, heldSourceTarget, type LineRuleAnnotation } from "./result-line-rules";
 import type { Attempt, ChangeReportItem, Check, FileDetail, IndependentReview, Rule, State, Task, Usage } from "./types";
 import "./results.css";
@@ -153,8 +153,7 @@ export function ResultsPanel({ state, busy, usable, canSetup, selectedFile, onSe
   const rulesByID = useMemo(() => new Map(state.rules.map(rule => [rule.id, rule])), [state.rules]);
   const runTasks = useMemo(() => execution ? state.tasks.filter(task => execution.targetFiles.has(task.file)).map(task => ({ ...task, excluded: false })) : state.tasks, [state.tasks, execution?.targetFiles]);
   const { counts, progress, runLabel } = useMemo(() => summarizeResults(runTasks, state.running, state.phase, state.lastError), [runTasks, state.running, state.phase, state.lastError]);
-  const phaseLabel = (phase: string) => phase === "reviewing" ? "独立レビュー中" : phase === "checking" ? "検証中" : phase === "preparing" ? "実行環境を準備しています" : phase === "applying" ? "反映待ち・保存中" : phase === "finalizing" ? "結果を保存中" : "修正中";
-  const currentFiles = [...new Set(state.currentFiles?.length ? state.currentFiles : state.currentFile ? [state.currentFile] : [])];
+  const filePhases = historical ? undefined : activeFilePhases(state);
   const filteredTasks = useMemo(() => {
     const tasks = execution ? state.tasks.filter(task => execution.targetFiles.has(task.file) || (filter === "all" && isCompletedTask(task))).map(task => ({ ...task, excluded: false })) : state.tasks;
     return filterResults(tasks, rulesByID, filter, search);
@@ -196,11 +195,6 @@ export function ResultsPanel({ state, busy, usable, canSetup, selectedFile, onSe
     if (target?.attemptIndex !== undefined) setAttemptSelection({ file: selectedFile, index: target.attemptIndex });
     setCodeViewSelection({ key, view });
     setCodeFocus(previous => ({ key, view, line: target?.line || null, request: (previous?.request || 0) + 1 }));
-  }
-  function showCurrentFile(file: string) {
-    setSearch("");
-    setFilter("all");
-    chooseFile(file);
   }
   function retryFiles(files: string[]) {
     // Retrying can keep the same selection while moving it out of the completed
@@ -291,12 +285,6 @@ export function ResultsPanel({ state, busy, usable, canSetup, selectedFile, onSe
           <span className="results-filter-dot" />{label}<b>{num(count)}</b>
         </button>)}
       </div>
-      {state.running && <div className="results-current" aria-label="処理中のファイル">
-        {currentFiles.length ? currentFiles.map(file => <div className="results-current-file" key={file}>
-          <span>{phaseLabel(state.filePhases?.[file] || state.phase)}</span>
-          <button onClick={() => showCurrentFile(file)} title={file}><span>{file}</span><Icon name="arrow" size={13} /></button>
-        </div>) : <span>{phaseLabel(state.phase)}</span>}
-      </div>}
       {state.lastError && <details className="results-error-summary"><summary><Icon name="warning" size={14} /><span>{state.lastError.split("\n")[0]}</span><Icon name="down" size={13} /></summary><pre>{state.lastError}</pre></details>}
     </header>
 
@@ -306,7 +294,7 @@ export function ResultsPanel({ state, busy, usable, canSetup, selectedFile, onSe
           <label className="results-search"><Icon name="search" size={15} /><input aria-label="結果のファイル名・適用ルールを検索" value={search} onChange={event => setSearch(event.target.value)} placeholder="ファイル・適用ルールを検索" />{search && <button onClick={() => setSearch("")} aria-label="検索をクリア"><Icon name="close" size={13} /></button>}</label>
           {counts.excluded > 0 && <button className={`results-excluded-toggle ${filter === "excluded" ? "active" : ""}`} aria-pressed={filter === "excluded"} onClick={() => setFilter(filter === "excluded" ? "all" : "excluded")} title="処理対象から外したファイルの履歴を表示">対象外 {num(counts.excluded)}</button>}
         </div>
-        <TaskFileList runTargetFiles={execution?.targetFiles} tasks={filteredTasks} selectedFile={selectedFile} onSelectFile={chooseFile}
+        <TaskFileList runTargetFiles={execution?.targetFiles} tasks={filteredTasks} selectedFile={selectedFile} onSelectFile={chooseFile} filePhases={filePhases}
           completedOpen={completedOpen} onCompletedOpenChange={setCompletedOpen}
           onRetry={file => retryFiles([file])} retryDisabled={mutationLocked} retryDisabledReason={mutationLockedReason}
           emptyMessage="該当するファイルはありません" />
@@ -326,7 +314,7 @@ export function ResultsPanel({ state, busy, usable, canSetup, selectedFile, onSe
         {selectedTask ? <>
           <header className="results-detail-heading"><Icon name="file" size={16} /><strong title={fullPath(state.config.root, selectedTask.file)}>{selectedTask.file}</strong>
             {appliedIDs.length > 0 && <RuleChips ids={appliedIDs} rules={rulesByID} origins={ruleOrigins(currentChanges)} onOpen={showRule} />}
-            <ResultStatus status={taskDisplayStatus(selectedTask)} label={taskStatusLabel(selectedTask)} /></header>
+            <ResultStatus status={taskDisplayStatus(selectedTask)} label={taskStatusLabel(selectedTask, filePhases?.[selectedTask.file])} /></header>
           {explanation && <div key={`${selectedFile}:${attemptIndex}:note`} className={`results-explanation${explanationNeedsAttention ? " attention" : ""}`} role="note" aria-label="処理の説明" tabIndex={0}>
             <Icon name={explanationNeedsAttention ? "warning" : "info"} size={14} /><p>{explanation}</p>
           </div>}

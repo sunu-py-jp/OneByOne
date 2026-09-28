@@ -31,7 +31,7 @@ func loadReportSources(cfg model.Config, h model.Attempt, c *repairCheckpoint) r
 		return sources
 	}
 	dir := filepath.Dir(statePath)
-	sources.before, sources.beforeValid = readReportSource(dir, h.ID+".before", h.InputHash, cfg.EffectiveMaxFileBytes())
+	sources.before, sources.beforeValid = readReportSource(dir, h.ID+".before", h.InputHash)
 	candidate := c.State.LastCandidate
 	if !sources.beforeValid || candidate == nil || candidate.Request.BaseHash != h.InputHash || candidate.Result.CandidateHash == "" {
 		return sources
@@ -49,11 +49,11 @@ func loadReportSources(cfg model.Config, h model.Attempt, c *repairCheckpoint) r
 	if id == "" || filepath.Base(id) != id || strings.ContainsAny(id, "/\\:*?\"<>|\x00\r\n") || id == "." || id == ".." {
 		return sources
 	}
-	sources.after, sources.afterValid = readReportSource(dir, h.ID+".candidate-"+id+".after", candidate.Result.CandidateHash, cfg.EffectiveMaxFileBytes())
+	sources.after, sources.afterValid = readReportSource(dir, h.ID+".candidate-"+id+".after", candidate.Result.CandidateHash)
 	return sources
 }
 
-func readReportSource(dir, name, hash string, limit int) (string, bool) {
+func readReportSource(dir, name, hash string) (string, bool) {
 	if hash == "" {
 		return "", false
 	}
@@ -62,11 +62,11 @@ func readReportSource(dir, name, hash string, limit int) (string, bool) {
 		return "", false
 	}
 	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Size() > int64(limit) {
+	if err != nil || !info.Mode().IsRegular() {
 		return "", false
 	}
 	data, err := os.ReadFile(path)
-	if err != nil || len(data) > limit || digest(data) != hash {
+	if err != nil || digest(data) != hash {
 		return "", false
 	}
 	source, err := decodeSource(data)

@@ -47,9 +47,6 @@ func validatePlanSourceLocations(plan model.RepairPlan, content string) error {
 		if item.Status == "blocked" && (len(item.SourceLocations) == 0 || strings.TrimSpace(item.HoldReason) == "") {
 			return fmt.Errorf("blocked item %q requires holdReason and nonempty sourceLocations identifying actual original code; for truly unlocalizable uncertainty use a blocked rule decision without an artificial item", item.ID)
 		}
-		if len(item.SourceLocations) > 32 {
-			return fmt.Errorf("item %q exceeds 32 source locations", item.ID)
-		}
 		seen := map[model.SourceLocation]bool{}
 		for _, location := range item.SourceLocations {
 			if seen[location] {

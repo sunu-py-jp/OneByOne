@@ -81,9 +81,6 @@ func TestRepairPlanRejectsIncompleteOrMalformedJudgments(t *testing.T) {
 		{"blank change", func(p *model.PlanUpdate) { p.Items[0].Change = "" }, "nonempty location"},
 		{"blank expected", func(p *model.PlanUpdate) { p.Items[0].Expected = "" }, "nonempty location"},
 		{"forged verified", func(p *model.PlanUpdate) { p.Items[0].Status = "verified" }, "status must"},
-		{"oversized text", func(p *model.PlanUpdate) { p.Items[0].Change = strings.Repeat("x", 64<<10) }, "64 KiB"},
-		{"too many items", func(p *model.PlanUpdate) { p.Items = make([]model.PlanItem, 257) }, "256 items"},
-		{"too many decisions", func(p *model.PlanUpdate) { p.RuleDecisions = make([]model.PlanDecision, 257) }, "256 rule decisions"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

@@ -19,6 +19,7 @@ export interface TaskFileListProps {
   onCompletedOpenChange?: (open: boolean) => void;
   /** Results retain this run's completed files in the main list. Omit for status-only grouping. */
   runTargetFiles?: ReadonlySet<string>;
+  filePhases?: Readonly<Record<string, string>>;
   emptyMessage?: string;
 }
 
@@ -33,13 +34,13 @@ export function partitionTaskFiles(tasks: readonly Task[], runTargetFiles?: Read
 
 /** Identical source/result navigation; only execution settings supply selection. */
 export function TaskFileList({ tasks, selectedFile, onSelectFile, selection, onRetry, retryDisabled = false, retryDisabledReason, retryUnavailable,
-  completedOpen, onCompletedOpenChange, runTargetFiles, emptyMessage = "条件に一致するファイルがありません" }: TaskFileListProps) {
+  completedOpen, onCompletedOpenChange, runTargetFiles, filePhases, emptyMessage = "条件に一致するファイルがありません" }: TaskFileListProps) {
   const [localCompletedOpen, setLocalCompletedOpen] = useState(false);
   const completedId = useId();
   const open = completedOpen ?? localCompletedOpen;
   const { active, completed } = useMemo(() => partitionTaskFiles(tasks, runTargetFiles), [tasks, runTargetFiles]);
   const visibleTasks = useMemo(() => open ? [...active, ...completed] : active, [active, completed, open]);
-  const rowProps = { selectedFile, onSelectFile, selection, onRetry, retryDisabled, retryDisabledReason, retryUnavailable };
+  const rowProps = { selectedFile, onSelectFile, selection, onRetry, retryDisabled, retryDisabledReason, retryUnavailable, filePhases };
   function toggleCompleted() {
     if (completedOpen === undefined) setLocalCompletedOpen(!open);
     onCompletedOpenChange?.(!open);
@@ -53,8 +54,8 @@ export function TaskFileList({ tasks, selectedFile, onSelectFile, selection, onR
 }
 
 const ROW_HEIGHT = 34;
-function VirtualTaskRows({ id, tasks, label, completedStart, completedCount, completedOpen, onToggleCompleted, selectedFile, onSelectFile, selection, onRetry, retryDisabled, retryDisabledReason, retryUnavailable }: Pick<TaskFileListProps,
-  "tasks" | "selectedFile" | "onSelectFile" | "selection" | "onRetry" | "retryDisabled" | "retryDisabledReason" | "retryUnavailable"> & { id: string; label: string; completedStart: number; completedCount: number; completedOpen: boolean; onToggleCompleted: () => void }) {
+function VirtualTaskRows({ id, tasks, label, completedStart, completedCount, completedOpen, onToggleCompleted, selectedFile, onSelectFile, selection, onRetry, retryDisabled, retryDisabledReason, retryUnavailable, filePhases }: Pick<TaskFileListProps,
+  "tasks" | "selectedFile" | "onSelectFile" | "selection" | "onRetry" | "retryDisabled" | "retryDisabledReason" | "retryUnavailable" | "filePhases"> & { id: string; label: string; completedStart: number; completedCount: number; completedOpen: boolean; onToggleCompleted: () => void }) {
   const [element, setElement] = useState<HTMLDivElement | null>(null);
   const [viewport, setViewport] = useState({ top: 0, height: 400 });
   const wasCompletedOpen = useRef(false);
@@ -127,7 +128,7 @@ function VirtualTaskRows({ id, tasks, label, completedStart, completedCount, com
             <input type="checkbox" aria-label={`${task.file}を処理対象にする`} checked={!scopeReason && selection.files.has(task.file)} disabled={selection.disabled || Boolean(scopeReason)} onChange={event => toggle(task, event.target.checked)} />
           </HoverTip> : <Icon name="file" size={13} />}
           <button type="button" className="task-file-open" aria-label={`${task.file}の内容を表示`} aria-pressed={selectedFile === task.file} onClick={() => onSelectFile(task.file)}><TargetFilePath file={task.file} /></button>
-          <TaskListStatus task={task} />
+          <TaskListStatus task={task} phase={filePhases?.[task.file]} />
         </div>;
     });
   }
@@ -151,6 +152,6 @@ function VirtualTaskRows({ id, tasks, label, completedStart, completedCount, com
   </div>;
 }
 
-export function TaskListStatus({ task }: { task: Task }) {
-  return <span className={`task-list-status status-${taskDisplayStatus(task)}`}><i aria-hidden="true" />{taskStatusLabel(task)}</span>;
+export function TaskListStatus({ task, phase }: { task: Task; phase?: string }) {
+  return <span className={`task-list-status status-${taskDisplayStatus(task)}`}><i aria-hidden="true" />{taskStatusLabel(task, phase)}</span>;
 }

@@ -52,7 +52,7 @@ func (s *Service) DeleteWorkspace(id string) (model.State, error) {
 	workspaceDir := filepath.Dir(setting)
 	found := false
 	for _, item := range items {
-		if isAtOrWithin(workspaceDir, item.Root) || isAtOrWithin(item.Root, workspaceDir) {
+		if item.Root != "" && (isAtOrWithin(workspaceDir, item.Root) || isAtOrWithin(item.Root, workspaceDir)) {
 			return s.Snapshot(), fmt.Errorf("ワークスペース保存先と対象フォルダが重なっているため削除できません")
 		}
 		if item.ID != id {
@@ -89,10 +89,7 @@ func (s *Service) DeleteWorkspace(id string) (model.State, error) {
 	if err = root.Rename(from, destination); err != nil {
 		return s.Snapshot(), fmt.Errorf("ワークスペースを退避できません: %w", err)
 	}
-	next := ""
-	if len(remaining) > 0 {
-		next = remaining[0].ID
-	}
+	next := availableWorkspaceID(remaining, "")
 	if err = s.writeActiveWorkspace(next); err != nil {
 		if rollbackErr := root.Rename(destination, from); rollbackErr == nil {
 			return s.Snapshot(), err

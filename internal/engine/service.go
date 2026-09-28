@@ -210,23 +210,8 @@ func normalizeConfig(c model.Config) (model.Config, error) {
 			return c, fmt.Errorf("キューの保存先は対象フォルダの外に指定してください（作業データをソースに混ぜないため）")
 		}
 	}
-	if c.MaxAttempts < 0 || c.MaxAttempts > 3 {
-		return c, fmt.Errorf("候補の検証回数は未設定（無制限）、または1〜3です")
-	}
-	if c.MaxTurns < 0 || c.MaxTurns > 32 || (c.MaxOutputTokens != 0 && c.MaxOutputTokens < 256) || c.MaxOutputTokens > 32768 {
-		return c, fmt.Errorf("ターン数は未設定（無制限）、または1〜32です。最大出力トークンは未設定、または256〜32768です")
-	}
-	if (c.MaxFileBytes != 0 && c.MaxFileBytes < 1024) || c.MaxFileBytes > 1<<20 {
-		return c, fmt.Errorf("ファイル上限は未設定、または1KB〜1MBです")
-	}
-	if (c.TimeoutSeconds != 0 && c.TimeoutSeconds < 10) || c.TimeoutSeconds > 3600 {
-		return c, fmt.Errorf("タイムアウトは未設定（無制限）、または10〜3600秒です")
-	}
-	if c.MaxCostUSD < 0 || c.InputPricePerMillion < 0 || c.CachedInputPricePerMillion < 0 || c.OutputPricePerMillion < 0 {
-		return c, fmt.Errorf("費用・単価は0以上です")
-	}
-	if c.MaxCostUSD > 0 && (c.InputPricePerMillion <= 0 || c.OutputPricePerMillion <= 0) {
-		return c, fmt.Errorf("費用上限を使う場合は入力・出力単価を指定してください")
+	if c.InputPricePerMillion < 0 || c.CachedInputPricePerMillion < 0 || c.OutputPricePerMillion < 0 {
+		return c, fmt.Errorf("単価は0以上です")
 	}
 	if c.AuthMode != "api_key" && c.AuthMode != "bearer" && !(c.Provider == "azure" && c.AuthMode == "oauth") {
 		return c, fmt.Errorf("認証方式が不正です")
@@ -334,12 +319,6 @@ func (s *Service) load(path string) error {
 			c.LLMConnectionID = connection.LLMConnectionID
 			c.ExcludedRuleIDs = append([]string(nil), connection.ExcludedRuleIDs...)
 			c.Concurrency = connection.Concurrency
-			c.MaxAttempts = connection.MaxAttempts
-			c.MaxTurns = connection.MaxTurns
-			c.MaxOutputTokens = connection.MaxOutputTokens
-			c.MaxFileBytes = connection.MaxFileBytes
-			c.TimeoutSeconds = connection.TimeoutSeconds
-			c.MaxCostUSD = connection.MaxCostUSD
 			c.InputPricePerMillion = connection.InputPricePerMillion
 			c.CachedInputPricePerMillion = connection.CachedInputPricePerMillion
 			c.OutputPricePerMillion = connection.OutputPricePerMillion
@@ -898,16 +877,29 @@ func (s *Service) GetFileDetail(file string, index int) (model.FileDetail, error
 		d.Changes = append(d.Changes, row)
 	}
 	base := filepath.Join(cfg.QueuePath+".artifacts", h.ID)
-	if b, e := os.ReadFile(base + ".before"); e == nil {
-		d.Before = string(b)
+	before, beforeErr := os.ReadFile(base + ".before")
+	if beforeErr == nil {
+		var err error
+		d.Before, err = sourceDisplay(before)
+		if err != nil {
+			return d, err
+		}
 	}
-	if b, e := os.ReadFile(base + ".after"); e == nil {
-		d.After = string(b)
+	after, afterErr := os.ReadFile(base + ".after")
+	if afterErr == nil {
+		var err error
+		d.After, err = sourceDisplay(after)
+		if err != nil {
+			return d, err
+		}
 	} else {
-		d.After = d.Before
+		after, d.After = before, d.Before
 	}
-	if b, e := os.ReadFile(base + ".diff"); e == nil {
-		d.Diff = string(b)
+	if data, err := os.ReadFile(base + ".diff"); err == nil {
+		d.Diff, err = sourceDiffDisplay(data, before, after)
+		if err != nil {
+			return d, err
+		}
 	}
 	return d, nil
 }

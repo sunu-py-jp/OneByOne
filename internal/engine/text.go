@@ -1,57 +1,127 @@
 package engine
 
 import (
-	"bytes"
+	"context"
 	"crypto/sha256"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"unicode/utf8"
 
 	"onebyone/internal/model"
+	"onebyone/internal/sourceencoding"
 )
 
 func digest(b []byte) string { return fmt.Sprintf("%x", sha256.Sum256(b)) }
 
 type sourceText struct {
-	text string
-	bom  bool
-	crlf bool
+	text     string
+	document sourceencoding.Document
 }
 
 func decodeSource(data []byte) (sourceText, error) {
-	s := sourceText{bom: bytes.HasPrefix(data, []byte{0xef, 0xbb, 0xbf})}
-	if s.bom {
-		data = data[3:]
-	}
-	if !utf8.Valid(data) || bytes.IndexByte(data, 0) >= 0 {
-		return s, fmt.Errorf("UTF-8以外またはバイナリのファイルは自動編集しません")
-	}
-	x := string(data)
-	s.crlf = strings.Contains(x, "\r\n")
-	if s.crlf && strings.Contains(strings.ReplaceAll(x, "\r\n", ""), "\n") {
-		return s, fmt.Errorf("改行コードが混在しているため確認が必要です")
-	}
-	if strings.Contains(strings.ReplaceAll(x, "\r\n", ""), "\r") {
-		return s, fmt.Errorf("CR単独の改行には対応していません")
-	}
-	s.text = strings.ReplaceAll(x, "\r\n", "\n")
-	return s, nil
+	document, err := sourceencoding.Decode(data)
+	return sourceText{text: document.Text, document: document}, err
 }
 
-func (s sourceText) encode(text string) []byte {
-	if s.crlf {
-		text = strings.ReplaceAll(text, "\n", "\r\n")
+func (s sourceText) encode(text string, edits ...[]model.Edit) ([]byte, error) {
+	if len(edits) == 0 {
+		return s.document.Encode(text)
 	}
-	if s.bom {
-		text = "\ufeff" + text
+	spans := make([]sourceencoding.Edit, 0, len(edits[0]))
+	for _, edit := range edits[0] {
+		start := strings.Index(s.text, edit.OldText)
+		if edit.OldText == "" || start < 0 || start != strings.LastIndex(s.text, edit.OldText) {
+			return nil, fmt.Errorf("変更元が一意に一致しません")
+		}
+		spans = append(spans, sourceencoding.Edit{Start: start, End: start + len(edit.OldText), Text: edit.NewText})
 	}
-	return []byte(text)
+	encoded, err := s.document.Apply(spans)
+	if err != nil {
+		return nil, err
+	}
+	verified, err := decodeSource(encoded)
+	if err != nil || verified.text != text {
+		return nil, fmt.Errorf("元の文字コード・改行を保持した変更結果が一致しません")
+	}
+	return encoded, nil
+}
+
+func sourceDisplay(data []byte) (string, error) {
+	source, err := decodeSource(data)
+	return source.text, err
+}
+
+// Git diff metadata is UTF-8 while each hunk retains its source encoding.
+// Decode the payload of hunk lines only; raw .diff artifacts stay applicable.
+func sourceDiffDisplay(data, before, after []byte) (string, error) {
+	original, err := sourceencoding.Decode(before)
+	if err != nil {
+		return "", err
+	}
+	candidate, err := sourceencoding.Decode(after)
+	if err != nil {
+		return "", err
+	}
+	if hasStandaloneCR(before) || hasStandaloneCR(after) {
+		return normalizedDisplayDiff(context.Background(), data, original.Text, candidate.Text)
+	}
+	return sourceDiffDisplayWithEncoding(data, original.Encoding, candidate.Encoding)
+}
+
+func hasStandaloneCR(data []byte) bool {
+	for i, b := range data {
+		if b == '\r' && (i+1 == len(data) || data[i+1] != '\n') {
+			return true
+		}
+	}
+	return false
+}
+
+// Git counts LF lines while the editor counts normalized source lines. A CR
+// file needs a display-only diff to keep line annotations aligned. Raw patch
+// artifacts are never overwritten or used as display text for publication.
+func normalizedDisplayDiff(ctx context.Context, metadata []byte, before, after string) (string, error) {
+	diff, err := candidateSnapshotDiff(ctx, os.TempDir(), "source", []byte(before), []byte(after))
+	if err != nil || diff == "" {
+		return diff, err
+	}
+	oldHeader := strings.Index(string(metadata), "\n@@ ")
+	newHeader := strings.Index(diff, "\n@@ ")
+	if oldHeader >= 0 && newHeader >= 0 {
+		diff = string(metadata[:oldHeader+1]) + diff[newHeader+1:]
+	}
+	return diff, nil
+}
+
+func sourceDiffDisplayWithEncoding(data []byte, before, after sourceencoding.Encoding) (string, error) {
+	lines := strings.SplitAfter(string(data), "\n")
+	inHunk := false
+	for i, line := range lines {
+		if strings.HasPrefix(line, "@@ ") {
+			inHunk = true
+			continue
+		}
+		if !inHunk || len(line) == 0 || (line[0] != '+' && line[0] != '-' && line[0] != ' ') {
+			continue
+		}
+		encoding := before
+		if line[0] == '+' {
+			encoding = after
+		}
+		text, err := sourceencoding.DecodeFragment([]byte(line[1:]), encoding)
+		if err != nil {
+			return "", err
+		}
+		lines[i] = line[:1] + text
+	}
+	return strings.Join(lines, ""), nil
 }
 
 func applyEdits(text string, edits []model.Edit) (string, error) {
-	if len(edits) == 0 || len(edits) > 100 {
-		return "", fmt.Errorf("変更箇所は1〜100件必要です")
+	if len(edits) == 0 {
+		return "", fmt.Errorf("変更箇所が1件以上必要です")
 	}
 	type span struct {
 		start, end  int

@@ -400,22 +400,91 @@ export function previewDetail(file: string, attemptIndex = -1): FileDetail {
 }
 
 export function previewResultPublication(): ResultPublicationPreview {
-  const files = previewState.tasks.flatMap(task => {
+  const pathOrder = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
+  const entries = previewState.tasks.flatMap(task => {
     const detail = previewDetail(task.file);
-    if (!detail.diff) return [];
+    const latest = [...task.history].reverse().find(attempt => !["", "running", "validated"].includes(attempt.outcome));
+    const outcome = latest?.outcome || task.status;
+    const changed = Boolean(detail.diff);
+    if (!changed && (!["done", "skipped", "needs_human", "failed", "interrupted"].includes(outcome) || task.excluded && !task.history.length)) return [];
     const fixed = (detail.changes || []).filter(change => change.status === "fixed");
-    return [{ file: task.file, linkPath: task.file, rulesApplied: [...new Set(fixed.map(change => change.ruleId))],
-      summary: fixed.map(change => change.change).filter(Boolean).join("\n") || task.note, diff: "" }];
-  });
+    const held = (detail.changes || []).some(change => change.status === "needs_human") || ["needs_human", "failed", "interrupted"].includes(outcome);
+    return [{ task, detail, latest, changed, held, rank: held ? 1 : changed ? 0 : 2,
+      file: { file: task.file, linkPath: task.file, rulesApplied: [...new Set(fixed.map(change => change.ruleId))],
+        summary: latest?.note || fixed.map(change => change.change).filter(Boolean).join("\n") || task.note, diff: "" } }];
+  }).sort((a, b) => a.rank - b.rank || pathOrder(a.file.file, b.file.file));
+  const reportFiles = entries.map(entry => entry.file).sort((a, b) => pathOrder(a.file, b.file));
+  const files = entries.filter(entry => entry.changed).map(entry => entry.file).sort((a, b) => pathOrder(a.file, b.file));
+  const cell = (text: string) => text.replace(/\r\n?/g, "\n").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/`/g, "&#96;").replace(/\\/g, "\\\\").replace(/\|/g, "&#124;").replace(/\n/g, "<br>");
+  const fileLink = (file: typeof reportFiles[number], inTable = false) => {
+    let label = file.linkPath.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/`/g, "&#96;").replace(/[\\\[\]]/g, "\\$&");
+    if (inTable) label = label.replace(/\|/g, "&#124;");
+    const destination = file.linkPath.split("/").map(encodeURIComponent).join("/");
+    return `[${label}](<${destination}>)`;
+  };
+  const fileStatus = (entry: typeof entries[number]) => entry.held
+    ? entry.changed ? "⚠️一部修正済み要確認" : "⚠️要確認"
+    : entry.changed ? "✅完了" : "☑️修正不要";
+  const partial = entries.filter(entry => entry.changed && entry.held).length;
+  const counts = [
+    `📄 対象ファイル数：${entries.length}`,
+    `✅ 修正完了：${files.length - partial}`,
+    `⚠️ 要確認：${entries.filter(entry => entry.held).length}${partial ? `（うち一部修正済み：${partial}）` : ""}`,
+    `☑️ 修正不要：${entries.filter(entry => !entry.changed && !entry.held).length}`,
+  ];
+  const summary = entries.map(entry => `| ${fileLink(entry.file, true)} | ${fileStatus(entry)} |`).join("\n");
+  const message = `# 全体サマリー
+
+${counts.join("  \n")}
+
+# 修正サマリー
+
+| ファイル名 | ステータス |
+| --- | --- |
+${summary}
+
+# 修正一覧
+` + entries.map(entry => {
+    const { task, detail, latest, file } = entry;
+    const review = latest?.reviews?.at(-1);
+    const ids = [...new Set([...task.rules, ...(detail.changes || []).map(change => change.ruleId)])];
+    const rows = ids.map(id => {
+      const changes = (detail.changes || []).filter(change => change.ruleId === id);
+      const assessment = review?.assessments.find(item => item.ruleId === id);
+      const fixed = changes.some(change => change.status === "fixed");
+      const held = changes.some(change => change.status === "needs_human");
+      const unchanged = !fixed && !held && (changes.some(change => change.status === "unchanged") || latest?.outcome === "skipped");
+      const rank = held ? 1 : fixed ? 0 : unchanged ? 2 : 1;
+      const status = held ? fixed ? "⚠️一部修正完了/要確認" : "⚠️要確認"
+        : fixed ? "✅完了" : unchanged ? "☑️修正不要" : "⚠️記録なし";
+      return { id, rank, text: `| ${cell(id)} | ${status} | ${cell(changes.map(change => change.change).filter(Boolean).join("\n") || "対応内容の記録なし")} | ${cell(assessment?.reason || "独立レビューの記録なし")} |` };
+    }).sort((a, b) => a.rank - b.rank || pathOrder(a.id, b.id)).map(row => row.text).join("\n");
+    return `
+---
+
+## ファイル　${fileStatus(entry)}
+
+${fileLink(file)}
+
+### 修正概要
+
+${file.summary || "修正概要の記録なし"}
+
+### レビュー結果
+
+${review?.summary || "独立レビューの記録なし"}
+
+### 一覧
+
+| ルールID | ステータス | 修正内容 | レビュー結果 |
+| --- | --- | --- | --- |
+${rows}
+`;
+  }).join("\n");
   return {
     workspaceId: previewState.activeWorkspaceId, revision: "preview-publication", baseCommit: "4e87db28ca00000000000000000000000000000000",
     sourceCommit: "f17c92c87000000000000000000000000000000000", suggestedBranch: "onebyone-result/storage-api",
-    message: `# 全体サマリー\n\n対象ファイル数：${previewState.tasks.length}\n修正済みファイル数：${files.length}\n修正不要ファイル数：${previewState.tasks.filter(task => task.status === "skipped").length}\n\n# 修正一覧\n` + files.map(file => {
-      const label = file.file.replace(/[\\\[\]]/g, "\\$&");
-      const destination = file.linkPath.split("/").map(encodeURIComponent).join("/");
-      return `\n---\n\n## 修正ファイル\n\n[${label}](<${destination}>)\n\n### 修正概要\n\n${file.summary}\n\n### 適用ルール一覧\n\n` + file.rulesApplied.map(id => `#### ${id}：${previewState.rules.find(rule => rule.id === id)?.title || id}`).join("\n\n");
-    }).join("\n"),
-    files, publications: [],
+    message, files, reportFiles, messageFileThreshold: 10_000, publications: [],
   };
 }
 

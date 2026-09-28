@@ -80,7 +80,7 @@ func rulePackageFixture(t *testing.T, path, pattern string) *rulepack.Package {
 func assertWorkspaceExecutionSettings(t *testing.T, actual, expected model.Config) {
 	t.Helper()
 	values := func(c model.Config) []any {
-		return []any{c.MaxAttempts, c.MaxTurns, c.MaxOutputTokens, c.MaxFileBytes, c.TimeoutSeconds, c.MaxCostUSD, c.InputPricePerMillion, c.CachedInputPricePerMillion, c.OutputPricePerMillion}
+		return []any{c.InputPricePerMillion, c.CachedInputPricePerMillion, c.OutputPricePerMillion}
 	}
 	if !reflect.DeepEqual(values(actual), values(expected)) {
 		t.Fatalf("workspace execution settings changed: got %v, want %v", values(actual), values(expected))
@@ -91,8 +91,6 @@ func TestRuleJSONImportExportSnapshotAndRestart(t *testing.T) {
 	s, source, base := rulePackageService(t)
 	connection := rulePackageSelectConnection(t, s)
 	cfg := s.Snapshot().Config
-	cfg.MaxTurns = 17
-	cfg.MaxCostUSD = 2
 	cfg.InputPricePerMillion, cfg.OutputPricePerMillion = 1, 2
 	if _, e := s.SaveConfig(cfg); e != nil {
 		t.Fatal(e)

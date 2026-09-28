@@ -36,11 +36,11 @@ func TestCandidateSnapshotDiffPreservesTextAndUsesOnlyTargetPaths(t *testing.T) 
 	}
 }
 
-func TestCandidateSnapshotDiffRejectsTruncationAndCleansTemporaryFiles(t *testing.T) {
+func TestCandidateSnapshotDiffRetainsLargeOutputAndCleansTemporaryFiles(t *testing.T) {
 	dir := t.TempDir()
 	diff, err := candidateSnapshotDiff(context.Background(), dir, "large.txt", []byte(strings.Repeat("a", 1100000)), []byte(strings.Repeat("b", 1100000)))
-	if err == nil || diff != "" || !strings.Contains(err.Error(), "上限") {
-		t.Fatalf("truncated diff was accepted: %d bytes, %v", len(diff), err)
+	if err != nil || len(diff) < 2200000 {
+		t.Fatalf("large diff was truncated: %d bytes, %v", len(diff), err)
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil || len(entries) != 0 {

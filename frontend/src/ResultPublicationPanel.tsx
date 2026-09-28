@@ -5,7 +5,7 @@ import { HoverTip } from "./HoverTip";
 import { ResultCode } from "./ResultsPanel";
 import { RuleMarkdown } from "./RuleMarkdown";
 import { usePublicationDrawerResize } from "./usePublicationDrawerResize";
-import { publicationBlockReason, refreshPublicationDraft, type PublicationDraft } from "./result-publication";
+import { publicationBlockReason, publicationMessageFileMode, readPublicationFilePreference, refreshPublicationDraft, savePublicationFilePreference, type PublicationDraft } from "./result-publication";
 import type { PublishResultsRequest, ResultPublication, ResultPublicationFile, ResultPublicationPreview, State } from "./types";
 import "./result-publication.css";
 
@@ -48,7 +48,8 @@ export function ResultPublicationPanel({ state, busy, usable, initialDraft, onDr
   const closeButton = useRef<HTMLButtonElement | null>(null);
   const id = useId();
   const files = preview?.workspaceId === workspaceId ? preview.files : [];
-  const selected = files.find(file => file.file === selectedFile);
+  const reportFiles = preview?.workspaceId === workspaceId ? preview.reportFiles ?? files : [];
+  const selected = reportFiles.find(file => file.file === selectedFile);
   const drawer = usePublicationDrawerResize(workspaceId);
   const diffKey = `${workspaceId}:${preview?.revision || ""}:${selectedFile}`;
   const currentDiff = diffResult?.key === diffKey ? diffResult : undefined;
@@ -64,10 +65,12 @@ export function ResultPublicationPanel({ state, busy, usable, initialDraft, onDr
     api.GetResultPublicationPreview().then(result => {
       if (canceled) return;
       if (result.workspaceId !== workspaceId) throw new Error("ワークスペースが変更されています。再読み込みしてください。");
-      const next = { ...result, files: (result.files || []).map(file => ({ ...file, rulesApplied: file.rulesApplied || [] })), publications: result.publications || [] };
+      const normalizeFiles = (items: ResultPublicationFile[]) => items.map(file => ({ ...file, rulesApplied: file.rulesApplied || [] }));
+      const next = { ...result, files: normalizeFiles(result.files || []), reportFiles: normalizeFiles(result.reportFiles ?? result.files ?? []), publications: result.publications || [] };
       setPreview(next);
-      setDraft(previous => refreshPublicationDraft(previous, next));
-      setSelectedFile(previous => next.files.some(file => file.file === previous) ? previous : "");
+      setDraft(previous => ({ ...refreshPublicationDraft(previous, next),
+        messageAsFile: previous?.workspaceId === workspaceId ? previous.messageAsFile === true : readPublicationFilePreference(workspaceId) }));
+      setSelectedFile(previous => next.reportFiles.some(file => file.file === previous) ? previous : "");
     }).catch(reason => { if (!canceled) setError(messageOf(reason)); }).finally(() => { if (!canceled) setLoading(false); });
     return () => { canceled = true; };
   }, [workspaceId, sourceKey, state.running, refresh]);
@@ -97,6 +100,7 @@ export function ResultPublicationPanel({ state, busy, usable, initialDraft, onDr
   const reason = publicationBlockReason({ preview, draft, busy: busy || publishing, running: state.running,
     readOnly: state.readOnly, usable, loading, error: error || currentDiff?.error || "" });
   const inputLocked = busy || publishing || state.running || state.readOnly;
+  const messageFileMode = publicationMessageFileMode(draft?.message || "", draft?.messageAsFile === true, preview?.messageFileThreshold);
   function edit(field: "branch" | "title" | "message", value: string) {
     setDraft(previous => previous ? { ...previous, [field]: value } : previous);
     setPublishError("");
@@ -111,9 +115,9 @@ export function ResultPublicationPanel({ state, busy, usable, initialDraft, onDr
     // Safe external links keep Markdown's normal browser behavior.
     if (/^(?:https?:|mailto:|tel:|\/\/)/i.test(href)) return;
     event.preventDefault();
-    const file = publicationLinkFile(href, files);
+    const file = publicationLinkFile(href, reportFiles);
     if (!file || loading || error) {
-      setLinkError(file ? "コミット内容を再読み込みしてから差分を開いてください。" : "このリンクはコミット対象のファイルではないため、差分を表示できません。");
+      setLinkError(file ? "コミット内容を再読み込みしてから差分を開いてください。" : "このリンクはレポート対象のファイルではないため、差分を表示できません。");
       return;
     }
     setLinkError(""); opener.current = event.currentTarget;
@@ -124,7 +128,7 @@ export function ResultPublicationPanel({ state, busy, usable, initialDraft, onDr
     publicationInFlight.current = true;
     setPublishing(true); setPublishError("");
     try {
-      const result = await onPublish({ workspaceId, revision: preview.revision, branch: draft.branch.trim(), title: draft.title.trim(), message: draft.message });
+      const result = await onPublish({ workspaceId, revision: preview.revision, branch: draft.branch.trim(), title: draft.title.trim(), message: draft.message, messageAsFile: messageFileMode.selected });
       if (!active.current) return;
       setPublished(result);
       setPreview(previous => previous ? { ...previous, publications: [...previous.publications, result] } : previous);
@@ -151,26 +155,39 @@ export function ResultPublicationPanel({ state, busy, usable, initialDraft, onDr
         </div>
         <div className="publication-message">
           <div className="publication-message-heading">
-            <span id={`${id}-message-label`}>コミット本文</span>
+            <div className="publication-message-options">
+              <span id={`${id}-message-label`}>コミット本文</span>
+              <label className="publication-message-file-choice"><input id={`${id}-message-as-file`} type="checkbox" checked={messageFileMode.selected}
+                disabled={inputLocked || messageFileMode.required} aria-describedby={messageFileMode.selected ? `${id}-message-file-note` : undefined}
+                onChange={event => {
+                  const checked = event.target.checked;
+                  setDraft(previous => previous ? { ...previous, messageAsFile: checked } : previous);
+                  savePublicationFilePreference(workspaceId, checked); setPublishError("");
+                }} />本文はファイルとしてコミットに含める</label>
+            </div>
             <div className="segmented" role="group" aria-label="コミット本文の表示形式">
               <button type="button" className={messageMode === "source" ? "active" : ""} aria-label="コミット本文の原文" aria-pressed={messageMode === "source"} aria-controls={`${id}-message-content`} onClick={() => setMessageMode("source")}>{"</>"}</button>
               <button type="button" className={messageMode === "preview" ? "active" : ""} aria-label="コミット本文のプレビュー" aria-pressed={messageMode === "preview"} aria-controls={`${id}-message-content`} onClick={() => setMessageMode("preview")}>Preview</button>
             </div>
           </div>
+          {messageFileMode.selected && <p id={`${id}-message-file-note`} className="publication-message-file-note" role="status">
+            {messageFileMode.required && <>{messageFileMode.threshold.toLocaleString("ja-JP")}文字を超えるため、ファイルに保存します。 </>}
+            本文は <code>OneByOne/yyyyMMddHHmmss_results.md</code> に保存し、コミットメッセージには参照先を記載します。
+          </p>}
           <div id={`${id}-message-content`}>
             {messageMode === "source" ? <textarea id={`${id}-message`} aria-labelledby={`${id}-message-label`} className="code-input" value={draft.message} rows={8} disabled={inputLocked} onChange={event => edit("message", event.target.value)} spellCheck={false} />
-              : <div className="publication-message-preview" aria-labelledby={`${id}-message-label`} role="region" tabIndex={0}>{draft.message ? <RuleMarkdown body={draft.message} onLinkClick={openMessageLink} /> : <span className="publication-message-empty">本文はありません。</span>}</div>}
+              : <div className="publication-message-preview" aria-labelledby={`${id}-message-label`} role="region" tabIndex={0}>{draft.message ? <RuleMarkdown body={draft.message} onLinkClick={openMessageLink} reportCells /> : <span className="publication-message-empty">本文はありません。</span>}</div>}
           </div>
           {linkError && <div className="publication-link-error" role="status"><Icon name="info" size={14} />{linkError}</div>}
         </div>
         <div className="publication-submit-row">
-          {published ? <div className="publication-reflected" role="status"><Icon name="check" size={16} /><div><strong title={published.branch}>{published.branch}</strong><span title="元フォルダをSourceTreeなどで開き、このブランチを選択できます。">反映済み · <code title={published.commit}>{published.commit.slice(0, 12)}</code></span></div></div>
-            : <span>{files.length.toLocaleString("ja-JP")}ファイル{preview.baseCommit && <> · 基点 <code title={preview.baseCommit}>{preview.baseCommit.slice(0, 8)}</code></>}</span>}
+          {published ? <div className="publication-reflected" role="status"><Icon name="check" size={16} /><div><strong title={published.branch}>{published.branch}</strong><span title="元フォルダをSourceTreeなどで開き、このブランチを選択できます。">反映済み · <code title={published.commit}>{published.commit.slice(0, 12)}</code></span>{published.reportPath && <span title={published.reportPath}>本文: {published.reportPath}</span>}</div></div>
+            : <span>変更 {files.length.toLocaleString("ja-JP")}ファイル{messageFileMode.selected && <> ＋ 結果ファイル</>}{preview.baseCommit && <> · 基点 <code title={preview.baseCommit}>{preview.baseCommit.slice(0, 8)}</code></>}</span>}
           <HoverTip reason={reason}><button className="button primary" type="submit" disabled={Boolean(reason)}>{publishing ? <span className="spinner" /> : <Icon name="branch" size={16} />}新規ブランチに反映</button></HoverTip>
         </div>
         {publishError && <div className="publication-error" role="alert"><Icon name="warning" size={16} /><span>{publishError}</span></div>}
       </form>
-      {!files.length && <div className="target-browser-message"><Icon name="file" size={24} />コミットする変更がありません</div>}
+      {!files.length && !(messageFileMode.selected && reportFiles.length) && <div className="target-browser-message"><Icon name="file" size={24} />コミットする変更がありません</div>}
       {preview.publications.length > 0 && <details className="publication-history"><summary>反映履歴 <span>{preview.publications.length}</span></summary><ul>{[...preview.publications].reverse().map(item => <li key={`${item.branch}:${item.commit}`}><Icon name="branch" size={14} /><div><strong>{item.branch}</strong><span>{item.title}</span></div><code title={item.commit}>{item.commit.slice(0, 12)}</code><time>{new Date(item.createdAt).toLocaleString("ja-JP")}</time></li>)}</ul></details>}
     </>}
     </div>
@@ -182,7 +199,7 @@ export function ResultPublicationPanel({ state, busy, usable, initialDraft, onDr
       <div className="publication-drawer-content">
         {loading ? <div className="target-browser-message" role="status"><span className="spinner" />更新中…</div> : error ? <div className="target-browser-message">コミット内容を再読み込みしてください</div>
           : currentDiff?.error ? <div className="target-browser-message is-error" role="alert">{currentDiff.error}</div>
-            : currentDiff?.diff !== undefined ? currentDiff.diff ? <ResultCode content={currentDiff.diff} isDiff /> : <div className="target-browser-message">表示できる差分がありません</div>
+            : currentDiff?.diff !== undefined ? currentDiff.diff ? <ResultCode content={currentDiff.diff} isDiff /> : <div className="target-browser-message">変更はありません</div>
               : selected && drawerOpen ? <div className="target-browser-message" role="status"><span className="spinner" />差分を読み込み中…</div> : null}
       </div>
     </aside>

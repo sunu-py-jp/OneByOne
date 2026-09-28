@@ -1,4 +1,4 @@
-// Package agent implements stateless, bounded provider API tool loops.
+// Package agent implements resumable, isolated provider API tool loops.
 // It can propose edits, but has no filesystem mutation or command execution tools.
 package agent
 
@@ -12,6 +12,7 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -20,13 +21,8 @@ import (
 	"onebyone/internal/model"
 )
 
-const (
-	maxRequestBytes  = 2 << 20
-	maxResponseBytes = 4 << 20
-	maxToolBytes     = 96 << 10
-	maxReadBytes     = 512 << 10
-	maxToolCalls     = 32
-)
+// Large tool results are paged, never rejected for their total size.
+const toolPreviewBytes = 96 << 10
 
 type Input struct {
 	Config               model.Config
@@ -51,11 +47,13 @@ type Input struct {
 }
 
 type client struct {
-	endpoint   string
-	credential string
-	authMode   string
-	cfg        model.Config
-	http       *http.Client
+	endpoint      string
+	credential    string
+	authMode      string
+	cfg           model.Config
+	http          *http.Client
+	outputTokens  int
+	outputCeiling int
 }
 
 func normalizeConfig(cfg model.Config) (model.Config, error) {
@@ -68,24 +66,9 @@ func normalizeConfig(cfg model.Config) (model.Config, error) {
 		return cfg, errors.New("Model or Azure deployment name is required")
 	}
 	cfg = model.EffectiveExecutionConfig(cfg)
-	if cfg.MaxAttempts < 0 || cfg.MaxAttempts > 3 {
-		return cfg, errors.New("MaxAttempts must be 0 (unlimited) or between 1 and 3")
-	}
-	if cfg.MaxTurns < 0 || cfg.MaxTurns > 32 {
-		return cfg, errors.New("MaxTurns must be 0 (unlimited) or between 1 and 32")
-	}
-	if cfg.MaxOutputTokens < 64 || cfg.MaxOutputTokens > 32768 {
-		return cfg, errors.New("MaxOutputTokens must be between 64 and 32768")
-	}
-	if cfg.MaxFileBytes < 1 || cfg.MaxFileBytes > 1<<20 {
-		return cfg, errors.New("MaxFileBytes must be between 1 and 1048576")
-	}
-	if cfg.TimeoutSeconds < 0 || cfg.TimeoutSeconds > 3600 {
-		return cfg, errors.New("TimeoutSeconds must be 0 (unlimited) or between 1 and 3600")
-	}
-	for _, p := range []float64{cfg.MaxCostUSD, cfg.InputPricePerMillion, cfg.CachedInputPricePerMillion, cfg.OutputPricePerMillion} {
-		if math.IsNaN(p) || math.IsInf(p, 0) || p < 0 {
-			return cfg, errors.New("Cost limit and token prices must be finite nonnegative numbers")
+	for _, price := range []float64{cfg.InputPricePerMillion, cfg.CachedInputPricePerMillion, cfg.OutputPricePerMillion} {
+		if math.IsNaN(price) || math.IsInf(price, 0) || price < 0 {
+			return cfg, errors.New("Token prices must be finite nonnegative numbers")
 		}
 	}
 	// A missing cache price must not turn cached tokens into free usage. Use the
@@ -95,9 +78,6 @@ func normalizeConfig(cfg model.Config) (model.Config, error) {
 	}
 	if cfg.CachedInputPricePerMillion > cfg.InputPricePerMillion {
 		return cfg, errors.New("Cached input price cannot exceed uncached input price")
-	}
-	if cfg.MaxCostUSD > 0 && (cfg.InputPricePerMillion <= 0 || cfg.OutputPricePerMillion <= 0) {
-		return cfg, errors.New("A cost limit requires positive input and output prices; enter the prices for your deployment")
 	}
 	return cfg, nil
 }
@@ -159,24 +139,16 @@ func newClient(cfg model.Config) (*client, error) {
 		}
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.ResponseHeaderTimeout = time.Duration(cfg.TimeoutSeconds) * time.Second
-	return &client{endpoint: endpoint, credential: credential, authMode: auth, cfg: cfg, http: &http.Client{
+	return &client{endpoint: endpoint, credential: credential, authMode: auth, cfg: cfg, outputTokens: 8192, http: &http.Client{
 		Transport:     transport,
-		Timeout:       time.Duration(cfg.TimeoutSeconds) * time.Second,
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
 	}}, nil
-}
-
-func executionContext(parent context.Context, seconds int) (context.Context, context.CancelFunc) {
-	if seconds > 0 {
-		return context.WithTimeout(parent, time.Duration(seconds)*time.Second)
-	}
-	return context.WithCancel(parent)
 }
 
 type response struct {
 	// Messages uses a native assistant content array for continuation. It is
 	// never serialized as Responses input and never escapes this file's Run.
+	RequestAttempts    int               `json:"-"`
 	NativeContinuation json.RawMessage   `json:"-"`
 	ProtocolError      error             `json:"-"`
 	Status             string            `json:"status"`
@@ -192,6 +164,8 @@ type response struct {
 }
 
 type responseUsage struct {
+	Uncertain    bool `json:"-"`
+	Requests     int  `json:"-"`
 	CacheWrite5m int  `json:"-"`
 	CacheWrite1h int  `json:"-"`
 	InputTokens  *int `json:"input_tokens"`
@@ -201,23 +175,31 @@ type responseUsage struct {
 	} `json:"input_tokens_details"`
 }
 
-// request never retries an ambiguous network error or a server failure: the POST
-// may already have generated billable tokens. Only explicit 429s are retried,
-// twice at most, honoring Retry-After within the run deadline.
+// request retries transient failures until cancelled. An ambiguous POST remains
+// pending in the durable journal; a later successful response retains the fact
+// that usage from earlier attempts could not be measured.
 func (c *client) request(ctx context.Context, body []byte, log func(string)) (result response, err error) {
+	uncertain, requests := false, 0
 	defer func() {
-		if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-			err = &fatalError{err}
+		result.RequestAttempts = requests
+		if err != nil && uncertain && !IsUsageUnknown(err) {
+			err = unknownUsage(err)
 		}
 	}()
-	for retry := 0; retry <= 2; retry++ {
+	for retry := 0; ; retry++ {
+		if err := ctx.Err(); err != nil {
+			if uncertain {
+				return response{}, unknownUsage(err)
+			}
+			return response{}, err
+		}
 		credential, err := c.requestCredential(ctx)
 		if err != nil {
-			return response{}, err
+			return response{}, &fatalError{err}
 		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(body))
 		if err != nil {
-			return response{}, errors.New("Cannot construct LLM request")
+			return response{}, &fatalError{errors.New("Cannot construct LLM request")}
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json")
@@ -229,46 +211,42 @@ func (c *client) request(ctx context.Context, body []byte, log func(string)) (re
 		} else {
 			req.Header.Set("api-key", credential)
 		}
-		res, err := c.http.Do(req)
-		if err != nil {
-			if ctx.Err() != nil {
-				return response{}, unknownUsage(fmt.Errorf("LLM request stopped: %w; in-flight usage may still be billed", ctx.Err()))
+		requests++
+		res, sendErr := c.http.Do(req)
+		if sendErr != nil {
+			uncertain = true
+			if err := waitProviderRetry(ctx, "LLM transport interrupted; usage may have been billed", "", retry, log); err != nil {
+				return response{}, unknownUsage(err)
 			}
-			// Do not include transport errors that may quote headers or source data.
-			return response{}, unknownUsage(errors.New("LLM request failed in transport; it was not retried because in-flight usage may have been billed"))
+			continue
 		}
-		data, readErr := io.ReadAll(io.LimitReader(res.Body, maxResponseBytes+1))
+		data, readErr := io.ReadAll(res.Body)
 		res.Body.Close()
 		if readErr != nil {
-			return response{}, unknownUsage(errors.New("LLM response could not be read; usage may have been billed"))
+			uncertain = true
+			if err := waitProviderRetry(ctx, "LLM response interrupted; usage may have been billed", res.Header.Get("Retry-After"), retry, log); err != nil {
+				return response{}, unknownUsage(err)
+			}
+			continue
 		}
-		if len(data) > maxResponseBytes {
-			return response{}, unknownUsage(errors.New("LLM response exceeded the 4 MiB limit; usage may have been billed"))
-		}
-		if res.StatusCode == http.StatusTooManyRequests && retry < 2 {
-			delay, err := retryDelay(res.Header.Get("Retry-After"), retry)
-			if err != nil {
+		if res.StatusCode == http.StatusTooManyRequests || res.StatusCode == http.StatusRequestTimeout || res.StatusCode >= 500 {
+			if res.StatusCode != http.StatusTooManyRequests {
+				uncertain = true
+			}
+			if err := waitProviderRetry(ctx, fmt.Sprintf("LLM HTTP %d", res.StatusCode), res.Header.Get("Retry-After"), retry, log); err != nil {
+				if uncertain {
+					return response{}, unknownUsage(err)
+				}
 				return response{}, err
-			}
-			if log != nil {
-				log(fmt.Sprintf("LLM rate limit: retry %d/2 after %s", retry+1, delay))
-			}
-			timer := time.NewTimer(delay)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return response{}, ctx.Err()
-			case <-timer.C:
 			}
 			continue
 		}
 		if res.StatusCode < 200 || res.StatusCode >= 300 {
-			// Provider messages can echo source or credentials. Surface HTTP status
-			// and a short identifier only, never the raw response body.
 			var envelope struct {
 				Error struct {
-					Code json.RawMessage `json:"code"`
-					Type string          `json:"type"`
+					Code    json.RawMessage `json:"code"`
+					Type    string          `json:"type"`
+					Message string          `json:"message"`
 				} `json:"error"`
 			}
 			_ = json.Unmarshal(data, &envelope)
@@ -276,26 +254,118 @@ func (c *client) request(ctx context.Context, body []byte, log func(string)) (re
 			if code == "" && c.cfg.Provider == "claude" {
 				code = safeIdentifier(envelope.Error.Type)
 			}
-			if strings.Contains(code, credential) {
+			if credential != "" && strings.Contains(code, credential) {
 				code = ""
+			}
+			message := strings.ToLower(envelope.Error.Message)
+			if res.StatusCode == 413 || strings.Contains(code, "context_length") || strings.Contains(code, "context_window") || strings.Contains(message, "prompt is too long") || strings.Contains(message, "maximum context length") {
+				return response{}, &ContextLimitError{Reason: "LLM input exceeds the provider context; reduce the next request"}
+			}
+			if c.cfg.Provider == "claude" && res.StatusCode == 400 && c.learnOutputCeiling(message) {
+				var payload map[string]any
+				if json.Unmarshal(body, &payload) == nil {
+					payload["max_tokens"] = c.outputLimit()
+					body, _ = json.Marshal(payload)
+					continue
+				}
 			}
 			httpErr := fmt.Errorf("LLM HTTP %d", res.StatusCode)
 			if code != "" {
 				httpErr = fmt.Errorf("LLM HTTP %d (%s)", res.StatusCode, code)
 			}
-			if res.StatusCode >= 500 || res.StatusCode == http.StatusRequestTimeout {
-				return response{}, unknownUsage(httpErr)
+			return response{}, &fatalError{httpErr}
+		}
+		out, decodeErr := c.decodeResponse(data)
+		if decodeErr != nil {
+			uncertain = true
+			if err := waitProviderRetry(ctx, "LLM returned invalid response JSON; usage may have been billed", "", retry, log); err != nil {
+				return response{}, unknownUsage(err)
 			}
-			return response{}, httpErr
+			continue
 		}
-		out, err := c.decodeResponse(data)
-		if err != nil {
-			return response{}, unknownUsage(errors.New("LLM returned invalid JSON; usage may have been billed"))
+		if out.Usage == nil {
+			out.Usage = &responseUsage{Uncertain: true}
 		}
+		out.Usage.Uncertain = out.Usage.Uncertain || uncertain
+		out.Usage.Requests = requests
 		return out, nil
 	}
-	return response{}, errors.New("LLM rate-limit retries exhausted")
 }
+
+func waitProviderRetry(ctx context.Context, reason, header string, retry int, log func(string)) error {
+	delay, _ := retryDelay(header, retry)
+	if log != nil {
+		log(fmt.Sprintf("%s; retry %d after %s", reason, retry+1, delay))
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+// These are protocol constraints, not workspace budgets. Responses supports
+// omission of max_output_tokens; Messages requires an explicit max_tokens.
+func (c *client) outputLimit() int {
+	if c.outputTokens <= 0 {
+		c.outputTokens = 8192
+	}
+	return c.outputTokens
+}
+func (c *client) growOutputLimit() bool {
+	if c.cfg.Provider != "claude" {
+		return false
+	}
+	if c.outputLimit() > int(^uint(0)>>1)/2 {
+		return false
+	}
+	next := c.outputLimit() * 2
+	if c.outputCeiling > 0 && next > c.outputCeiling {
+		next = c.outputCeiling
+	}
+	if next <= c.outputLimit() {
+		return false
+	}
+	c.outputTokens = next
+	return true
+}
+
+var outputCeilingPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`max_tokens\s*[:=]?\s*\d+\s*>\s*(\d+)`),
+	regexp.MustCompile(`max_tokens[^.\n]*?(?:at most|maximum(?: of)?|less than or equal to|<=)\s*(\d+)`),
+	regexp.MustCompile(`max_tokens[^.\n]*?between\s+1\s+and\s+(\d+)`),
+}
+
+func (c *client) learnOutputCeiling(message string) bool {
+	var match []string
+	for _, pattern := range outputCeilingPatterns {
+		if match = pattern.FindStringSubmatch(message); len(match) == 2 {
+			break
+		}
+	}
+	if len(match) != 2 {
+		return false
+	}
+	n, err := strconv.Atoi(match[1])
+	if err != nil || n < 1 || n >= c.outputLimit() {
+		return false
+	}
+	c.outputCeiling, c.outputTokens = n, n
+	return true
+}
+
+type OutputLimitError struct{ Reason string }
+
+func (e *OutputLimitError) Error() string { return e.Reason }
+func IsOutputLimit(err error) bool        { var target *OutputLimitError; return errors.As(err, &target) }
+
+type ContextLimitError struct{ Reason string }
+
+func (e *ContextLimitError) Error() string { return e.Reason }
+func IsContextLimit(err error) bool        { var target *ContextLimitError; return errors.As(err, &target) }
 
 // OAuth credentials are acquired for every POST, including explicit 429
 // retries, so a long-running editor or independent reviewer never holds an
@@ -333,22 +403,17 @@ func (c *client) requestCredential(ctx context.Context) (string, error) {
 }
 
 func retryDelay(header string, retry int) (time.Duration, error) {
-	delay := time.Duration(retry+1) * time.Second
+	delay := time.Duration(min(retry+1, 30)) * time.Second
 	if header != "" {
-		if seconds, err := strconv.Atoi(header); err == nil {
+		if seconds, err := strconv.ParseInt(header, 10, 64); err == nil {
 			if seconds < 0 {
 				seconds = 0
 			}
-			delay = time.Duration(seconds) * time.Second
+			maxSeconds := int64((1<<63 - 1) / int64(time.Second))
+			delay = time.Duration(min(seconds, maxSeconds)) * time.Second
 		} else if when, err := http.ParseTime(header); err == nil {
-			delay = time.Until(when)
-			if delay < 0 {
-				delay = 0
-			}
+			delay = max(0, time.Until(when))
 		}
-	}
-	if delay < 0 || delay > 30*time.Second {
-		return 0, errors.New("LLM requested a retry delay over 30 seconds; retry the file later")
 	}
 	return delay, nil
 }
@@ -365,51 +430,33 @@ func safeIdentifier(s string) string {
 	return s
 }
 
-func (c *client) reserve(body []byte, usage model.Usage) error {
-	if len(body) > maxRequestBytes {
-		return errors.New("Conversation exceeded the 2 MiB request limit")
-	}
-	if c.cfg.MaxCostUSD == 0 {
-		return nil
-	}
-	// Every UTF-8 byte can be a token in the conservative bound. Count serialized
-	// schema, tool metadata and escaped JSON as well; double it and reserve an
-	// additional 4096 tokens for provider framing. Never assume a cache discount.
-	inputBound := float64(2*len(body) + 4096)
-	if c.cfg.Provider == "claude" {
-		// The static system prefix uses a 5-minute cache breakpoint. Reserve
-		// cache-write pricing for all input, without assuming a cache hit.
-		inputBound *= 1.25
-	}
-	reservation := (inputBound*c.cfg.InputPricePerMillion + float64(c.cfg.MaxOutputTokens)*c.cfg.OutputPricePerMillion) / 1e6
-	if usage.CostUSD+reservation > c.cfg.MaxCostUSD {
-		return fmt.Errorf("Per-file cost limit: spent $%.6f plus conservative next-request reservation $%.6f exceeds $%.6f", usage.CostUSD, reservation, c.cfg.MaxCostUSD)
-	}
-	return nil
-}
+// Accounting is observational; it never prevents another repair request.
+func (c *client) reserve(_ []byte, _ model.Usage) error { return nil }
 
 func (c *client) addUsage(usage *model.Usage, u *responseUsage) error {
 	usage.Turns++
-	if u == nil || u.InputTokens == nil || u.OutputTokens == nil {
-		return unknownUsage(errors.New("LLM response omitted usage; cost cannot be verified"))
+	if u == nil {
+		usage.Uncertain = true
+		return nil
+	}
+	if u.Requests > 1 {
+		usage.Turns += u.Requests - 1
+	}
+	usage.Uncertain = usage.Uncertain || u.Uncertain
+	if u.InputTokens == nil || u.OutputTokens == nil {
+		usage.Uncertain = true
+		return nil
 	}
 	input, output, cached := *u.InputTokens, *u.OutputTokens, u.InputDetails.CachedTokens
-	if input < 0 || input > 4*maxRequestBytes || output < 0 || output > 4*maxResponseBytes || cached < 0 || cached > input || u.CacheWrite5m < 0 || u.CacheWrite1h < 0 || u.CacheWrite5m > input-cached || u.CacheWrite1h > input-cached-u.CacheWrite5m {
-		return unknownUsage(errors.New("LLM returned invalid token usage"))
+	if input < 0 || output < 0 || cached < 0 || cached > input || u.CacheWrite5m < 0 || u.CacheWrite1h < 0 || u.CacheWrite5m > input-cached || u.CacheWrite1h > input-cached-u.CacheWrite5m {
+		usage.Uncertain = true
+		return nil
 	}
 	usage.InputTokens += input
 	usage.CachedTokens += cached
 	usage.OutputTokens += output
 	usage.CostUSD += (float64(input-cached)*c.cfg.InputPricePerMillion + float64(cached)*c.cfg.CachedInputPricePerMillion + float64(output)*c.cfg.OutputPricePerMillion) / 1e6
-	// InputTokens includes cache writes. Add only their premium over the base
-	// input rate already counted above (5-minute 1.25x, 1-hour 2x).
 	usage.CostUSD += (float64(u.CacheWrite5m)*.25 + float64(u.CacheWrite1h)) * c.cfg.InputPricePerMillion / 1e6
-	if output > c.cfg.MaxOutputTokens {
-		return errors.New("LLM returned more output tokens than the request limit; no further request will be sent")
-	}
-	if c.cfg.MaxCostUSD > 0 && usage.CostUSD > c.cfg.MaxCostUSD {
-		return errors.New("Reported LLM usage exceeds the configured cost limit; no further request will be sent")
-	}
 	return nil
 }
 
@@ -424,7 +471,7 @@ func completed(res response) error {
 		if res.IncompleteDetails != nil {
 			switch res.IncompleteDetails.Reason {
 			case "max_output_tokens":
-				return errors.New("LLM response reached max_output_tokens before completing the proposal")
+				return &OutputLimitError{Reason: "LLM response reached max_output_tokens before completing the proposal"}
 			case "content_filter":
 				return errors.New("LLM response was stopped by a content filter")
 			}
@@ -437,14 +484,12 @@ func completed(res response) error {
 // TestConnection sends only a fixed, harmless prompt. It does not send files,
 // rules, previous migration history, or any saved conversation identifiers.
 func TestConnection(ctx context.Context, cfg model.Config) (string, error) {
-	cfg.MaxTurns = 1
-	cfg.MaxOutputTokens = 512
 	c, err := newClient(cfg)
 	if err != nil {
 		return "", err
 	}
 	defer c.http.CloseIdleConnections()
-	ctx, cancel := executionContext(ctx, c.cfg.TimeoutSeconds)
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	body, _ := c.connectionRequest()
 	if err := c.reserve(body, model.Usage{}); err != nil {

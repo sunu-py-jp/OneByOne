@@ -6,13 +6,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"onebyone/internal/model"
 )
@@ -81,7 +81,7 @@ func TestIndependentReviewAllProvidersFreshContextAndDurableUsage(t *testing.T) 
 				historyKey := "input"
 				if provider == "claude" {
 					historyKey = "messages"
-					if req["input"] != nil || req["store"] != nil || req["text"] != nil || req["max_tokens"] != float64(4096) {
+					if req["input"] != nil || req["store"] != nil || req["text"] != nil || req["max_tokens"] != float64(8192) {
 						t.Error("review used Responses protocol fields for Claude")
 					}
 					format := req["output_config"].(map[string]any)["format"].(map[string]any)
@@ -89,7 +89,7 @@ func TestIndependentReviewAllProvidersFreshContextAndDurableUsage(t *testing.T) 
 						t.Error("Claude review omitted native structured-output schema")
 					}
 				} else {
-					if req["messages"] != nil || req["store"] != false || req["max_output_tokens"] != float64(4096) {
+					if req["messages"] != nil || req["store"] != false || req["max_output_tokens"] != nil {
 						t.Error("Responses review omitted statelessness or output limit")
 					}
 					format := req["text"].(map[string]any)["format"].(map[string]any)
@@ -191,7 +191,7 @@ func TestIndependentReviewRejectsInvalidVerdicts(t *testing.T) {
 		{"missing general issue ID", "needs_changes", func(w map[string]any) { delete(w["issues"].([]any)[0].(map[string]any), "ruleId") }},
 		{"null general issue ID", "needs_changes", func(w map[string]any) { w["issues"].([]any)[0].(map[string]any)["ruleId"] = nil }},
 		{"empty requested change", "needs_changes", func(w map[string]any) { w["issues"].([]any)[0].(map[string]any)["requestedChange"] = " " }},
-		{"oversized summary", "passed", func(w map[string]any) { w["summary"] = strings.Repeat("x", 8193) }},
+		{"empty summary", "passed", func(w map[string]any) { w["summary"] = " " }},
 		{"unknown verdict", "passed", func(w map[string]any) { w["verdict"] = "approved" }},
 	}
 	for _, tc := range tests {
@@ -203,7 +203,7 @@ func TestIndependentReviewRejectsInvalidVerdicts(t *testing.T) {
 			}
 		})
 	}
-	for _, text := range []string{"{}", "null", "```json\n{}\n```", string(raw(reviewWire(in, "passed"))) + "{}", strings.Repeat("x", maxToolBytes+1)} {
+	for _, text := range []string{"{}", "null", "```json\n{}\n```", string(raw(reviewWire(in, "passed"))) + "{}", strings.Repeat("x", toolPreviewBytes+1)} {
 		if _, err := parseIndependentReview(text, in); err == nil {
 			t.Error("malformed review accepted")
 		}
@@ -295,21 +295,24 @@ func TestIndependentReviewReservationFailureNeverSends(t *testing.T) {
 	}
 }
 
-func TestIndependentReviewSettlesUsageBeforeMalformedVerdictRejection(t *testing.T) {
-	settlements := 0
+func TestIndependentReviewSettlesMalformedOutputBeforeCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { respond(w, goodItem()) }))
 	defer srv.Close()
 	in := reviewTestInput(srv.URL)
-	in.AfterRequest = func(usage model.Usage, requestErr error) error {
+	settlements := 0
+	in.AfterRequest = func(usage model.Usage, err error) error {
 		settlements++
-		if requestErr != nil || usage.InputTokens != 100 || usage.Turns != 1 {
-			t.Errorf("valid provider usage was not settled before parsing: %+v %v", usage, requestErr)
+		if err != nil || usage.InputTokens != 100 {
+			t.Errorf("usage %+v %v", usage, err)
 		}
+		cancel()
 		return nil
 	}
-	out, err := Review(context.Background(), in)
-	if err == nil || out.Verdict != "" || out.Usage.InputTokens != 100 || settlements != 1 {
-		t.Fatalf("malformed verdict escaped accounting: %+v %v settlements=%d", out, err, settlements)
+	out, err := Review(ctx, in)
+	if !errors.Is(err, context.Canceled) || out.Verdict != "" || out.Usage.InputTokens != 100 || settlements != 1 {
+		t.Fatalf("output %+v error %v settled %d", out, err, settlements)
 	}
 }
 
@@ -326,34 +329,40 @@ func TestIndependentReviewSettlementFailureCannotApprove(t *testing.T) {
 	}
 }
 
-func TestIndependentReviewAmbiguousTransportNeverReplays(t *testing.T) {
+func TestIndependentReviewTransportRetryRetainsUncertainUsage(t *testing.T) {
+	var in ReviewInput
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls.Add(1)
-		conn, _, err := w.(http.Hijacker).Hijack()
-		if err != nil {
-			t.Error(err)
+		if calls.Add(1) == 1 {
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			conn.Close()
 			return
 		}
-		conn.Close()
+		respond(w, reviewResponseItem(reviewWire(in, "passed")))
 	}))
 	defer srv.Close()
-	in := reviewTestInput(srv.URL)
+	in = reviewTestInput(srv.URL)
 	settlements := 0
-	in.AfterRequest = func(usage model.Usage, requestErr error) error {
+	in.AfterRequest = func(usage model.Usage, err error) error {
 		settlements++
-		if !usage.Uncertain || usage.Turns != 1 || !IsUsageUnknown(requestErr) {
-			t.Errorf("ambiguous usage not persisted: %+v %v", usage, requestErr)
+		if err != nil || !usage.Uncertain || usage.Turns != 2 {
+			t.Errorf("usage %+v %v", usage, err)
 		}
 		return nil
 	}
-	out, err := Review(context.Background(), in)
-	if !IsUsageUnknown(err) || !out.Usage.Uncertain || out.Verdict != "" || calls.Load() != 1 || settlements != 1 {
-		t.Fatalf("ambiguous review replayed or approved: %+v %v calls=%d settlements=%d", out, err, calls.Load(), settlements)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	out, err := Review(ctx, in)
+	if err != nil || !out.Usage.Uncertain || out.Verdict != "passed" || calls.Load() != 2 || settlements != 1 {
+		t.Fatalf("review %+v %v calls %d", out, err, calls.Load())
 	}
 }
 
-func TestIndependentReviewUnknownUsageCannotApprove(t *testing.T) {
+func TestIndependentReviewUnknownUsageDoesNotDiscardValidReview(t *testing.T) {
 	var in ReviewInput
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"status": "completed", "output": []any{reviewResponseItem(reviewWire(in, "passed"))}})
@@ -363,29 +372,33 @@ func TestIndependentReviewUnknownUsageCannotApprove(t *testing.T) {
 	settlements := 0
 	in.AfterRequest = func(usage model.Usage, requestErr error) error {
 		settlements++
-		if !usage.Uncertain || !IsUsageUnknown(requestErr) {
+		if !usage.Uncertain || requestErr != nil {
 			t.Error("missing usage did not become uncertain")
 		}
 		return nil
 	}
 	out, err := Review(context.Background(), in)
-	if !IsUsageUnknown(err) || out.Verdict != "" || !out.Usage.Uncertain || settlements != 1 {
+	if err != nil || out.Verdict != "passed" || !out.Usage.Uncertain || settlements != 1 {
 		t.Fatalf("review approved with missing usage: %+v %v", out, err)
 	}
 }
 
-func TestIndependentReviewRejectsUnexpectedToolCalls(t *testing.T) {
+func TestIndependentReviewCannotExecuteEditorTools(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		respond(w, testCall("read", "read_rule", map[string]any{"id": "R019"}))
 	}))
 	defer srv.Close()
-	out, err := Review(context.Background(), reviewTestInput(srv.URL))
-	if err == nil || out.Verdict != "" || !strings.Contains(err.Error(), "cannot call tools") || out.Usage.Turns != 1 {
-		t.Fatalf("reviewer tool call was accepted: %+v %v", out, err)
+	in := reviewTestInput(srv.URL)
+	in.AfterRequest = func(model.Usage, error) error { cancel(); return nil }
+	out, err := Review(ctx, in)
+	if !errors.Is(err, context.Canceled) || out.Verdict != "" || out.Usage.Turns != 1 {
+		t.Fatalf("review %+v error %v", out, err)
 	}
 }
 
-func TestIndependentReviewLimitsPreventRequests(t *testing.T) {
+func TestIndependentReviewInvalidInputsPreventRequests(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls.Add(1) }))
 	defer srv.Close()
@@ -393,33 +406,14 @@ func TestIndependentReviewLimitsPreventRequests(t *testing.T) {
 		name   string
 		mutate func(*ReviewInput)
 	}{
-		{"shared turns", func(in *ReviewInput) { in.Usage.Turns = in.Config.MaxTurns }},
-		{"shared cost", func(in *ReviewInput) {
-			in.Config.InputPricePerMillion, in.Config.OutputPricePerMillion, in.Config.MaxCostUSD = 1, 1, .0001
-		}},
-		{"uncertain priced budget", func(in *ReviewInput) {
-			in.Config.InputPricePerMillion, in.Config.OutputPricePerMillion, in.Config.MaxCostUSD = 1, 1, 1
-			in.Usage.Uncertain = true
-		}},
 		{"nonfinite prior cost", func(in *ReviewInput) { in.Usage.CostUSD = math.NaN() }},
 		{"invalid original hash", func(in *ReviewInput) { in.BaseHash = "old-hash" }},
 		{"uppercase candidate hash", func(in *ReviewInput) { in.CandidateHash = strings.ToUpper(in.CandidateHash) }},
 		{"outside source", func(in *ReviewInput) { in.File = "../secret" }},
-		{"oversized source", func(in *ReviewInput) { in.Before = strings.Repeat("x", (512<<10)+1) }},
 		{"nonUTF8 source", func(in *ReviewInput) { in.After = string([]byte{0xff}) }},
 		{"missing rules", func(in *ReviewInput) { in.Rules = nil }},
 		{"duplicate rules", func(in *ReviewInput) { in.Rules[1] = in.Rules[0] }},
 		{"empty rule", func(in *ReviewInput) { in.Rules[0].Body = " " }},
-		{"oversized rule", func(in *ReviewInput) { in.Rules[0].Body = strings.Repeat("x", maxToolBytes+1) }},
-		{"oversized combined rules", func(in *ReviewInput) {
-			in.Rules = nil
-			for i := 0; i < 6; i++ {
-				in.Rules = append(in.Rules, ReviewRule{ID: fmt.Sprintf("R%03d", i), Body: strings.Repeat("x", maxToolBytes)})
-			}
-		}},
-		{"oversized serialized request", func(in *ReviewInput) {
-			in.Before, in.After = strings.Repeat("\x00", 512<<10), strings.Repeat("\x00", 512<<10)
-		}},
 		{"missing persistence", func(in *ReviewInput) { in.AfterRequest = nil }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

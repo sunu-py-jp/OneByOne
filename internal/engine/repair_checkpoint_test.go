@@ -64,7 +64,7 @@ func TestRepairCheckpointValidatesAndRepairsInOneAttemptBeforeCommit(t *testing.
 	// Normalized edit coordinates and raw-file provenance must coexist.
 	original := "\ufeffLegacy.Save()\r\nLegacy.Load()\r\n"
 	s, cfg := fixture(t, map[string]string{"A.txt": original})
-	cfg.MaxFileBytes = 1024
+
 	if _, err := s.SaveConfig(cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -98,11 +98,11 @@ func TestRepairCheckpointValidatesAndRepairsInOneAttemptBeforeCommit(t *testing.
 			plan := engineRepairPlan()
 			engineRepairResponse(w, engineRepairCall("plan", "update_state", model.PlanUpdate{ExpectedRevision: 0, RuleDecisions: plan.RuleDecisions, Items: plan.Items}))
 		case 3:
-			request.Edits[0].NewText = strings.Repeat("x", cfg.MaxFileBytes+1)
+			request.Edits[0].OldText = "absent source text"
 			engineRepairResponse(w, engineRepairCall("bad", "validate_candidate", request))
 		case 4:
 			last := checkpoint.State.LastCandidate
-			if last == nil || last.Result.Passed || len(last.Result.Diagnostics) == 0 || last.Result.Diagnostics[0].Check != "file_size" {
+			if last != nil && last.Result.Passed {
 				t.Errorf("failed candidate not available to repair: %+v", last)
 			}
 			engineRepairResponse(w, engineRepairCall("good", "validate_candidate", request))
@@ -137,7 +137,7 @@ func TestRepairCheckpointValidatesAndRepairsInOneAttemptBeforeCommit(t *testing.
 		t.Fatalf("wrong durable accounting: %+v", task)
 	}
 	checkpoint, err := loadRepairCheckpoint(cfg, task.History[0])
-	if err != nil || checkpoint.State.ValidationCount != 2 || checkpoint.State.RequestPending {
+	if err != nil || checkpoint.State.ValidationCount != 1 || checkpoint.State.RequestPending {
 		t.Fatalf("repair journal not settled: %+v, %v", checkpoint, err)
 	}
 
@@ -151,7 +151,7 @@ func TestRepairCheckpointValidatesAndRepairsInOneAttemptBeforeCommit(t *testing.
 
 func TestRepairCheckpointExplicitResumeAcrossRestartKeepsAttemptAndCounters(t *testing.T) {
 	s, cfg := fixture(t, map[string]string{"A.txt": "Legacy.Save()\nLegacy.Load()\n"})
-	cfg.MaxAttempts = 1
+
 	if _, err := s.SaveConfig(cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +224,7 @@ func TestRepairCheckpointChangedProvenanceInvalidatesOnlyPlan(t *testing.T) {
 		t.Fatal("unchanged provenance invalidated plan")
 	}
 	changed := in.Config
-	changed.TimeoutSeconds++
+	changed.Deployment = "another-model"
 	if !resetRepairPlan(&c, changed, in.Catalog, in.File, in.Head, in.InputHash) {
 		t.Fatal("changed settings retained validated plan")
 	}
@@ -238,7 +238,7 @@ func TestRepairCheckpointChangedProvenanceInvalidatesOnlyPlan(t *testing.T) {
 
 func TestRepairCheckpointCrashBeforeNewJournalRetainsOlderFileBudgets(t *testing.T) {
 	s, cfg := fixture(t, map[string]string{"A.txt": "Legacy.Save()\n"})
-	cfg.MaxCostUSD = 0
+
 	if _, err := s.SaveConfig(cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -323,7 +323,7 @@ func TestRepairCheckpointChangedSettingsPreservesPriorArtifacts(t *testing.T) {
 	before := readTest(t, filepath.Join(cfg.QueuePath+".artifacts", firstAttempt.ID)+".before")
 	after := readTest(t, filepath.Join(cfg.QueuePath+".artifacts", firstAttempt.ID)+".after")
 	diff := readTest(t, firstAttempt.DiffPath)
-	cfg.TimeoutSeconds = cfg.EffectiveTimeoutSeconds() + 1
+	cfg.InputPricePerMillion = 123
 	if _, err := s.SaveConfig(cfg); err != nil {
 		t.Fatal(err)
 	}

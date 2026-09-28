@@ -71,7 +71,7 @@ func (s *Service) processOne(parent context.Context, index int, cfg model.Config
 	if scopeErr != nil {
 		return fmt.Errorf("対象ファイルのルールを確認できません: %w", scopeErr)
 	}
-	ctx, cancel := executionContext(parent, cfg.TimeoutSeconds)
+	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	head := writer.referenceHead
 	var e error
@@ -110,11 +110,7 @@ func (s *Service) processOne(parent context.Context, index int, cfg model.Config
 	if e = saveTask(); e != nil {
 		return e
 	}
-	validationLimit := "無制限"
-	if cfg.MaxAttempts > 0 {
-		validationLimit = fmt.Sprintf("%d回", cfg.MaxAttempts)
-	}
-	s.log("info", fmt.Sprintf("%s · 試行 %d · 候補検証上限 %s", t.File, t.Attempts, validationLimit))
+	s.log("info", fmt.Sprintf("%s · 試行 %d", t.File, t.Attempts))
 	finishNow := func(status, note string) error {
 		h.Outcome = status
 		h.Note = note
@@ -156,12 +152,9 @@ func (s *Service) processOne(parent context.Context, index int, cfg model.Config
 	if forbiddenContext(t.File) {
 		return finish("needs_human", "設定・認証ファイルは自動編集の対象外です")
 	}
-	before, e := readSnapshotFile(ctx, worktree, head, rel, cfg.EffectiveMaxFileBytes())
+	before, e := readSnapshotFile(ctx, worktree, head, rel)
 	if e != nil {
 		return finish("needs_human", e.Error())
-	}
-	if len(before) > cfg.EffectiveMaxFileBytes() {
-		return finish("needs_human", "ファイルが設定されたサイズ上限を超えています")
 	}
 	h.InputHash = digest(before)
 	if t.InputHash != "" && t.InputHash != h.InputHash {
@@ -188,8 +181,10 @@ func (s *Service) processOne(parent context.Context, index int, cfg model.Config
 	} else if !resumeAttempt {
 		// Retain historical accounting but never reuse a completed plan.
 		checkpoint.State.Plan = model.RepairPlan{}
+		checkpoint.State.StagedEdits = nil
 		checkpoint.State.LastCandidate = nil
 		checkpoint.State.ReadRuleIDs = nil
+		checkpoint.State.RuleReadOffsets = nil
 		checkpoint.State.Reviews = nil
 	}
 	checkpoint.AttemptID, checkpoint.PriorUsage = h.ID, prior
@@ -238,7 +233,11 @@ func (s *Service) processOne(parent context.Context, index int, cfg model.Config
 			h.Changes = buildRecordedChangeReport(cfg, h, checkpoint)
 			t.History[len(t.History)-1] = h
 			s.updateTask(index, t)
-			if state.RequestPending && state.RequestKind == "review" {
+			// The review also runs between HTTP requests while it checks or records
+			// findings. Only the current candidate can keep this phase active;
+			// historical reviews must not affect a replacement candidate.
+			reviewing := state.LastCandidate != nil && state.LastCandidate.Review != nil && state.LastCandidate.Review.Verdict == "running"
+			if reviewing || (state.RequestPending && state.RequestKind == "review") {
 				s.filePhase(t.File, "reviewing")
 			} else {
 				s.filePhase(t.File, "running")
@@ -255,14 +254,8 @@ func (s *Service) processOne(parent context.Context, index int, cfg model.Config
 	if e = persistRepair(checkpoint.State); e != nil {
 		return e
 	}
-	if checkpoint.State.Usage.Uncertain && (cfg.MaxCostUSD > 0 || !allowResume) {
-		return finish("needs_human", "前回のAPI使用量が未確認です。自動再送はしません。費用上限を設定していない場合に限り、再実行を指定して復帰できます")
-	}
-	if cfg.MaxCostUSD > 0 && checkpoint.State.Usage.CostUSD >= cfg.MaxCostUSD {
-		return finish("needs_human", "このファイルの費用上限に到達しました")
-	}
 	in := agent.Input{Config: cfg, SystemPrompt: cat.SystemPrompt, File: t.File, Content: text.text, BaseHash: h.InputHash, Rules: cat.Rules, CandidateRules: t.Rules, PreviousFailure: failureContext(cfg, t), RepairState: &checkpoint.State, BudgetBaseline: budgets[t.File], SaveRepairState: persistRepair, AllowUncertainResume: allowResume, ReadRule: cat.ReadRule, ReadContext: func(p string, start, end int) (string, error) {
-		return readSnapshotContext(ctx, worktree, head, sourceRelative, p, start, end, cfg.EffectiveMaxFileBytes())
+		return readSnapshotContext(ctx, worktree, head, sourceRelative, p, start, end)
 	}, Log: func(msg string) { s.log("info", t.File+" · "+msg) }}
 	in.ValidateCandidate = func(validationCtx context.Context, request model.CandidateRequest) (model.CandidateValidation, error) {
 		s.filePhase(t.File, "checking")
@@ -304,7 +297,7 @@ func (s *Service) processOne(parent context.Context, index int, cfg model.Config
 		if parent.Err() != nil || agent.IsUsageUnknown(e) || checkpoint.State.ToolCalls > 0 || checkpoint.State.Usage.Turns > prior.Turns {
 			status = "needs_human"
 		}
-		if agent.IsFatal(e) || (cfg.MaxCostUSD > 0 && (agent.IsUsageUnknown(e) || h.Usage.Uncertain)) {
+		if agent.IsFatal(e) {
 			status = "needs_human"
 		}
 		if err := finish(status, e.Error()); err != nil {
@@ -368,9 +361,9 @@ func (s *Service) processOne(parent context.Context, index int, cfg model.Config
 		if e != nil {
 			return finish("failed", e.Error())
 		}
-		after := text.encode(afterText)
-		if len(after) > cfg.EffectiveMaxFileBytes() {
-			return finish("failed", "修正後のファイルがサイズ上限を超えています")
+		after, e := text.encode(afterText, proposal.Edits)
+		if e != nil {
+			return finish("failed", e.Error())
 		}
 		validatedCandidate := proposal.CandidateID != ""
 		if validatedCandidate {
@@ -528,13 +521,6 @@ func checkSummary(checks []model.Check) string {
 	return strings.Join(parts, "\n")
 }
 
-func executionContext(parent context.Context, seconds int) (context.Context, context.CancelFunc) {
-	if seconds > 0 {
-		return context.WithTimeout(parent, time.Duration(seconds)*time.Second)
-	}
-	return context.WithCancel(parent)
-}
-
 func forbiddenContext(path string) bool {
 	for _, part := range strings.Split(strings.ReplaceAll(path, "\\", "/"), "/") {
 		p := strings.ToLower(part)
@@ -545,12 +531,12 @@ func forbiddenContext(path string) bool {
 	return false
 }
 
-func readContext(root, path string, start, end, maxBytes int) (string, error) {
+func readContext(root, path string, start, end int) (string, error) {
 	if forbiddenContext(path) {
 		return "", fmt.Errorf("エージェント設定・認証ファイルは参照できません")
 	}
-	if start < 1 || end < start || end-start >= 200 {
-		return "", fmt.Errorf("行番号は1以上、一度に200行までです")
+	if start < 1 || end < start {
+		return "", fmt.Errorf("行番号は1以上、終了行は開始行以上で指定してください")
 	}
 	p, e := catalog.PathWithin(root, path)
 	if e != nil {
@@ -560,8 +546,8 @@ func readContext(root, path string, start, end, maxBytes int) (string, error) {
 	if e != nil {
 		return "", e
 	}
-	if info.Size() > int64(maxBytes) {
-		return "", fmt.Errorf("参照ファイルが大きすぎます")
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("参照対象は通常ファイルである必要があります")
 	}
 	b, e := os.ReadFile(p)
 	if e != nil {
@@ -579,9 +565,6 @@ func readContext(root, path string, start, end, maxBytes int) (string, error) {
 		end = len(lines)
 	}
 	out := strings.Join(lines[start-1:end], "\n")
-	if len(out) > 64<<10 {
-		return "", fmt.Errorf("参照範囲を狭めてください（上限64KB）")
-	}
 	return out, nil
 }
 
@@ -592,11 +575,15 @@ func failureContext(cfg model.Config, t model.Task) string {
 	}
 	h := history[len(history)-2]
 	msg := h.Note + "\n" + checkSummary(h.Checks)
-	if b, e := os.ReadFile(filepath.Join(cfg.QueuePath+".artifacts", h.ID) + ".diff"); e == nil {
-		msg += "\n前回の不合格差分（未採用）:\n" + string(b)
-	}
-	if len(msg) > 32768 {
-		msg = msg[:32768]
+	base := filepath.Join(cfg.QueuePath+".artifacts", h.ID)
+	if b, err := os.ReadFile(base + ".diff"); err == nil {
+		before, beforeErr := os.ReadFile(base + ".before")
+		after, afterErr := os.ReadFile(base + ".after")
+		if beforeErr == nil && afterErr == nil {
+			if diff, err := sourceDiffDisplay(b, before, after); err == nil {
+				msg += "\n前回の不合格差分（未採用）:\n" + diff
+			}
+		}
 	}
 	return msg
 }

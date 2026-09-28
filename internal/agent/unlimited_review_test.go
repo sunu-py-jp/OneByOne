@@ -9,13 +9,10 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"onebyone/internal/model"
 )
 
 func TestUnlimitedIndependentReviewCountsContinuePastOldLimits(t *testing.T) {
 	in, state, final := reviewGateFixture()
-	in.Config.MaxAttempts, in.Config.MaxTurns = 0, 0
 	state.Usage.Turns, state.ReviewCount = 40, 4
 	in.ReviewCandidate = passedTestReview
 	checkpoint := func() error { return nil }
@@ -34,30 +31,6 @@ func TestUnlimitedIndependentReviewCountsContinuePastOldLimits(t *testing.T) {
 	}
 }
 
-func TestExplicitIndependentReviewCapsStillStopBeforeRequest(t *testing.T) {
-	for _, kind := range []string{"attempts", "turns"} {
-		t.Run(kind, func(t *testing.T) {
-			in, state, final := reviewGateFixture()
-			state.LastCandidate.Review = nil
-			in.Config.MaxAttempts, in.Config.MaxTurns = 0, 0
-			if kind == "attempts" {
-				in.Config.MaxAttempts, state.ReviewCount = 2, 2
-			} else {
-				in.Config.MaxTurns, state.Usage.Turns = 7, 7
-			}
-			called := false
-			in.ReviewCandidate = func(context.Context, ReviewInput) (model.IndependentReview, error) {
-				called = true
-				return model.IndependentReview{}, nil
-			}
-			checkpoint := func() error { return nil }
-			if _, _, err := reviewFinal(context.Background(), in, &state, final, checkpoint, checkpoint); err == nil || called {
-				t.Fatal("explicit review cap did not stop before a request")
-			}
-		})
-	}
-}
-
 func TestUnlimitedReviewTransportAcceptsHighTurnCountAndNoDeadline(t *testing.T) {
 	var input ReviewInput
 	requests := 0
@@ -67,7 +40,6 @@ func TestUnlimitedReviewTransportAcceptsHighTurnCountAndNoDeadline(t *testing.T)
 	}))
 	defer srv.Close()
 	input = reviewTestInput(srv.URL)
-	input.Config.MaxTurns, input.Config.TimeoutSeconds = 0, 0
 	input.Usage.Turns = 50
 	var messages []string
 	input.Log = func(message string) { messages = append(messages, message) }
@@ -83,7 +55,7 @@ func TestUnlimitedReviewTransportAcceptsHighTurnCountAndNoDeadline(t *testing.T)
 	if err != nil || out.Verdict != "passed" || requests != 1 {
 		t.Fatalf("unlimited review with historical turns did not complete: %+v, %v", out, err)
 	}
-	if joined := strings.Join(messages, "\n"); !strings.Contains(joined, "turn 51 (no limit)") || strings.Contains(joined, "/0") {
+	if joined := strings.Join(messages, "\n"); !strings.Contains(joined, "independent review") || strings.Contains(joined, "/0") {
 		t.Fatalf("unlimited review logged a zero-turn cap: %s", joined)
 	}
 }
@@ -99,8 +71,11 @@ func TestReviewTransportUnlimitedCancellationAndPositiveTimeout(t *testing.T) {
 			}))
 			defer srv.Close()
 			input := reviewTestInput(srv.URL)
-			input.Config.MaxTurns, input.Config.TimeoutSeconds = 0, seconds
+			// Runtime has no deadline; cancellation may still come from its caller.
 			ctx, cancel := context.WithCancel(context.Background())
+			if seconds > 0 {
+				ctx, cancel = context.WithTimeout(context.Background(), 100*time.Millisecond)
+			}
 			defer cancel()
 			finished := make(chan error, 1)
 			go func() { _, err := Review(ctx, input); finished <- err }()

@@ -37,7 +37,7 @@ func fixture(t *testing.T, sources map[string]string) (*Service, model.Config) {
 	// Use explicit budgets in bounded failure/retry tests. Tests for unset
 	// limits clear these three fields before running.
 	cfg := DefaultConfig()
-	cfg.MaxAttempts, cfg.MaxTurns, cfg.TimeoutSeconds = 3, 12, 600
+
 	cfg.Root = filepath.Join(base, "source")
 	cfg.RulesPath = filepath.Join(base, "rules", "rules.json")
 	cfg.QueuePath = filepath.Join(base, "session", "queue.jsonl")
@@ -382,7 +382,7 @@ func TestSourceChangesAfterScanDoNotReachModel(t *testing.T) {
 
 func TestProviderErrorPreservesPartialUsage(t *testing.T) {
 	s, cfg := fixture(t, map[string]string{"A.txt": "Legacy.Save()\n"})
-	cfg.MaxAttempts = 1
+
 	if _, err := s.SaveConfig(cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -565,9 +565,9 @@ func TestLoadingQueueDoesNotTransferCredentialToDifferentEndpoint(t *testing.T) 
 	}
 }
 
-func TestUnknownUsageStopsBudgetedRetriesAcrossRestart(t *testing.T) {
+func TestUnknownUsagePreservedWithoutBlockingExplicitRetry(t *testing.T) {
 	s, cfg := fixture(t, map[string]string{"A.txt": "Legacy.Save()\n"})
-	cfg.MaxCostUSD, cfg.InputPricePerMillion, cfg.OutputPricePerMillion = 1, 1, 1
+	cfg.InputPricePerMillion, cfg.OutputPricePerMillion = 1, 1
 	if _, err := s.SaveConfig(cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -583,16 +583,13 @@ func TestUnknownUsageStopsBudgetedRetriesAcrossRestart(t *testing.T) {
 	s.Close()
 	reloaded := New(s.configPath)
 	t.Cleanup(reloaded.Close)
-	reloaded.propose = func(context.Context, agent.Input) (model.Proposal, error) {
-		t.Error("unaccounted cost was forgotten after reload/retry")
-		return model.Proposal{}, nil
-	}
+	reloaded.propose = successfulProposal
 	if _, err := reloaded.RetryTasks([]string{"A.txt"}); err != nil {
 		t.Fatal(err)
 	}
 	st = runTest(t, reloaded, 0)
-	if st.Tasks[0].Status != "needs_human" || !strings.Contains(st.Tasks[0].Note, "未確認") {
-		t.Fatalf("unknown historical usage bypassed budget: %+v", st)
+	if st.Tasks[0].Status != "done" || !st.Usage.Uncertain {
+		t.Fatalf("retry lost historical uncertain usage or failed: %+v", st)
 	}
 }
 

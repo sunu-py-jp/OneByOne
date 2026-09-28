@@ -230,12 +230,9 @@ func canReplanReviewHold(review model.IndependentReview, candidate *model.Candid
 }
 
 func validateReviewHolds(holds []model.ReviewHold, original string, rules map[string]bool) error {
-	if len(holds) > maxRepairPlanItems {
-		return errors.New("Independent review has too many held items")
-	}
 	seen := map[string]bool{}
 	for _, h := range holds {
-		if !validRuleID(h.ItemID) || seen[h.ItemID] || !rules[h.RuleID] || !validPlanText(h.Reason) || len(h.Reason) > 8192 || len(h.SourceLocations) == 0 || len(h.SourceLocations) > 32 {
+		if !validRuleID(h.ItemID) || seen[h.ItemID] || !rules[h.RuleID] || !validPlanText(h.Reason) || len(h.SourceLocations) == 0 {
 			return errors.New("Independent review requires unique, concrete held scopes")
 		}
 		seen[h.ItemID] = true
@@ -257,7 +254,7 @@ func validateReviewHoldAssessments(assessments []model.ReviewHoldAssessment, hol
 		known[h.ItemID] = true
 	}
 	for _, a := range assessments {
-		if !known[a.ItemID] || seen[a.ItemID] || (a.Status != "preserved" && a.Status != "unsafe") || !validPlanText(a.Reason) || len(a.Reason) > 8192 {
+		if !known[a.ItemID] || seen[a.ItemID] || (a.Status != "preserved" && a.Status != "unsafe") || !validPlanText(a.Reason) {
 			return errors.New("Independent review held-item assessment is invalid")
 		}
 		seen[a.ItemID] = true

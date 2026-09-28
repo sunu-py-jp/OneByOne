@@ -245,17 +245,17 @@ func TestDiscardRecoveryRefusesUserEdits(t *testing.T) {
 }
 
 func TestDiscardExplicitRequeueRetainsUncertainUsagePolicy(t *testing.T) {
-	for _, withCap := range []bool{false, true} {
-		t.Run(map[bool]string{false: "without-cap", true: "with-cap"}[withCap], func(t *testing.T) {
+	for _, withPricing := range []bool{false, true} {
+		t.Run(map[bool]string{false: "without-pricing", true: "with-pricing"}[withPricing], func(t *testing.T) {
 			s, cfg := fixture(t, map[string]string{"src/A.txt": "Legacy.Save()\n"})
 			s.propose = successfulProposal
 			st := runTest(t, s, 0)
 			if st.LastError != "" || st.Tasks[0].Status != "done" {
 				t.Fatalf("initial run: %+v", st)
 			}
-			if withCap {
+			if withPricing {
 				cfg = s.state.Config
-				cfg.MaxCostUSD, cfg.InputPricePerMillion, cfg.OutputPricePerMillion = 100, 1, 1
+				cfg.InputPricePerMillion, cfg.OutputPricePerMillion = 1, 1
 				if _, err := s.SaveConfig(cfg); err != nil {
 					t.Fatal(err)
 				}
@@ -285,12 +285,10 @@ func TestDiscardExplicitRequeueRetainsUncertainUsagePolicy(t *testing.T) {
 			if st.LastError != "" || !st.Usage.Uncertain {
 				t.Fatalf("billing uncertainty was lost: %+v", st)
 			}
-			if withCap && (called || st.Tasks[0].Status != "needs_human") {
-				t.Fatal("discard bypassed the uncertain billing cap guard")
+			if !called || st.Tasks[0].Status != "done" {
+				t.Fatalf("explicit discard requeue must permit new work while retaining billing uncertainty, with or without price metadata: %+v", st.Tasks[0])
 			}
-			if !withCap && (!called || st.Tasks[0].Status != "done") {
-				t.Fatalf("explicit discard requeue should permit a new request without a fee cap: %+v", st.Tasks[0])
-			}
+
 		})
 	}
 }

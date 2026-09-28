@@ -2,7 +2,6 @@ package engine
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -70,7 +69,7 @@ func TestResultPublicationSquashesCumulativeChangesWithoutCheckout(t *testing.T)
 	if strings.Contains(preview.Message, "- R019: - R019:") {
 		t.Fatal("duplicated rule ID in default message")
 	}
-	if strings.Contains(preview.Message, "src/B.txt") || strings.Contains(preview.Message, "R001") || strings.Contains(preview.Message, "R999") {
+	if strings.Contains(preview.Message, "src/B.txt") || strings.Contains(preview.Message, "| R001 | ✅完了") || strings.Contains(preview.Message, "R999") {
 		t.Fatal(preview.Message)
 	}
 	diff, err := s.GetResultPublicationFileDiff(preview.WorkspaceID, preview.Revision, "src/A.txt")
@@ -372,15 +371,19 @@ func TestResultPublicationUTF8LargeMessageRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw, err := publicationGitInputLimit(context.Background(), cfg.Root, "", 6<<20, "cat-file", "commit", pub.Commit)
-	if err != nil || strings.Contains(raw, "encoding Shift_JIS") || !strings.Contains(raw, req.Title+"\n\n"+req.Message) {
+	if err != nil || strings.Contains(raw, "encoding Shift_JIS") || !strings.Contains(raw, req.Title+"\n\n"+pub.Message) || pub.ReportPath == "" || strings.Contains(raw, req.Message) {
 		t.Fatalf("wrong raw UTF-8 commit encoding: %v", err)
+	}
+	report, err := publicationGitInputLimit(context.Background(), cfg.Root, "", len(req.Message)+1024, "cat-file", "blob", pub.Commit+":"+pub.ReportPath)
+	if err != nil || report != req.Message {
+		t.Fatalf("long message was truncated or changed: %v", err)
 	}
 	journal := resultPublicationJournal{Version: 1, Records: []resultPublicationRecord{{State: "prepared", Publication: pub}}}
 	if err = writeOutputJSON(cfg, cfg.QueuePath+".publications.json", journal); err != nil {
 		t.Fatal(err)
 	}
 	recovered, err := s.GetResultPublicationPreview()
-	if err != nil || len(recovered.Publications) != 1 || recovered.Publications[0].Message != req.Message {
+	if err != nil || len(recovered.Publications) != 1 || recovered.Publications[0] != pub {
 		t.Fatalf("large-message recovery failed: %v", err)
 	}
 }
@@ -395,7 +398,7 @@ func TestResultPublicationFullSummaryPreservesEveryFileAndRule(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Count(message, "\n---\n\n## 修正ファイル\n") != len(files) || strings.Count(message, "修正内容の記録なし") != len(files)*2 || strings.Count(message, summary) != len(files) || strings.Count(message, "#### R001：") != len(files) || strings.Count(message, "#### R019：") != len(files) {
+	if strings.Count(message, "\n---\n\n## ファイル　✅完了\n") != len(files) || strings.Count(message, "修正内容の記録なし") != len(files)*2 || strings.Count(message, summary) != len(files) || strings.Count(message, "| R001 | ✅完了 |") != len(files) || strings.Count(message, "| R019 | ✅完了 |") != len(files) {
 		t.Fatal("large report silently dropped descriptions or rules")
 	}
 	for _, index := range []int{0, 4999, 9999} {
@@ -411,7 +414,7 @@ func TestResultPublicationMarkdownIncludesSummaryTitlesReviewsAndCounts(t *testi
 	const title = "旧APIを移行し\n契約を維持する"
 	const reason = "呼び出し順序と戻り値を確認した。\n追加の削除は不要。"
 	task := model.Task{File: "src/file (a)#1.ts", Status: "done", History: []model.Attempt{{Outcome: "done", Commit: "commit", Note: note, InputHash: "before", OutputHash: "after", RulesApplied: []string{"R001"}, Reviews: []model.IndependentReview{
-		{Verdict: "passed", BaseHash: "before", CandidateHash: "after", Assessments: []model.ReviewAssessment{{RuleID: "R001", Status: "satisfied", Reason: reason}}},
+		{Verdict: "passed", BaseHash: "before", CandidateHash: "after", Summary: "全体の契約を確認した", Assessments: []model.ReviewAssessment{{RuleID: "R001", Status: "satisfied", Reason: reason}}},
 		{Verdict: "needs_changes", BaseHash: "before", CandidateHash: "rejected", Assessments: []model.ReviewAssessment{{RuleID: "R001", Status: "needs_changes", Reason: "採用してはいけないレビュー"}}},
 	}}}}
 	task.History[0].Changes = []model.ChangeReportItem{
@@ -426,27 +429,15 @@ func TestResultPublicationMarkdownIncludesSummaryTitlesReviewsAndCounts(t *testi
 		model.Attempt{Outcome: "skipped", Changes: []model.ChangeReportItem{{RuleID: "R001", Status: "fixed", Change: "変更不要なので記載しない修正"}}},
 	)
 	snapshot := resultPublicationSnapshot{meta: manifest{SourceRelative: "project"}, tasks: []model.Task{task, {File: "unchanged.ts", Status: "skipped"}, {File: "held.ts", Status: "needs_human"}, {File: "excluded.ts", Status: "pending", Excluded: true}}, rules: []model.Rule{{ID: "R001", Title: title, Summary: description}}}
-	// Editing the current rule must not rewrite the title of an adopted result.
-	snapshot.config.QueuePath = filepath.Join(t.TempDir(), "queue.jsonl")
-	snapshot.tasks[0].History[0].ExecutionID = strings.Repeat("a", 24)
-	snapshot.tasks[0].History[1].ExecutionID = snapshot.tasks[0].History[0].ExecutionID
-	record := executionRecord{Version: 1, Run: model.ExecutionRun{ID: snapshot.tasks[0].History[0].ExecutionID}, State: model.State{Config: snapshot.config, Rules: snapshot.rules}}
-	data, err := json.Marshal(record)
-	if err != nil {
-		t.Fatal(err)
-	}
-	directory, err := executionDirectory(snapshot.config.QueuePath, record.Run.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	writeTest(t, filepath.Join(directory, "snapshot.json"), data)
+	// Tables report the recorded changes and review text, not mutable rule metadata.
 	snapshot.rules = []model.Rule{{ID: "R001", Title: "後から編集された名称", Summary: "後から編集された説明"}}
 	file := publicationFileSummary(task)
-	message, err := publicationCommitMessage([]model.ResultPublicationFile{file}, publicationReportContext(snapshot))
+	report := publicationReportContext(snapshot)
+	message, err := publicationCommitMessage([]model.ResultPublicationFile{file}, report)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"# 全体サマリー", "対象ファイル数：3", "修正済みファイル数：1", "修正不要ファイル数：1", "未完了・要確認ファイル数：1", "# 修正一覧", "[project/src/file (a)#1.ts](<project/src/file%20%28a%29%231.ts>)", "### 修正概要\n\n" + note, "\n---\n\n## 修正ファイル\n", "#### R001：旧APIを移行し 契約を維持する\n", "\n**修正の内容**\n\n", "古いReportWriterのimportを削除する。", "既存のreports importとの重複を避ける。", "出力成功後だけ完了イベントを送信する。", "例外時もリソースを解放する。", "\n**修正後レビュー結果**\n\n" + reason} {
+	for _, expected := range []string{"# 全体サマリー", "対象ファイル数：3", "修正完了：1", "修正不要：1", "要確認：1", "# 修正一覧", "[project/src/file (a)#1.ts](<project/src/file%20%28a%29%231.ts>)", "### 修正概要\n\n" + note, "\n---\n\n## ファイル　✅完了\n", "| ルールID | ステータス | 修正内容 | レビュー結果 |", "| R001 | ✅完了 |", "古いReportWriterのimportを削除する。<br>既存のreports importとの重複を避ける。", "出力成功後だけ完了イベントを送信する。", "例外時もリソースを解放する。", "### レビュー結果\n\n全体の契約を確認した", publicationTableCell(reason)} {
 		if !strings.Contains(message, expected) {
 			t.Fatalf("missing %q in %s", expected, message)
 		}

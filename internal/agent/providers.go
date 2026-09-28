@@ -119,7 +119,7 @@ func (c *client) migrationRequest(history []json.RawMessage, prompt string) ([]b
 		}
 		format := proposalFormat()["format"].(map[string]any)
 		return json.Marshal(map[string]any{
-			"model": c.cfg.Deployment, "max_tokens": c.cfg.MaxOutputTokens,
+			"model": c.cfg.Deployment, "max_tokens": c.outputLimit(),
 			"system":   []any{map[string]any{"type": "text", "text": prompt, "cache_control": map[string]any{"type": "ephemeral", "ttl": "5m"}}},
 			"messages": history, "tools": tools,
 			"tool_choice":   map[string]any{"type": "auto", "disable_parallel_tool_use": true},
@@ -129,16 +129,16 @@ func (c *client) migrationRequest(history []json.RawMessage, prompt string) ([]b
 	return json.Marshal(map[string]any{
 		"model": c.cfg.Deployment, "store": false, "instructions": prompt,
 		"input": history, "tools": toolDefinitions(), "parallel_tool_calls": false,
-		"max_output_tokens": c.cfg.MaxOutputTokens, "text": proposalFormat(), "include": []string{"reasoning.encrypted_content"},
+		"text": proposalFormat(), "include": []string{"reasoning.encrypted_content"},
 	})
 }
 
 func (c *client) connectionRequest() ([]byte, error) {
 	const prompt = "This is a connection check. Reply with OK only."
 	if c.cfg.Provider == "claude" {
-		return json.Marshal(map[string]any{"model": c.cfg.Deployment, "max_tokens": c.cfg.MaxOutputTokens, "messages": []any{map[string]any{"role": "user", "content": prompt}}})
+		return json.Marshal(map[string]any{"model": c.cfg.Deployment, "max_tokens": c.outputLimit(), "messages": []any{map[string]any{"role": "user", "content": prompt}}})
 	}
-	return json.Marshal(map[string]any{"model": c.cfg.Deployment, "store": false, "max_output_tokens": c.cfg.MaxOutputTokens, "input": prompt})
+	return json.Marshal(map[string]any{"model": c.cfg.Deployment, "store": false, "input": prompt})
 }
 
 type toolResult struct {
@@ -188,12 +188,13 @@ func normalizeClaudeUsage(u *claudeUsage) *responseUsage {
 	}
 	// Claude's input_tokens excludes both cache writes and reads. Check each
 	// term before adding so overflow or malformed usage cannot reduce the cost.
+	total := 0
 	for _, n := range []int{*u.InputTokens, u.CacheRead, u.CacheCreation} {
-		if n < 0 || n > 4*maxRequestBytes {
+		if n < 0 || n > int(^uint(0)>>1)-total {
 			return nil
 		}
+		total += n
 	}
-	total := *u.InputTokens + u.CacheRead + u.CacheCreation
 	five, hour := u.CacheCreation, 0 // The request explicitly selects a 5m TTL.
 	if u.CacheDetails != nil {
 		five, hour = u.CacheDetails.FiveMinutes, u.CacheDetails.OneHour
@@ -230,11 +231,11 @@ func decodeClaudeResponse(data []byte) (response, error) {
 		// JSON. Its reported usage is counted, but no edits or tools are accepted.
 		switch message.StopReason {
 		case "max_tokens":
-			out.ProtocolError = errors.New("Claude reached max_tokens before completing the proposal")
+			out.ProtocolError = &OutputLimitError{Reason: "Claude reached max_tokens before completing the proposal"}
 		case "refusal":
 			out.ProtocolError = errors.New("Claude refused to generate a migration proposal")
 		case "model_context_window_exceeded":
-			out.ProtocolError = errors.New("Claude reached its model context window limit")
+			out.ProtocolError = &ContextLimitError{Reason: "Claude reached its model context window limit"}
 		default:
 			out.ProtocolError = errors.New("Claude response was not completed")
 		}

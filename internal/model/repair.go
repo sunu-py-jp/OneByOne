@@ -31,6 +31,22 @@ type PlanUpdate struct {
 	ExpectedRevision int            `json:"expectedRevision"`
 	RuleDecisions    []PlanDecision `json:"ruleDecisions"`
 	Items            []PlanItem     `json:"items"`
+	RemoveItemIDs    []string       `json:"removeItemIds,omitempty"`
+}
+
+// StagedEdit is an independently replaceable edit against immutable original
+// text. Its stable ID lets later requests correct one edit without repeating
+// unrelated, already persisted replacements.
+type StagedEdit struct {
+	ID string `json:"id"`
+	Edit
+}
+
+type StageEditsRequest struct {
+	PlanRevision  int          `json:"planRevision"`
+	BaseHash      string       `json:"baseHash"`
+	Edits         []StagedEdit `json:"edits"`
+	RemoveEditIDs []string     `json:"removeEditIds"`
 }
 
 // Edits always address the immutable original file, including after a failed
@@ -80,6 +96,7 @@ type RepairState struct {
 	Version         int                 `json:"version"`
 	Plan            RepairPlan          `json:"plan"`
 	LastCandidate   *CandidateRecord    `json:"lastCandidate"`
+	StagedEdits     []StagedEdit        `json:"stagedEdits,omitempty"`
 	Usage           Usage               `json:"usage"`
 	ElapsedMS       int64               `json:"elapsedMs"`
 	ToolCalls       int                 `json:"toolCalls"`
@@ -88,6 +105,7 @@ type RepairState struct {
 	RequestPending  bool                `json:"requestPending"`
 	RequestID       string              `json:"requestId"`
 	ReadRuleIDs     []string            `json:"readRuleIds"`
+	RuleReadOffsets map[string]int      `json:"ruleReadOffsets,omitempty"`
 	ReviewCount     int                 `json:"reviewCount"`
 	Reviews         []IndependentReview `json:"reviews,omitempty"`
 	RequestKind     string              `json:"requestKind,omitempty"`

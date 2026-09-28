@@ -25,7 +25,7 @@ func fixture(t *testing.T) model.Config {
 		t.Skip("rg required")
 	}
 	dir := t.TempDir()
-	cfg := model.Config{Root: filepath.Join(dir, "source"), RulesPath: filepath.Join(dir, "rules", "rules.json"), RGPath: rg, MaxFileBytes: 1024}
+	cfg := model.Config{Root: filepath.Join(dir, "source"), RulesPath: filepath.Join(dir, "rules", "rules.json"), RGPath: rg}
 	if err = os.MkdirAll(cfg.Root, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +193,7 @@ func TestUnsupportedSourcesRemainVisible(t *testing.T) {
 		t.Fatal(tasks, err)
 	}
 	for _, task := range tasks {
-		if task.Status != "needs_human" || len(task.InputHash) != 64 {
+		if (task.File != "large.ext" && task.Status != "needs_human") || (task.File == "large.ext" && task.Status != "pending") || len(task.InputHash) != 64 {
 			t.Fatal(task)
 		}
 	}

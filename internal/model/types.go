@@ -19,12 +19,6 @@ type Config struct {
 	Credential                 string                                `json:"credential,omitempty"`
 	CredentialSet              bool                                  `json:"credentialSet,omitempty"`
 	Concurrency                int                                   `json:"concurrency,omitempty"`
-	MaxAttempts                int                                   `json:"maxAttempts"`
-	MaxTurns                   int                                   `json:"maxTurns"`
-	MaxOutputTokens            int                                   `json:"maxOutputTokens"`
-	MaxFileBytes               int                                   `json:"maxFileBytes"`
-	TimeoutSeconds             int                                   `json:"timeoutSeconds"`
-	MaxCostUSD                 float64                               `json:"maxCostUSD"`
 	InputPricePerMillion       float64                               `json:"inputPricePerMillion"`
 	CachedInputPricePerMillion float64                               `json:"cachedInputPricePerMillion"`
 	OutputPricePerMillion      float64                               `json:"outputPricePerMillion"`

@@ -27,7 +27,7 @@ func reviewGateFixture() (Input, model.RepairState, model.Proposal) {
 			Review:  &review, ReviewRequested: true, ReviewNote: "送信完了を待つよう修正しました。",
 		},
 	}
-	in := Input{Config: model.Config{MaxAttempts: 3, MaxTurns: 12}, File: "src/dispatch.js", Content: "send();\nnotify();\n", BaseHash: baseHash, CandidateRules: []string{"R101"}, Rules: []model.Rule{{ID: "R101"}}, ReadRule: func(string) (string, error) { return "送信完了後に通知すること。", nil }}
+	in := Input{Config: model.Config{}, File: "src/dispatch.js", Content: "send();\nnotify();\n", BaseHash: baseHash, CandidateRules: []string{"R101"}, Rules: []model.Rule{{ID: "R101"}}, ReadRule: func(string) (string, error) { return "送信完了後に通知すること。", nil }}
 	final := model.Proposal{Outcome: "modified", CandidateID: "candidate-1", Edits: edits, RulesApplied: []string{"R101"}, Note: "送信完了を待つよう修正しました。"}
 	return in, state, final
 }

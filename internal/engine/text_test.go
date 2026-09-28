@@ -19,10 +19,10 @@ func TestCRLFBOMAndExactEditsPreserved(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := decoded.encode(after); !bytes.Equal(got, []byte("\ufefffirst\r\nModern.Save()\r\nlast\r\n")) {
+	if got, err := decoded.encode(after); err != nil || !bytes.Equal(got, []byte("\ufefffirst\r\nModern.Save()\r\nlast\r\n")) {
 		t.Errorf("encoding/newlines changed: %q", got)
 	}
-	for _, bad := range [][]byte{[]byte("mixed\r\nnew\n"), []byte("old\rnew"), {0xff}, []byte("a\x00b")} {
+	for _, bad := range [][]byte{{0xff}, []byte("a\x00b")} {
 		if _, err := decodeSource(bad); err == nil {
 			t.Errorf("accepted unsupported source: %q", bad)
 		}
@@ -53,29 +53,29 @@ func TestEditsUseDisjointOriginalLocations(t *testing.T) {
 func TestContextScopeAndLineBounds(t *testing.T) {
 	root := t.TempDir()
 	writeTest(t, filepath.Join(root, "source.txt"), []byte("first\r\nsecond\r\nthird\r\n"))
-	if got, err := readContext(root, "source.txt", 2, 3, 4096); err != nil || got != "second\nthird" {
+	if got, err := readContext(root, "source.txt", 2, 3); err != nil || got != "second\nthird" {
 		t.Errorf("bad line slice: %q %v", got, err)
 	}
 	for _, forbidden := range []string{"AGENTS.md", "nested/CLAUDE.md", ".git/config", ".env", ".env.local", ".ssh/config", ".aws/credentials", ".azure/accessTokens.json", ".claude/settings.json", ".npmrc", "service.pem", "service.key", "service.pfx", "GEMINI.md", "SKILL.md"} {
 		writeTest(t, filepath.Join(root, filepath.FromSlash(forbidden)), []byte("secret\n"))
-		if got, err := readContext(root, forbidden, 1, 1, 4096); err == nil {
+		if got, err := readContext(root, forbidden, 1, 1); err == nil {
 			t.Errorf("read forbidden context %q: %q", forbidden, got)
 		}
 	}
 	for _, path := range []string{"../secret", "/etc/passwd", "C:/Users/secret", "source.txt.", "source.txt ", "NUL"} {
-		if _, err := readContext(root, path, 1, 1, 4096); err == nil {
+		if _, err := readContext(root, path, 1, 1); err == nil {
 			t.Errorf("unsafe path accepted: %q", path)
 		}
 	}
-	for _, span := range [][2]int{{0, 1}, {1, 201}, {3, 2}, {999, 1000}} {
-		if _, err := readContext(root, "source.txt", span[0], span[1], 4096); err == nil {
+	for _, span := range [][2]int{{0, 1}, {3, 2}, {999, 1000}} {
+		if _, err := readContext(root, "source.txt", span[0], span[1]); err == nil {
 			t.Errorf("unsafe range accepted: %v", span)
 		}
 	}
 	outside := filepath.Join(t.TempDir(), "outside.txt")
 	writeTest(t, outside, []byte("secret"))
 	if err := os.Symlink(outside, filepath.Join(root, "link.txt")); err == nil {
-		if _, err := readContext(root, "link.txt", 1, 1, 4096); err == nil {
+		if _, err := readContext(root, "link.txt", 1, 1); err == nil {
 			t.Error("followed context symlink")
 		}
 	}

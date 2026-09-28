@@ -14,14 +14,13 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"onebyone/internal/model"
 )
 
 func testInput(endpoint string) Input {
-	// Explicit test budgets keep transport/journal boundary tests independent
-	// of the application's optional defaults.
-	return Input{Config: model.Config{Endpoint: endpoint, Deployment: "my-deployment", Credential: "test-secret", MaxAttempts: 3, MaxTurns: 5, MaxOutputTokens: 4096, TimeoutSeconds: 180},
+	return Input{Config: model.Config{Endpoint: endpoint, Deployment: "my-deployment", Credential: "test-secret"},
 		File: "src/example.txt", Content: "Legacy.Save()\n", CandidateRules: []string{"R019"}, SystemPrompt: "R019: Replace Legacy.Save with Modern.Save",
 		Rules:           []model.Rule{{ID: "R019", ContentPattern: "Legacy"}},
 		SaveRepairState: func(model.RepairState) error { return nil },
@@ -141,7 +140,7 @@ func TestRunStructuredProposalAndUsage(t *testing.T) {
 		}
 		var req map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&req)
-		if req["model"] != "my-deployment" || req["store"] != false || req["max_output_tokens"] != float64(4096) {
+		if req["model"] != "my-deployment" || req["store"] != false || req["max_output_tokens"] != nil {
 			t.Errorf("unexpected request settings: %v", req)
 		}
 		format := req["text"].(map[string]any)["format"].(map[string]any)
@@ -263,56 +262,35 @@ func TestRefusalIncompleteAndMissingUsageCannotSucceed(t *testing.T) {
 			}
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _ = json.NewEncoder(w).Encode(result) }))
 			defer srv.Close()
-			out, err := Run(context.Background(), testInput(srv.URL))
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
+			out, err := Run(ctx, testInput(srv.URL))
 			if err == nil || out.Outcome == "modified" {
 				t.Fatalf("invalid result accepted: %+v, %v", out, err)
 			}
-			if name == "missing usage" && (!IsUsageUnknown(err) || !out.Usage.Uncertain) {
+			if name == "missing usage" && !out.Usage.Uncertain {
 				t.Fatalf("missing usage was not explicitly classified: %+v %v", out.Usage, err)
 			}
-			if name != "missing usage" && out.Usage.OutputTokens != 50 {
+			if name != "missing usage" && out.Usage.OutputTokens < 50 {
 				t.Errorf("lost billed usage: %+v", out.Usage)
 			}
 		})
 	}
 }
 
-func TestCostLimitPreventsRequest(t *testing.T) {
-	var calls atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls.Add(1); respond(w, goodItem()) }))
-	defer srv.Close()
-	in := testInput(srv.URL)
-	in.Config.MaxCostUSD = .00001
-	in.Config.InputPricePerMillion = 10
-	in.Config.OutputPricePerMillion = 30
-	_, err := Run(context.Background(), in)
-	if err == nil || !strings.Contains(err.Error(), "cost limit") || calls.Load() != 0 {
-		t.Fatalf("budget did not stop request: %v (%d calls)", err, calls.Load())
-	}
-	in.Config.InputPricePerMillion = 0
-	_, err = Run(context.Background(), in)
-	if err == nil || !IsFatal(err) || calls.Load() != 0 {
-		t.Fatalf("missing prices must fail closed: %v", err)
-	}
-}
-
-func TestCostLimitStopsNextTurnAndPreservesUsage(t *testing.T) {
+func TestPricingOnlyAccountsForCompletedRequests(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls.Add(1)
-		respond(w, map[string]any{"type": "function_call", "call_id": "call_1", "name": "read_rule", "arguments": `{"id":"R019"}`})
+		turn := int(calls.Add(1)) - 1
+		respond(w, standardTurn(turn))
 	}))
 	defer srv.Close()
 	in := testInput(srv.URL)
-	in.Config.InputPricePerMillion = 1
-	in.Config.OutputPricePerMillion = 1
-	// First request reserves less than this. The 96 KiB rule makes the next
-	// request's conservative token reservation exceed the remaining allowance.
-	in.Config.MaxCostUSD = .05
-	in.ReadRule = func(id string) (string, error) { return strings.Repeat("x", 80<<10), nil }
+	in.Config.InputPricePerMillion = 10000
+	in.Config.OutputPricePerMillion = 30000
 	out, err := Run(context.Background(), in)
-	if err == nil || !strings.Contains(err.Error(), "cost limit") || calls.Load() != 1 || out.Usage.InputTokens != 100 {
-		t.Fatalf("budget failure: %+v, %v, calls=%d", out, err, calls.Load())
+	if err != nil || out.Outcome != "modified" || calls.Load() != 4 || out.Usage.CostUSD <= 0 {
+		t.Fatalf("pricing stopped valid work: %+v %v calls=%d", out, err, calls.Load())
 	}
 }
 
@@ -365,18 +343,22 @@ func TestUnknownToolIsBoundedAndFedBack(t *testing.T) {
 	}
 }
 
-func TestTurnLimit(t *testing.T) {
-	calls := 0
+func TestManyToolTurnsContinueUntilCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
-		respond(w, map[string]any{"type": "function_call", "call_id": fmt.Sprintf("call_%d", calls), "name": "read_rule", "arguments": `{"id":"R019"}`})
+		n := calls.Add(1)
+		if n == 40 {
+			cancel()
+			return
+		}
+		respond(w, testCall(fmt.Sprint(n), "read_rule", map[string]string{"id": "R019"}))
 	}))
 	defer srv.Close()
-	in := testInput(srv.URL)
-	in.Config.MaxTurns = 2
-	out, err := Run(context.Background(), in)
-	if err == nil || !strings.Contains(err.Error(), "MaxTurns") || calls != 2 || out.Usage.Turns != 2 {
-		t.Fatalf("bad turn limit: %+v, %v", out, err)
+	out, err := Run(ctx, testInput(srv.URL))
+	if err == nil || calls.Load() != 40 || out.Usage.Turns < 39 {
+		t.Fatalf("loop stopped before cancel: %+v %v calls=%d", out, err, calls.Load())
 	}
 }
 
@@ -411,24 +393,30 @@ func TestBearerAndEnvironmentAuthentication(t *testing.T) {
 	}
 }
 
-func TestRateLimitRetriesOnlyExplicit429(t *testing.T) {
+func TestTransientHTTPFailuresRetryAndAuthenticationStops(t *testing.T) {
 	for _, status := range []int{429, 500, 401} {
 		t.Run(fmt.Sprint(status), func(t *testing.T) {
-			calls := 0
+			var calls atomic.Int32
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				calls++
+				n := calls.Add(1)
+				if n > 3 {
+					respond(w, finalItem("needs_human", nil, nil))
+					return
+				}
 				w.Header().Set("Retry-After", "0")
 				w.WriteHeader(status)
 				_, _ = w.Write([]byte(`{"error":{"code":"provider_error","message":"test-secret"}}`))
 			}))
 			defer srv.Close()
-			_, err := Run(context.Background(), testInput(srv.URL))
-			want := 1
-			if status == 429 {
-				want = 3
-			}
-			if err == nil || !IsFatal(err) || calls != want || strings.Contains(err.Error(), "test-secret") {
-				t.Fatalf("bad HTTP behavior status %d calls %d: %v", status, calls, err)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			out, err := Run(ctx, testInput(srv.URL))
+			if status == 401 {
+				if err == nil || !IsFatal(err) || calls.Load() != 1 || strings.Contains(err.Error(), "test-secret") {
+					t.Fatalf("authentication retry or leaked error: %v calls=%d", err, calls.Load())
+				}
+			} else if err != nil || calls.Load() != 4 || out.Outcome != "needs_human" || (status == 500 && !out.Usage.Uncertain) {
+				t.Fatalf("transient failure not recovered: %+v %v calls=%d", out, err, calls.Load())
 			}
 		})
 	}
@@ -458,20 +446,24 @@ func TestUnknownUsageClassificationSurvivesFatalWrapping(t *testing.T) {
 				_, _ = w.Write([]byte(`{"error":{"code":"provider_error"}}`))
 			}))
 			defer srv.Close()
-			out, err := Run(context.Background(), testInput(srv.URL))
-			if !IsFatal(err) || !IsUsageUnknown(err) || !out.Usage.Uncertain {
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
+			out, err := Run(ctx, testInput(srv.URL))
+			if !IsUsageUnknown(err) || !out.Usage.Uncertain {
 				t.Fatalf("classification lost: %+v %v", out.Usage, err)
 			}
 		})
 	}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"status":"completed","usage":{"input_tokens":-1,"output_tokens":3},"output":[]}`))
-	}))
-	defer srv.Close()
-	out, err := Run(context.Background(), testInput(srv.URL))
-	if !IsUsageUnknown(err) || !out.Usage.Uncertain {
-		t.Fatalf("invalid usage not classified: %+v %v", out.Usage, err)
+	c, err := newClient(testInput("http://127.0.0.1:1").Config)
+	if err != nil {
+		t.Fatal(err)
 	}
+	negative, output := -1, 3
+	usage := model.Usage{}
+	if err := c.addUsage(&usage, &responseUsage{InputTokens: &negative, OutputTokens: &output}); err != nil || !usage.Uncertain || usage.InputTokens != 0 {
+		t.Fatalf("invalid usage not retained as uncertain: %+v %v", usage, err)
+	}
+
 }
 
 // Structured model fixtures include schema-required arrays even when their

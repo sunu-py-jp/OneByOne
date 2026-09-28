@@ -10,12 +10,6 @@ import (
 	"onebyone/internal/model"
 )
 
-const (
-	maxRepairPlanBytes = 64 << 10
-	maxRepairPlanItems = 256
-	maxPlanDecisions   = 256
-)
-
 // UpdateRepairPlan accepts a complete snapshot. It only records the model's
 // judgments; it cannot mark a candidate verified or alter queue status.
 func UpdateRepairPlan(current model.RepairPlan, update model.PlanUpdate, catalog []model.Rule, required []string, readRuleIDs []string) (model.RepairPlan, error) {
@@ -133,9 +127,6 @@ func CheckCandidatePlan(plan model.RepairPlan, request model.CandidateRequest) e
 	if len(items) == 0 {
 		return errors.New("plan has no changes; return skipped instead of validating a candidate")
 	}
-	if len(request.AddressedItemIDs) > maxRepairPlanItems {
-		return errors.New("candidate exceeds the addressed-item limit")
-	}
 	addressed := make(map[string]bool, len(request.AddressedItemIDs))
 	for _, id := range request.AddressedItemIDs {
 		if _, known := items[id]; !known {
@@ -161,7 +152,7 @@ func CheckCandidatePlan(plan model.RepairPlan, request model.CandidateRequest) e
 	// reaches reporting.
 	linked := map[string]bool{}
 	for index, edit := range request.Edits {
-		if len(edit.ItemIDs) == 0 || len(edit.ItemIDs) > maxRepairPlanItems {
+		if len(edit.ItemIDs) == 0 {
 			return fmt.Errorf("edit %d must identify the plan itemIds it changes", index+1)
 		}
 		seen := map[string]bool{}
@@ -191,9 +182,6 @@ func checkEditAttributionShape(index int, edit model.Edit, items map[string]bool
 			return fmt.Errorf("edit %d with multiple itemIds requires exact attributions for every item", index+1)
 		}
 		return nil
-	}
-	if len(edit.Attributions) > maxRepairPlanItems*4 {
-		return fmt.Errorf("edit %d exceeds the attribution fragment limit", index+1)
 	}
 	type fragmentKey struct{ itemID, before, after string }
 	seen, covered := map[fragmentKey]bool{}, map[string]bool{}
@@ -263,15 +251,8 @@ func PlanRemainingItems(plan model.RepairPlan) []string {
 }
 
 func boundPlan(value any, decisions, items int) error {
-	if decisions == 0 || decisions > maxPlanDecisions {
-		return fmt.Errorf("plan requires 1 to %d rule decisions", maxPlanDecisions)
-	}
-	if items > maxRepairPlanItems {
-		return fmt.Errorf("plan exceeds %d items", maxRepairPlanItems)
-	}
-	encoded, err := json.Marshal(value)
-	if err != nil || len(encoded) > maxRepairPlanBytes {
-		return errors.New("plan exceeds 64 KiB")
+	if decisions == 0 {
+		return errors.New("plan requires at least one rule decision")
 	}
 	return nil
 }

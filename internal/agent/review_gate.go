@@ -52,13 +52,6 @@ func reviewFinal(ctx context.Context, in Input, state *model.RepairState, final 
 	if candidate.Review != nil && candidate.Review.Verdict != "running" && candidate.Review.Verdict != "error" {
 		return reviewedOutcome(final, candidate, state.Plan, in.Content)
 	}
-	limit := in.Config.MaxAttempts
-	if limit > 0 && in.BudgetBaseline.used(*state).ReviewCount >= limit {
-		return model.Proposal{}, false, errors.New("今回の実行で独立レビューの回数上限に到達しました。再実行すると回数は0から始まります")
-	}
-	if in.Config.MaxTurns > 0 && in.BudgetBaseline.used(*state).Turns >= in.Config.MaxTurns {
-		return model.Proposal{}, false, fmt.Errorf("独立レビューを実行するための残りターンがありません: %w", TurnLimitError(in.BudgetBaseline.used(*state).Turns, in.Config.MaxTurns))
-	}
 	after := in.Content
 	if !candidate.NoChange {
 		var err error
@@ -79,6 +72,7 @@ func reviewFinal(ctx context.Context, in Input, state *model.RepairState, final 
 	if err != nil {
 		return model.Proposal{}, false, &fatalError{err}
 	}
+	priorProgress := candidate.Review
 	record := model.IndependentReview{ID: reviewID, CandidateID: candidate.Result.CandidateID, BaseHash: in.BaseHash, CandidateHash: candidate.Result.CandidateHash, PlanRevision: state.Plan.Revision, Verdict: "running", StartedAt: time.Now().UTC().Format(time.RFC3339Nano), Assessments: []model.ReviewAssessment{}, Issues: []model.ReviewIssue{}}
 	index := -1
 	publish := func() {
@@ -98,7 +92,11 @@ func reviewFinal(ctx context.Context, in Input, state *model.RepairState, final 
 	if in.Log != nil {
 		in.Log("独立レビューを開始します")
 	}
-	result, reviewErr := reviewer(ctx, ReviewInput{Config: in.Config, File: in.File, Before: in.Content, After: after, BaseHash: in.BaseHash, CandidateHash: candidate.Result.CandidateHash, Rules: rules, Holds: holds, Usage: state.Usage, TurnBaseline: in.BudgetBaseline.Turns, Log: in.Log,
+	result, reviewErr := reviewer(ctx, ReviewInput{Config: in.Config, File: in.File, Before: in.Content, After: after, BaseHash: in.BaseHash, CandidateHash: candidate.Result.CandidateHash, Rules: rules, Holds: holds, Usage: state.Usage, TurnBaseline: in.BudgetBaseline.Turns, Log: in.Log, PriorProgress: priorProgress, SaveProgress: func(progress model.IndependentReview) error {
+		record.Assessments, record.Issues, record.HoldAssessments = progress.Assessments, progress.Issues, progress.HoldAssessments
+		publish()
+		return checkpoint()
+	},
 		BeforeRequest: func(requestID string) error {
 			state.ReviewCount++
 			state.Usage.Turns++
@@ -107,13 +105,14 @@ func reviewFinal(ctx context.Context, in Input, state *model.RepairState, final 
 			return reserveElapsed()
 		},
 		AfterRequest: func(usage model.Usage, requestErr error) error {
+			state.Usage.Turns += max(0, usage.Turns-1)
 			state.Usage.InputTokens += usage.InputTokens
 			state.Usage.CachedTokens += usage.CachedTokens
 			state.Usage.OutputTokens += usage.OutputTokens
 			state.Usage.CostUSD += usage.CostUSD
 			state.RequestPending = IsUsageUnknown(requestErr)
 			state.Usage.Uncertain = state.Usage.Uncertain || state.RequestPending || usage.Uncertain
-			record.Usage = usage
+			record.Usage = addReviewUsage(record.Usage, usage)
 			publish()
 			return checkpoint()
 		},
@@ -212,7 +211,7 @@ func reviewFeedback(state model.RepairState) string {
 	}
 	r := state.LastCandidate.Review
 	// Never feed the reviewer its predecessor's findings. Only the editor sees this.
-	return "Independent review requests changes. Inspect each issue. Preserve localized human holds as blocked items with original sourceLocations and holdReason, and continue all independent safe edits. If a held location was changed by the rejected candidate, restore its original code in the NEW complete original-based candidate. Correct repairable findings even when human holds also exist. If the hold genuinely prevents any safe subset or concerns the entire file, record that blocker and return needs_human. Validate and submit a NEW candidate; you cannot reuse this rejected candidate.\n" + string(raw(map[string]any{"verdict": r.Verdict, "summary": r.Summary, "assessments": r.Assessments, "issues": r.Issues}))
+	return "Independent review requests changes. Inspect each issue. Preserve localized human holds as blocked items with original sourceLocations and holdReason, and continue all independent safe edits. If a held location was changed by the rejected candidate, remove or correct the affected staged edit to preserve its original code. Correct repairable findings even when human holds also exist. If the hold genuinely prevents any safe subset or concerns the entire file, record that blocker and return needs_human. Use stage_edits to correct or remove only affected edits, preserve other valid staged work, then call validate_staged_candidate and submit the new candidate ID; you cannot reuse this rejected candidate.\n" + string(raw(map[string]any{"verdict": r.Verdict, "summary": r.Summary, "assessments": r.Assessments, "issues": r.Issues}))
 }
 
 func reviewRules(in Input, plan model.RepairPlan) ([]ReviewRule, error) {

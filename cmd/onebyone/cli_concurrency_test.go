@@ -68,7 +68,7 @@ func TestCLIConcurrencyPersistsWithConnectionSelectionAndAllowsDefaultReset(t *t
 		t.Fatal("omitted run flag replaced the saved concurrency")
 	}
 	ctx := context.Background()
-	if _, err := executeSettingsCommand(ctx, reopened, []string{"update", "--input", "-"}, strings.NewReader(`{"maxTurns":8}`)); err != nil {
+	if _, err := executeSettingsCommand(ctx, reopened, []string{"update", "--input", "-"}, strings.NewReader(`{"inputPricePerMillion":8}`)); err != nil {
 		t.Fatal(err)
 	}
 	if reopened.Snapshot().Config.Concurrency != 4 {
@@ -82,8 +82,12 @@ func TestCLIConcurrencyPersistsWithConnectionSelectionAndAllowsDefaultReset(t *t
 		t.Fatal(err)
 	}
 	cfg := reopened.Snapshot().Config
-	if cfg.Concurrency != 0 || cfg.EffectiveConcurrency() != 2 || cfg.MaxTurns != 8 {
+	if cfg.Concurrency != 0 || cfg.EffectiveConcurrency() != 2 || cfg.InputPricePerMillion != 8 {
 		t.Fatal("default reset did not preserve the unset value or unrelated settings")
+	}
+	shown, err = executeSettingsCommand(ctx, reopened, []string{"show"}, nil)
+	if err != nil || string(shown.(map[string]json.RawMessage)["concurrency"]) != "0" {
+		t.Fatalf("default concurrency must be shown as reusable 0, not null: %v", err)
 	}
 	for _, body := range []string{`{"concurrency":-1}`, `{"concurrency":11}`, `{"concurrency":1.5}`, `{"concurrency":null}`} {
 		if _, err := executeSettingsCommand(ctx, reopened, []string{"update", "--input", "-"}, strings.NewReader(body)); err == nil {

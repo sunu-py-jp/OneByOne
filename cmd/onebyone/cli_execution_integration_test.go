@@ -266,7 +266,7 @@ func TestCLIExecutionHTTPWorkflowPersistsHistoricalResultsAndHumanHold(t *testin
 	var imported model.State
 	cliExecutionDecode(t, cliExecutionCommand(t, config, 0, nil, "rules", "import", "--input", archive, "--mode", "replace"), &imported)
 	ruleID = imported.Rules[0].ID
-	cliExecutionCommand(t, config, 0, map[string]any{"maxAttempts": 1, "maxTurns": 6, "timeoutSeconds": 15, "maxOutputTokens": 2048}, "settings", "update", "--input", "-")
+	cliExecutionCommand(t, config, 0, map[string]any{"concurrency": 1}, "settings", "update", "--input", "-")
 	var registered model.State
 	cliExecutionDecode(t, cliExecutionCommand(t, config, 0, model.LLMConnection{
 		Name: "Local HTTP test", Provider: "openai", Endpoint: server.URL + "/v1/", Deployment: "local-test-model", AuthMode: "api_key", Credential: cliExecutionTestCredential,

@@ -136,21 +136,27 @@ test('changing only parallelism may save on start without bypassing other unsave
   }
 });
 
-test('parallel progress shows every active file and its phase, with direct navigation to the selected worker', () => {
+test('parallel phases appear in the main file list without a duplicate active-files section', () => {
   const tasks = [task('src/a.js', 'running'), task('src/b.js', 'running'), task('src/c.js', 'running')];
   const state = stateOf(tasks, { running: true, phase: 'running', currentFile: 'src/a.js', currentFiles: tasks.map(item => item.file),
     filePhases: { 'src/a.js': 'running', 'src/b.js': 'reviewing', 'src/c.js': 'applying' } });
   const props = propsFor({ state, execution: undefined, selectedFile: '', onSelectFile: noOp });
   const html = render(props);
-  assert.match(html, /修正中<\/span><button[^]*?src\/a\.js/);
-  assert.match(html, /独立レビュー中<\/span><button[^]*?src\/b\.js/);
-  assert.match(html, /反映待ち・保存中<\/span><button[^]*?src\/c\.js/);
+  const rows = fileList(html).match(/<div[^>]*role="listitem"[^]*?<\/div>/g);
+  for (const [file, label] of [['a.js', '処理中'], ['b.js', '独立レビュー中'], ['c.js', '反映待ち・保存中']]) {
+    const row = rows.find(row => row.includes(`src/${file}の内容を表示`));
+    assert.ok(row?.includes(`${label}</span>`), `${file} shows its own phase`);
+  }
+  assert.doesNotMatch(html, /results-current|aria-label="処理中のファイル"/);
+  const selectedHtml = render({ ...props, selectedFile: 'src/b.js' });
+  assert.match(selectedHtml.match(/<header class="results-detail-heading">([^]*?)<\/header>/)[1], /独立レビュー中/);
   const h = harness(), selected = [];
   const tree = h.render(h.module.ResultsPanel, { ...props, onSelectFile: file => selected.push(file) });
-  button(tree, 'src/b.js').props.onClick();
+  elements(tree).find(node => node.props.tasks && node.props.onSelectFile).props.onSelectFile('src/b.js');
   assert.deepEqual(selected, ['src/b.js']);
   const fallback = render({ ...props, state: { ...state, currentFiles: [], filePhases: {}, phase: 'checking' } });
-  assert.match(fallback, /検証中<\/span><button[^]*?src\/a\.js/);
+  assert.match(fileList(fallback), /src\/a\.jsの内容を表示[^]*?検証中<\/span>/);
+  assert.doesNotMatch(fileList(render({ ...props, execution: { id: 'old', targetFiles: new Set(tasks.map(task => task.file)), liveState: state, historical: true } })), /独立レビュー中|反映待ち・保存中/);
 });
 
 test('selected-run completed rows stay visible while earlier completions fold and unrelated failures stay out', () => {

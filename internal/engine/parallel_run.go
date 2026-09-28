@@ -97,27 +97,7 @@ func (s *Service) runFiles(parent context.Context, cfg model.Config, cat *catalo
 				resultMu.Unlock()
 				// Each file owns its budget and retry counter; no shared mutable map.
 				budgets := map[string]agent.ExecutionBudgetBaseline{}
-				for attempts := 0; ctx.Err() == nil; attempts++ {
-					if cfg.MaxAttempts > 0 && attempts >= cfg.MaxAttempts {
-						failure := writer.apply(func() error {
-							s.mu.Lock()
-							task := &s.state.Tasks[index]
-							task.Status, task.UpdatedAt = "needs_human", now()
-							task.Note = "今回の実行で最大試行回数に到達しました: " + task.Note
-							s.recountLocked()
-							s.mu.Unlock()
-							return s.persist()
-						})
-						if failure != nil {
-							resultMu.Lock()
-							if firstErr == nil {
-								firstErr = failure
-							}
-							resultMu.Unlock()
-							cancel()
-						}
-						break
-					}
+				for ctx.Err() == nil {
 					failure := s.processOne(ctx, index, cfg, cat, budgets, writer)
 					resultMu.Lock()
 					processed++
@@ -171,8 +151,8 @@ func (s *Service) filePhase(file, phase string) {
 }
 
 // Read immutable Git blobs, never a file being adopted by another worker.
-// ls-tree rejects symlinks/submodules and bounds reads before loading the blob.
-func readSnapshotFile(ctx context.Context, repo, head, path string, maxBytes int) ([]byte, error) {
+// ls-tree rejects symlinks/submodules before loading the immutable blob.
+func readSnapshotFile(ctx context.Context, repo, head, path string) ([]byte, error) {
 	if !isImmutableCommitID(head) {
 		return nil, fmt.Errorf("参照元のコミットが不正です")
 	}
@@ -200,28 +180,25 @@ func readSnapshotFile(ctx context.Context, repo, head, path string, maxBytes int
 		return nil, err
 	}
 	var count int64
-	if _, err := fmt.Sscan(size, &count); err != nil || count < 0 || count > int64(maxBytes) {
-		return nil, fmt.Errorf("参照ファイルが大きすぎます")
+	if _, err := fmt.Sscan(size, &count); err != nil || count < 0 {
+		return nil, fmt.Errorf("参照ファイルのサイズが不正です")
 	}
 	content, err := git(ctx, repo, "cat-file", "blob", fields[2])
 	if err != nil {
 		return nil, err
 	}
-	if len(content) > maxBytes {
-		return nil, fmt.Errorf("参照ファイルが大きすぎます")
-	}
 	return []byte(content), nil
 }
 
-func readSnapshotContext(ctx context.Context, repo, head, sourceRelative, path string, start, end, maxBytes int) (string, error) {
+func readSnapshotContext(ctx context.Context, repo, head, sourceRelative, path string, start, end int) (string, error) {
 	if err := validatePreviewFilePath(path); err != nil {
 		return "", err
 	}
-	if start < 1 || end < start || end-start >= 200 {
-		return "", fmt.Errorf("行番号は1以上、一度に200行までです")
+	if start < 1 || end < start {
+		return "", fmt.Errorf("行番号は1以上、開始行以下の終了行は指定できません")
 	}
 	relative := filepath.ToSlash(filepath.Join(sourceRelative, path))
-	b, err := readSnapshotFile(ctx, repo, head, relative, maxBytes)
+	b, err := readSnapshotFile(ctx, repo, head, relative)
 	if err != nil {
 		return "", err
 	}
@@ -234,8 +211,5 @@ func readSnapshotContext(ctx context.Context, repo, head, sourceRelative, path s
 		return "", fmt.Errorf("指定行がファイル範囲外です")
 	}
 	out := strings.Join(lines[start-1:min(end, len(lines))], "\n")
-	if len(out) > 64<<10 {
-		return "", fmt.Errorf("参照範囲を狭めてください（上限64KB）")
-	}
 	return out, nil
 }

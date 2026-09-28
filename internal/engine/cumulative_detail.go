@@ -10,6 +10,7 @@ import (
 
 	"onebyone/internal/catalog"
 	"onebyone/internal/model"
+	"onebyone/internal/sourceencoding"
 )
 
 // All inputs are copied under the service lock. Commit objects, rather than
@@ -36,11 +37,9 @@ func cumulativeFileDetailWithSources(cfg model.Config, m manifest, task model.Ta
 		if err != nil {
 			return d, err
 		}
-		if len(b) > cfg.EffectiveMaxFileBytes() {
-			return d, fmt.Errorf("ファイルが表示上限を超えています")
-		}
-		d.Before, d.After = string(b), string(b)
-		return d, nil
+		d.Before, err = sourceDisplay(b)
+		d.After = d.Before
+		return d, err
 	}
 	relative := filepath.ToSlash(filepath.Join(m.SourceRelative, task.File))
 	if err := validatePreviewFilePath(relative); err != nil {
@@ -52,6 +51,8 @@ func cumulativeFileDetailWithSources(cfg model.Config, m manifest, task model.Ta
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	encodings := map[string]sourceencoding.Encoding{}
+	standaloneCR := map[string]bool{}
 	read := func(commit, expectedHash string) (string, error) {
 		if !isImmutableCommitID(commit) {
 			return "", fmt.Errorf("累積結果のコミットIDが不正です")
@@ -60,13 +61,16 @@ func cumulativeFileDetailWithSources(cfg model.Config, m manifest, task model.Ta
 		if err != nil {
 			return "", fmt.Errorf("採用済みファイルを読み込めません: %w", err)
 		}
-		if len(text) > cfg.EffectiveMaxFileBytes() {
-			return "", fmt.Errorf("ファイルが表示上限を超えています")
-		}
 		if expectedHash != "" && digest([]byte(text)) != expectedHash {
 			return "", fmt.Errorf("採用済みファイルと保存されたハッシュが一致しません")
 		}
-		return text, nil
+		document, err := sourceencoding.Decode([]byte(text))
+		if err != nil {
+			return "", err
+		}
+		encodings[commit] = document.Encoding
+		standaloneCR[commit] = hasStandaloneCR([]byte(text))
+		return document.Text, nil
 	}
 	var err error
 	d.Before, err = read(m.BaseCommit, "")
@@ -92,6 +96,14 @@ func cumulativeFileDetailWithSources(cfg model.Config, m manifest, task model.Ta
 		d.Diff, err = git(ctx, repo, "diff", "--no-ext-diff", "--no-textconv", "--no-color", "--no-renames", m.BaseCommit, afterCommit, "--", relative)
 		if err != nil {
 			return d, fmt.Errorf("採用済みの累積差分を取得できません: %w", err)
+		}
+		if standaloneCR[m.BaseCommit] || standaloneCR[afterCommit] {
+			d.Diff, err = normalizedDisplayDiff(ctx, []byte(d.Diff), d.Before, d.After)
+		} else {
+			d.Diff, err = sourceDiffDisplayWithEncoding([]byte(d.Diff), encodings[m.BaseCommit], encodings[afterCommit])
+		}
+		if err != nil {
+			return d, err
 		}
 	}
 	changes, err := cumulativeChangeReports(task, d.Before, d.After, func(h model.Attempt) (string, string, error) {

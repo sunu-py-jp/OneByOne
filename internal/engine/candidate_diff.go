@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -40,14 +41,11 @@ func candidateSnapshotDiff(ctx context.Context, parent, relative string, before,
 	// same bundled-runtime wrapper used by all other engine Git operations.
 	cmd.Env = append(cmd.Env, "GIT_CEILING_DIRECTORIES="+dir)
 	cmd.WaitDelay = 3 * time.Second
-	out, stderr := limitedBuffer{max: 2 << 20}, limitedBuffer{max: 64 << 10}
+	var out, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &stderr
 	err = cmd.Run()
 	if ctx.Err() != nil {
 		return "", ctx.Err()
-	}
-	if out.truncated || stderr.truncated {
-		return "", fmt.Errorf("候補の差分出力が上限を超えています。部分的な差分は採用できません")
 	}
 	var exit *exec.ExitError
 	if err != nil && !(errors.As(err, &exit) && exit.ExitCode() == 1) {

@@ -110,6 +110,17 @@ func TestCLIPublishInvalidInputAndCancellationCannotCreateBranch(t *testing.T) {
 	}
 }
 
+func TestCLIPublishCanRequestReportFile(t *testing.T) {
+	s := &publicationCLIFixture{}
+	body := `{"workspaceId":"w","revision":"r","branch":"b","title":"修正","message":"編集済みの本文","messageAsFile":true}`
+	if _, err := executePublishCommand(context.Background(), s, []string{"create", "--input", "-"}, strings.NewReader(body)); err != nil {
+		t.Fatal(err)
+	}
+	if !s.request.MessageAsFile || s.request.Message != "編集済みの本文" || s.previewCalls != 0 {
+		t.Fatalf("file mode or edited message was lost: %+v", s.request)
+	}
+}
+
 func TestCLIPublishHelpAndFlagValidationDoNotInitializeStorage(t *testing.T) {
 	base := t.TempDir()
 	t.Setenv("ONEBYONE_PRIVATE_DIR", filepath.Join(base, "private"))

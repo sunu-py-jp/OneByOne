@@ -76,7 +76,7 @@ func TestOneByOneSourcesCanEnterQueueAndContext(t *testing.T) {
 	if _, err := s.LoadQueue(queue); err != nil {
 		t.Fatal(err)
 	}
-	if body, err := readContext(cfg.Root, path, 1, 1, 1024); err != nil || !strings.Contains(body, "Legacy.Save()") {
+	if body, err := readContext(cfg.Root, path, 1, 1); err != nil || !strings.Contains(body, "Legacy.Save()") {
 		t.Fatalf("source inaccessible: %q %v", body, err)
 	}
 }

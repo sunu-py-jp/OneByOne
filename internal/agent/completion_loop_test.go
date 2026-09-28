@@ -111,28 +111,6 @@ func TestCompletionLoopRecordedHumanBlockerBypassesReview(t *testing.T) {
 	}
 }
 
-func TestCompletionLoopRepeatedPrematureHoldStillHitsExplicitTurnLimit(t *testing.T) {
-	prior := initializedRepairState()
-	var requests atomic.Int32
-	var saved model.RepairState
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests.Add(1)
-		respond(w, reviewResponseItem(map[string]any{"outcome": "needs_human", "candidateId": "", "note": "修正と検証が未完了で、残りの実行時間が足りないと判断しました。"}))
-	}))
-	defer srv.Close()
-	in := testInput(srv.URL)
-	in.Config.MaxTurns = 3
-	in.RepairState = &prior
-	in.SaveRepairState = func(state model.RepairState) error { saved = state; return nil }
-	out, err := Run(context.Background(), in)
-	if err == nil || !strings.Contains(err.Error(), "MaxTurns") || !strings.Contains(err.Error(), "今回 3 / 上限 3") || !strings.Contains(err.Error(), "recorded human-decision blocker") || out.Outcome != "" || requests.Load() != 3 || out.Usage.Turns != 3 {
-		t.Fatalf("refusal escaped the configured turn limit: out=%+v err=%v requests=%d", out, err, requests.Load())
-	}
-	if saved.RequestPending || saved.Plan.Revision != 1 || saved.Plan.Items[0].Status != "proposed" || saved.ValidationCount != 0 || saved.ReviewCount != 0 {
-		t.Fatalf("runner-enforced stop lost or changed the repair plan: %+v", saved)
-	}
-}
-
 func TestCompletionLoopUnlimitedContinuesPastFormerAggregateLimits(t *testing.T) {
 	const contextReads = 34
 	const candidateAttempts = 4
@@ -160,7 +138,7 @@ func TestCompletionLoopUnlimitedContinuesPastFormerAggregateLimits(t *testing.T)
 	}))
 	defer srv.Close()
 	in := testInput(srv.URL)
-	in.Config.MaxTurns, in.Config.MaxAttempts, in.Config.TimeoutSeconds = 0, 0, 0
+
 	in.RepairState = &prior
 	in.SaveRepairState = func(state model.RepairState) error { saved = state; return nil }
 	in.ReadContext = func(string, int, int) (string, error) {
@@ -188,7 +166,7 @@ func TestCompletionLoopUnlimitedContinuesPastFormerAggregateLimits(t *testing.T)
 	if err != nil || out.Outcome != "modified" || out.CandidateID != "C4" || requests.Load() != 39 || out.Usage.Turns != 40 || reads != contextReads || validations != candidateAttempts || reviews != 1 {
 		t.Fatalf("unlimited execution stopped at a former default: out=%+v err=%v requests=%d reads=%d validations=%d reviews=%d", out, err, requests.Load(), reads, validations, reviews)
 	}
-	if saved.ToolCalls != 38 || saved.ToolCalls <= maxToolCalls || saved.ReadBytes <= maxReadBytes || saved.ValidationCount != 4 || saved.ReviewCount != 1 || saved.RequestPending || saved.ElapsedMS < prior.ElapsedMS {
+	if saved.ToolCalls != 38 || saved.ToolCalls <= 32 || saved.ReadBytes <= (512<<10) || saved.ValidationCount != 4 || saved.ReviewCount != 1 || saved.RequestPending || saved.ElapsedMS < prior.ElapsedMS {
 		t.Fatalf("unlimited execution did not retain accurate aggregate accounting: %+v", saved)
 	}
 }
@@ -211,7 +189,7 @@ func TestCompletionLoopUnlimitedStopsOnUserCancellation(t *testing.T) {
 	}))
 	defer srv.Close()
 	in := testInput(srv.URL)
-	in.Config.MaxTurns, in.Config.MaxAttempts, in.Config.TimeoutSeconds = 0, 0, 0
+
 	in.RepairState = &prior
 	in.SaveRepairState = func(state model.RepairState) error { saved = state; return nil }
 	out, err := Run(ctx, in)
@@ -221,31 +199,5 @@ func TestCompletionLoopUnlimitedStopsOnUserCancellation(t *testing.T) {
 	}
 	if saved.ToolCalls != 2 || saved.ValidationCount != 0 || saved.ReviewCount != 0 || saved.Plan.Revision != 1 {
 		t.Fatalf("cancellation did not retain the existing plan and tool accounting: %+v", saved)
-	}
-}
-
-func TestCompletionLoopUnlimitedTurnsStillHonorsExplicitValidationLimit(t *testing.T) {
-	prior := initializedRepairState()
-	var requests atomic.Int32
-	var saved model.RepairState
-	validations := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		request := requests.Add(1)
-		respond(w, testCall(fmt.Sprintf("validate-%d", request), "validate_candidate", testCandidate()))
-	}))
-	defer srv.Close()
-	in := testInput(srv.URL)
-	in.Config.MaxTurns, in.Config.MaxAttempts, in.Config.TimeoutSeconds = 0, 2, 0
-	in.RepairState = &prior
-	in.SaveRepairState = func(state model.RepairState) error { saved = state; return nil }
-	in.ValidateCandidate = func(_ context.Context, candidate model.CandidateRequest) (model.CandidateValidation, error) {
-		validations++
-		return model.CandidateValidation{AttributionVersion: model.LineAttributionVersion, CandidateID: fmt.Sprintf("C%d", validations), PlanRevision: candidate.PlanRevision, Passed: false, Diagnostics: []model.CandidateDiagnostic{{Message: "Behavior check still fails."}}}, nil
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	out, err := Run(ctx, in)
-	if !errors.Is(err, errValidationLimit) || out.Outcome != "" || requests.Load() != 3 || validations != 2 || saved.ValidationCount != 2 || saved.LastCandidate == nil || saved.LastCandidate.Result.CandidateID != "C2" || saved.RequestPending || saved.ReviewCount != 0 {
-		t.Fatalf("explicit validation limit was ignored by unlimited turn loop: out=%+v state=%+v err=%v requests=%d validations=%d", out, saved, err, requests.Load(), validations)
 	}
 }

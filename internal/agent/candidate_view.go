@@ -9,7 +9,7 @@ import (
 // model history or resumable journal. Keep failed-check identities and excerpts
 // useful even when a command emits megabytes of output.
 func journalValidation(result model.CandidateValidation) model.CandidateValidation {
-	return boundedValidation(result, 128, 4096, 32<<10, 1024, 16<<10)
+	return result
 }
 func toolValidation(result model.CandidateValidation) model.CandidateValidation {
 	// Line attribution is renderer evidence, not repair feedback. Keep the

@@ -94,9 +94,9 @@ func TestExistingTargetWithoutHeadStillRestoresAndSavesUnrelatedSettings(t *test
 		t.Fatalf("existing workspace could not restore with a readiness issue: %s", state.LastError)
 	}
 	c := state.Config
-	c.MaxAttempts = 2
+	c.InputPricePerMillion = 2
 	saved, err := reloaded.SaveConfig(c)
-	if err != nil || saved.Config.MaxAttempts != 2 {
+	if err != nil || saved.Config.InputPricePerMillion != 2 {
 		t.Fatalf("missing HEAD prevented unrelated settings save: %v", err)
 	}
 	issues := workspaceIssues(t, saved, initial.ActiveWorkspaceID)
@@ -158,9 +158,9 @@ func TestTargetFolderReadinessRejectsEverySourceChangeIncludingOutsideSelectedSu
 				t.Fatal("readiness rejection changed workspace state")
 			}
 			c := initial.Config
-			c.MaxAttempts = 2
+			c.InputPricePerMillion = 2
 			saved, err := s.SaveConfig(c)
-			if err != nil || saved.Config.MaxAttempts != 2 || len(workspaceIssues(t, saved, initial.ActiveWorkspaceID)) != 1 {
+			if err != nil || saved.Config.InputPricePerMillion != 2 || len(workspaceIssues(t, saved, initial.ActiveWorkspaceID)) != 1 {
 				t.Fatalf("dirty source prevented unrelated settings save or hid diagnostic: %v", err)
 			}
 			assertWorkspaceTree(t, root, before)

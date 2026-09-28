@@ -121,8 +121,8 @@ func TestDemoProjectGitFailureRemovesOnlyItsNewChild(t *testing.T) {
 
 func TestDemoRuleImportPreservesSourceConnectionHistoryAndUsesExistingWriteGuards(t *testing.T) {
 	s, cfg := fixture(t, map[string]string{"A.txt": "Legacy.Save()\n"})
-	cfg.MaxAttempts, cfg.MaxTurns, cfg.MaxOutputTokens, cfg.MaxFileBytes, cfg.TimeoutSeconds = 1, 4, 2048, 65536, 180
-	cfg.MaxCostUSD, cfg.InputPricePerMillion, cfg.CachedInputPricePerMillion, cfg.OutputPricePerMillion = 3, 4, 0.4, 12
+
+	cfg.InputPricePerMillion, cfg.CachedInputPricePerMillion, cfg.OutputPricePerMillion = 4, 0.4, 12
 	if _, err := s.SaveConfig(cfg); err != nil {
 		t.Fatal(err)
 	}

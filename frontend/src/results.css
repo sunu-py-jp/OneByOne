@@ -46,13 +46,6 @@
 .filter-skipped .results-filter-dot { background: #9cad9f; }
 .filter-running .results-filter-dot { background: #6e67d8; box-shadow: 0 0 0 2px #e9e6fa; }
 .filter-retry .results-filter-dot { background: #8a71b7; }
-.results-current { display: flex; flex-direction: column; gap: 5px; min-width: 0; max-height: 92px; overflow-y: auto; margin-top: 8px; border-top: 1px solid #f0f1f5; padding-top: 9px; font-size: 11px; color: #8a91a0; }
-.results-current-file { display: flex; align-items: center; gap: 8px; min-width: 0; flex: none; }
-.results-current-file > span, .results-current > span { color: #756cb3; white-space: nowrap; flex: none; }
-.results-current-file > button { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 0; border: 0; background: transparent; color: #68728a; font-size: 11px; text-align: left; }
-.results-current-file > button span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.results-current-file > button:hover { color: var(--accent); }
-.results-current-file > button svg { flex: none; }
 .results-error-summary { margin-top: 8px; background: #fff6f3; border: 1px solid #f1dfd6; border-radius: 5px; color: #aa7258; }
 .results-error-summary summary, .results-note summary { display: flex; align-items: center; gap: 7px; cursor: pointer; list-style: none; min-width: 0; }
 .results-error-summary summary::-webkit-details-marker, .results-note summary::-webkit-details-marker { display: none; }

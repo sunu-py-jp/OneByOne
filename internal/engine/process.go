@@ -19,6 +19,9 @@ type limitedBuffer struct {
 func (b *limitedBuffer) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.max == 0 {
+		return b.b.Write(p)
+	}
 	n := len(p)
 	left := b.max - b.b.Len()
 	if n > left {
@@ -46,14 +49,14 @@ func runCommand(ctx context.Context, dir, executable string, requireComplete boo
 	cmd.Dir = dir
 	cmd.WaitDelay = 3 * time.Second
 	var out = limitedBuffer{max: 2 << 20}
+	if requireComplete {
+		out.max = 0
+	}
 	cmd.Stdout = &out
 	cmd.Stderr = &out
 	err = cmd.Run()
 	if err != nil {
 		return out.String(), fmt.Errorf("%s: %w\n%s", executable, err, out.String())
-	}
-	if requireComplete && out.truncated {
-		return "", fmt.Errorf("%s: output exceeds the 2MB limit; refusing an incomplete repository check", executable)
 	}
 	return out.String(), nil
 }

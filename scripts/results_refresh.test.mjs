@@ -205,12 +205,34 @@ test('background task sorting keeps list scroll while explicit selection still r
   find(tree, node => typeof node.props.ref === 'function').props.ref(scroll);
   h.render(rowComponent.type, props);
   scroll.scrollTop = 420;
+  props = { ...props, filePhases: { [tasks[0].file]: 'reviewing' } };
+  tree = h.render(rowComponent.type, props);
+  assert.equal(scroll.scrollTop, 420, 'a phase-only update must preserve list scroll');
   props = { ...props, tasks: [...tasks].reverse() };
   h.render(rowComponent.type, props);
   assert.equal(scroll.scrollTop, 420, 'a status-sort change must not jump to the selected row');
   props = { ...props, selectedFile: tasks[1].file };
   h.render(rowComponent.type, props);
   assert.ok(scroll.scrollTop > 420, 'an explicit new selection still scrolls into view');
+  h.close();
+});
+
+test('phase-only polling updates list and selected header without reloading source or changing selection', async () => {
+  const h = harness(), current = task(h);
+  let calls = 0;
+  h.api.GetFileDetail = async () => { calls++; return detail(current, 'candidate'); };
+  let p = propsFor(stateOf(h, [current], { filePhases: { [current.file]: 'running' } }));
+  let tree = await h.settle(h.ResultsPanel, p);
+  const reads = calls;
+  const before = find(tree, node => node.type === h.TaskFileList);
+  p = { ...p, state: { ...p.state, filePhases: { [current.file]: 'reviewing' } } };
+  tree = h.render(h.ResultsPanel, p);
+  const after = find(tree, node => node.type === h.TaskFileList);
+  assert.equal(after.props.filePhases[current.file], 'reviewing');
+  assert.equal(after.props.selectedFile, before.props.selectedFile);
+  const heading = find(tree, node => node.props.className === 'results-detail-heading');
+  assert.ok(elements(heading).some(node => node.props.label === '独立レビュー中'));
+  assert.equal(calls, reads, 'phase-only progress should not refetch unchanged source');
   h.close();
 });
 

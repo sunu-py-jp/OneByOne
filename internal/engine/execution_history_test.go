@@ -102,7 +102,7 @@ func TestExecutionHistoryKeepsTargetsAndResultsAtTheirExecutionBoundary(t *testi
 
 func TestExecutionHistorySeparatesExplicitResumeWithSameAttemptID(t *testing.T) {
 	s, cfg := fixture(t, map[string]string{"A.txt": "Legacy.Save()\n"})
-	cfg.MaxAttempts = 1
+
 	if _, err := s.SaveConfig(cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -236,7 +236,7 @@ func TestExecutionHistoryArchiveFailureBlocksMutationsUntilSaved(t *testing.T) {
 
 func TestExecutionHistoryRecoverAccountingUsesDurableSidecar(t *testing.T) {
 	s, cfg := fixture(t, map[string]string{"A.txt": "Legacy.Save()\n"})
-	cfg.MaxAttempts = 1
+
 	if _, err := s.SaveConfig(cfg); err != nil {
 		t.Fatal(err)
 	}

@@ -5,7 +5,21 @@ import ts from '../frontend/node_modules/typescript/lib/typescript.js';
 
 const source = await readFile(new URL('../frontend/src/task-state.ts', import.meta.url), 'utf8');
 const { outputText } = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } });
-const { taskDisplayStatus, taskStatusLabel, compareTaskStatus, isCompletedTask, isPartialAdoption, attemptStatusLabel } = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`);
+const { taskDisplayStatus, taskStatusLabel, activeFilePhases, compareTaskStatus, isCompletedTask, isPartialAdoption, attemptStatusLabel } = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`);
+
+test('live phases label only running files and never borrow another parallel worker phase', () => {
+  const state = { running: true, phase: 'reviewing', currentFile: 'a.js', currentFiles: ['a.js', 'b.js'], filePhases: { 'a.js': 'reviewing', 'b.js': 'running' } };
+  assert.equal(taskStatusLabel({ status: 'running' }, activeFilePhases(state)['a.js']), '独立レビュー中');
+  assert.equal(taskStatusLabel({ status: 'running' }, activeFilePhases(state)['b.js']), '処理中');
+  assert.equal(taskStatusLabel({ status: 'running' }, 'checking'), '検証中');
+  assert.equal(taskStatusLabel({ status: 'running' }, 'applying'), '反映待ち・保存中');
+  assert.equal(activeFilePhases({ ...state, filePhases: {} })['a.js'], undefined);
+  assert.equal(activeFilePhases({ ...state, currentFiles: ['a.js'], filePhases: {} })['a.js'], 'reviewing');
+  assert.equal(activeFilePhases({ ...state, running: false }), undefined);
+  for (const status of ['pending', 'done', 'skipped', 'needs_human', 'failed']) {
+    assert.equal(taskStatusLabel({ status }, 'reviewing'), taskStatusLabel({ status }));
+  }
+});
 
 test('retry presentation requires a pending task with a persisted resume request', () => {
   assert.equal(taskStatusLabel({ status: 'pending' }), '未修正');

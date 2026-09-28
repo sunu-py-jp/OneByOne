@@ -44,13 +44,13 @@ func TestPersonalLLMConnectionsExistBeforeWorkspaceAndReuseWithoutSharingSecrets
 	malicious := s.Snapshot().Config
 	malicious.Provider, malicious.Endpoint, malicious.Credential = "claude", "https://wrong.example.invalid", "FAKE-wrong-key"
 	malicious.LLMConnectionID = "a-different-connection"
-	malicious.MaxTurns = 8
+	malicious.InputPricePerMillion = 8
 	after, err := s.SaveConfig(malicious)
-	if err != nil || after.Config.Endpoint != connection.Endpoint || after.Config.Provider != connection.Provider || s.state.Config.Credential != connection.Credential || after.Config.MaxTurns != 8 {
+	if err != nil || after.Config.Endpoint != connection.Endpoint || after.Config.Provider != connection.Provider || s.state.Config.Credential != connection.Credential || after.Config.InputPricePerMillion != 8 {
 		t.Fatalf("workspace save changed its registered connection: %v", err)
 	}
 	firstAgain, err := s.SelectWorkspace(first.ActiveWorkspaceID)
-	if err != nil || firstAgain.SelectedLLMConnectionID != connection.ID || firstAgain.Config.Endpoint != connection.Endpoint || firstAgain.Config.MaxTurns != 0 {
+	if err != nil || firstAgain.SelectedLLMConnectionID != connection.ID || firstAgain.Config.Endpoint != connection.Endpoint || firstAgain.Config.InputPricePerMillion != 0 {
 		t.Fatalf("workspace selections or settings leaked into each other: %v", err)
 	}
 	if len(firstAgain.LLMConnections) != 1 {
@@ -90,7 +90,7 @@ func TestPersonalLLMConnectionsExistBeforeWorkspaceAndReuseWithoutSharingSecrets
 	if got := restarted.Snapshot(); got.LastError != "" || got.SelectedLLMConnectionID != connection.ID || len(got.LLMConnections) != 1 {
 		t.Fatalf("global connection and selection did not survive restart: %s", got.LastError)
 	}
-	if got, err := restarted.SelectWorkspace(second.ActiveWorkspaceID); err != nil || got.SelectedLLMConnectionID != connection.ID || got.Config.MaxTurns != 8 {
+	if got, err := restarted.SelectWorkspace(second.ActiveWorkspaceID); err != nil || got.SelectedLLMConnectionID != connection.ID || got.Config.InputPricePerMillion != 8 {
 		t.Fatalf("second workspace did not retain its own settings and shared connection choice: %v", err)
 	}
 }

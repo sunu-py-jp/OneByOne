@@ -302,7 +302,6 @@ func TestPartialAdoptionProviderLoopAndReviewerDiscoveredHold(t *testing.T) {
 			defer srv.Close()
 			in := testInput(srv.URL)
 			in.Content = content
-			in.Config.MaxTurns = 12
 			in.ReviewCandidate = nil
 			in.SaveRepairState = func(s model.RepairState) error { saved = cloneRepairState(s); return nil }
 			in.ValidateCandidate = func(_ context.Context, req model.CandidateRequest) (model.CandidateValidation, error) {

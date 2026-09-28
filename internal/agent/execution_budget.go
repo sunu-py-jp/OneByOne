@@ -34,8 +34,7 @@ func (base ExecutionBudgetBaseline) validate(state model.RepairState) error {
 			return errors.New("Execution budget baseline is outside the repair-state counters")
 		}
 	}
-	// Configured timeouts cannot exceed one hour. Leave that headroom when
-	// reserving an in-flight deadline in the cumulative journal.
+	// Keep arithmetic headroom for elapsed-time accounting on corrupt journals.
 	if base.ElapsedMS < 0 || base.ElapsedMS > total.ElapsedMS || total.ElapsedMS > math.MaxInt64-3600000 {
 		return errors.New("Execution elapsed-time baseline is outside the repair-state counters")
 	}

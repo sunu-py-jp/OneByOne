@@ -309,12 +309,6 @@ export namespace model {
 	    credential?: string;
 	    credentialSet?: boolean;
 	    concurrency?: number;
-	    maxAttempts: number;
-	    maxTurns: number;
-	    maxOutputTokens: number;
-	    maxFileBytes: number;
-	    timeoutSeconds: number;
-	    maxCostUSD: number;
 	    inputPricePerMillion: number;
 	    cachedInputPricePerMillion: number;
 	    outputPricePerMillion: number;
@@ -338,12 +332,6 @@ export namespace model {
 	        this.credential = source["credential"];
 	        this.credentialSet = source["credentialSet"];
 	        this.concurrency = source["concurrency"];
-	        this.maxAttempts = source["maxAttempts"];
-	        this.maxTurns = source["maxTurns"];
-	        this.maxOutputTokens = source["maxOutputTokens"];
-	        this.maxFileBytes = source["maxFileBytes"];
-	        this.timeoutSeconds = source["timeoutSeconds"];
-	        this.maxCostUSD = source["maxCostUSD"];
 	        this.inputPricePerMillion = source["inputPricePerMillion"];
 	        this.cachedInputPricePerMillion = source["cachedInputPricePerMillion"];
 	        this.outputPricePerMillion = source["outputPricePerMillion"];
@@ -790,6 +778,7 @@ export namespace model {
 	    branch: string;
 	    title: string;
 	    message: string;
+	    messageAsFile: boolean;
 
 	    static createFrom(source: any = {}) {
 	        return new PublishResultsRequest(source);
@@ -802,6 +791,7 @@ export namespace model {
 	        this.branch = source["branch"];
 	        this.title = source["title"];
 	        this.message = source["message"];
+	        this.messageAsFile = source["messageAsFile"];
 	    }
 	}
 	export class ResultPublication {
@@ -813,6 +803,8 @@ export namespace model {
 	    fileCount: number;
 	    title: string;
 	    message: string;
+	    reportPath?: string;
+	    reportBlob?: string;
 
 	    static createFrom(source: any = {}) {
 	        return new ResultPublication(source);
@@ -828,6 +820,8 @@ export namespace model {
 	        this.fileCount = source["fileCount"];
 	        this.title = source["title"];
 	        this.message = source["message"];
+	        this.reportPath = source["reportPath"];
+	        this.reportBlob = source["reportBlob"];
 	    }
 	}
 	export class ResultPublicationFile {
@@ -857,7 +851,9 @@ export namespace model {
 	    sourceCommit: string;
 	    suggestedBranch: string;
 	    message: string;
+	    messageFileThreshold: number;
 	    files: ResultPublicationFile[];
+	    reportFiles: ResultPublicationFile[];
 	    publications: ResultPublication[];
 
 	    static createFrom(source: any = {}) {
@@ -872,7 +868,9 @@ export namespace model {
 	        this.sourceCommit = source["sourceCommit"];
 	        this.suggestedBranch = source["suggestedBranch"];
 	        this.message = source["message"];
+	        this.messageFileThreshold = source["messageFileThreshold"];
 	        this.files = this.convertValues(source["files"], ResultPublicationFile);
+	        this.reportFiles = this.convertValues(source["reportFiles"], ResultPublicationFile);
 	        this.publications = this.convertValues(source["publications"], ResultPublication);
 	    }
 

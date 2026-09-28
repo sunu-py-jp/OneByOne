@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"onebyone/internal/model"
 )
@@ -97,12 +98,12 @@ func TestAllProvidersConnectionAndEnvironmentCredentials(t *testing.T) {
 					t.Error("connection probe included migration inputs or replaced the configured model")
 				}
 				if provider == "claude" {
-					if req["max_tokens"] != float64(512) || req["store"] != nil || req["input"] != nil || req["messages"] == nil {
+					if req["max_tokens"] != float64(8192) || req["store"] != nil || req["input"] != nil || req["messages"] == nil {
 						t.Error("Claude connection probe used Responses fields")
 					}
 					claudeReply(w, "end_turn", map[string]any{"input_tokens": 10, "output_tokens": 2}, claudeText("OK"))
 				} else {
-					if req["store"] != false || req["max_output_tokens"] != float64(512) {
+					if req["store"] != false || req["max_output_tokens"] != nil {
 						t.Error("Responses connection probe omitted limits")
 					}
 					respond(w, map[string]any{"type": "message", "role": "assistant", "status": "completed", "content": []any{map[string]any{"type": "output_text", "text": "OK"}}})
@@ -136,7 +137,7 @@ func TestAllProvidersToolLoopPreservesNativeHistoryAndUsage(t *testing.T) {
 				key := "input"
 				if provider == "claude" {
 					key = "messages"
-					if req["input"] != nil || req["store"] != nil || req["include"] != nil || req["text"] != nil || req["max_tokens"] != float64(4096) {
+					if req["input"] != nil || req["store"] != nil || req["include"] != nil || req["text"] != nil || req["max_tokens"] != float64(8192) {
 						t.Error("Claude migration request contains Responses fields")
 					}
 					format := req["output_config"].(map[string]any)["format"].(map[string]any)
@@ -219,7 +220,6 @@ func TestAllProvidersToolLoopPreservesNativeHistoryAndUsage(t *testing.T) {
 			for file := 0; file < 2; file++ {
 				in := testInput(srv.URL)
 				in.Config.Provider = provider
-				in.Config.MaxTurns = 6
 				in.Config.InputPricePerMillion, in.Config.CachedInputPricePerMillion, in.Config.OutputPricePerMillion = 1, .1, 2
 				in.ReadContext = func(path string, start, end int) (string, error) {
 					reads++
@@ -247,29 +247,38 @@ func TestAllProvidersToolLoopPreservesNativeHistoryAndUsage(t *testing.T) {
 	}
 }
 
-func TestClaudeInvalidResponsesPreserveUsageAndFailClosed(t *testing.T) {
+func TestClaudeIncompleteResponsesAreTypedAndUsageRemainsObservable(t *testing.T) {
 	for _, reason := range []string{"refusal", "max_tokens", "model_context_window_exceeded", "pause_turn", "unknown"} {
-		t.Run(reason, func(t *testing.T) {
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				claudeReply(w, reason, map[string]any{"input_tokens": 10, "output_tokens": 4, "cache_read_input_tokens": 20}, claudeFinal())
-			}))
-			defer srv.Close()
-			in := testInput(srv.URL)
-			in.Config.Provider = "claude"
-			out, err := Run(context.Background(), in)
-			if err == nil || out.Outcome == "modified" || out.Usage.InputTokens != 30 || out.Usage.OutputTokens != 4 {
-				t.Fatalf("invalid stop reason adopted or billed usage lost: %+v %v", out, err)
-			}
-		})
+		data := raw(map[string]any{"type": "message", "role": "assistant", "stop_reason": reason, "usage": map[string]any{"input_tokens": 10, "output_tokens": 4, "cache_read_input_tokens": 20}, "content": []any{claudeFinal()}})
+		res, err := decodeClaudeResponse(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		completionErr := completed(res)
+		if completionErr == nil {
+			t.Fatal("incomplete response accepted")
+		}
+		if reason == "max_tokens" && !IsOutputLimit(completionErr) {
+			t.Fatal("output limit not recoverable")
+		}
+		if reason == "model_context_window_exceeded" && !IsContextLimit(completionErr) {
+			t.Fatal("context limit not recoverable")
+		}
+		c := &client{}
+		usage := model.Usage{}
+		if err := c.addUsage(&usage, res.Usage); err != nil || usage.InputTokens != 30 || usage.OutputTokens != 4 {
+			t.Fatalf("usage %+v %v", usage, err)
+		}
 	}
-	for _, usage := range []map[string]any{nil, {"input_tokens": -1, "output_tokens": 4}, {"input_tokens": 10, "output_tokens": 4, "cache_creation_input_tokens": 5, "cache_creation": map[string]any{"ephemeral_5m_input_tokens": 10}}, {"input_tokens": 10, "output_tokens": 4, "cache_read_input_tokens": -1}} {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { claudeReply(w, "end_turn", usage, claudeFinal()) }))
-		in := testInput(srv.URL)
-		in.Config.Provider = "claude"
-		out, err := Run(context.Background(), in)
-		srv.Close()
-		if !IsUsageUnknown(err) || !out.Usage.Uncertain || out.Outcome == "modified" {
-			t.Fatalf("invalid Claude usage was not classified: %+v %v", out, err)
+	for _, wire := range []map[string]any{nil, {"input_tokens": -1, "output_tokens": 4}, {"input_tokens": 10, "output_tokens": 4, "cache_read_input_tokens": -1}} {
+		res, err := decodeClaudeResponse(raw(map[string]any{"type": "message", "role": "assistant", "stop_reason": "end_turn", "usage": wire, "content": []any{claudeFinal()}}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		c := &client{}
+		usage := model.Usage{}
+		if err := c.addUsage(&usage, res.Usage); err != nil || !usage.Uncertain {
+			t.Fatalf("uncertainty lost %+v %v", usage, err)
 		}
 	}
 }
@@ -302,45 +311,42 @@ func TestClaudeDeniedContextReturnsNativeToolError(t *testing.T) {
 	}
 }
 
-func TestNewProvidersKeepRedirectRetryAndBudgetLimits(t *testing.T) {
+func TestNewProvidersKeepRedirectProtectionAndRetryUntilCancelled(t *testing.T) {
 	for _, provider := range []string{"openai", "claude"} {
-		t.Run(provider, func(t *testing.T) {
-			for _, status := range []int{307, 401, 429, 500, 408} {
-				var calls, redirected atomic.Int32
-				destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { redirected.Add(1) }))
-				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					calls.Add(1)
-					w.Header().Set("Location", destination.URL)
-					w.Header().Set("Retry-After", "0")
-					w.WriteHeader(status)
-					_, _ = w.Write([]byte(`{"error":{"type":"test-secret","code":"test-secret","message":"source text and test-secret"}}`))
-				}))
-				in := testInput(srv.URL)
-				in.Config.Provider = provider
-				out, err := Run(context.Background(), in)
-				srv.Close()
-				destination.Close()
-				want := int32(1)
-				if status == 429 {
-					want = 3
+		for _, status := range []int{307, 401, 429, 500, 408} {
+			var calls, redirected atomic.Int32
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { redirected.Add(1) }))
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				n := calls.Add(1)
+				w.Header().Set("Location", destination.URL)
+				w.Header().Set("Retry-After", "0")
+				w.WriteHeader(status)
+				w.Write([]byte(`{"error":{"type":"test-secret","code":"test-secret"}}`))
+				if n >= 4 {
+					cancel()
 				}
-				if !IsFatal(err) || strings.Contains(err.Error(), "test-secret") || calls.Load() != want || redirected.Load() != 0 {
-					t.Fatalf("provider=%s status=%d err=%v calls=%d redirects=%d", provider, status, err, calls.Load(), redirected.Load())
-				}
-				if (status == 500 || status == 408) && (!IsUsageUnknown(err) || !out.Usage.Uncertain) {
-					t.Error("ambiguous HTTP failure lost its usage classification")
-				}
-			}
-			var calls atomic.Int32
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls.Add(1) }))
-			defer srv.Close()
+			}))
 			in := testInput(srv.URL)
 			in.Config.Provider = provider
-			in.Config.MaxCostUSD, in.Config.InputPricePerMillion, in.Config.OutputPricePerMillion = .00001, 10, 30
-			if _, err := Run(context.Background(), in); err == nil || !strings.Contains(err.Error(), "cost limit") || calls.Load() != 0 {
-				t.Fatalf("provider budget allowed a request: %v %d", err, calls.Load())
+			out, err := Run(ctx, in)
+			cancel()
+			srv.Close()
+			destination.Close()
+			if err == nil || strings.Contains(err.Error(), "test-secret") || redirected.Load() != 0 {
+				t.Fatalf("provider=%s status=%d err=%v calls=%d", provider, status, err, calls.Load())
 			}
-		})
+			if status == 307 || status == 401 {
+				if !IsFatal(err) || calls.Load() != 1 {
+					t.Fatalf("nonretryable: %v %d", err, calls.Load())
+				}
+			} else if calls.Load() < 4 {
+				t.Fatalf("transient status stopped after %d", calls.Load())
+			}
+			if (status == 500 || status == 408) && !out.Usage.Uncertain {
+				t.Error("ambiguous usage lost")
+			}
+		}
 	}
 }
 
@@ -350,7 +356,7 @@ func TestClaudeCacheWriteDurationsArePricedSeparately(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := &client{cfg: model.Config{Provider: "claude", MaxOutputTokens: 4096, InputPricePerMillion: 1, CachedInputPricePerMillion: .1, OutputPricePerMillion: 2}}
+	c := &client{cfg: model.Config{Provider: "claude", InputPricePerMillion: 1, CachedInputPricePerMillion: .1, OutputPricePerMillion: 2}}
 	var usage model.Usage
 	if err := c.addUsage(&usage, res.Usage); err != nil {
 		t.Fatal(err)
@@ -384,7 +390,17 @@ func TestProviderProtocolErrorsNeverEchoCredentials(t *testing.T) {
 			}))
 			in := testInput(srv.URL)
 			in.Config.Provider = provider
-			_, err := Run(context.Background(), in)
+			c, clientErr := newClient(in.Config)
+			if clientErr != nil {
+				t.Fatal(clientErr)
+			}
+			res, err := c.request(context.Background(), []byte(`{}`), nil)
+			if err == nil {
+				err = completed(res)
+			}
+			if err == nil {
+				_, _, err = parseOutput(res.Output)
+			}
 			srv.Close()
 			if err == nil || strings.Contains(err.Error(), "test-secret") {
 				t.Fatalf("%s %s echoed provider data: %v", provider, field, err)

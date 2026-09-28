@@ -45,7 +45,7 @@ func TestCLICompleteSetupSelectionAndSettingsWithoutGUI(t *testing.T) {
 	invoke("", "workspace", "create", "--name", "CLI-only", "--root", root)
 	edit, _ := json.Marshal(workspaceRulesEdit())
 	invoke(string(edit), "rules", "create", "--input", "-")
-	invoke(`{"maxTurns":8,"maxCostUSD":2,"inputPricePerMillion":1,"outputPricePerMillion":2}`, "settings", "update", "--input", "-")
+	invoke(`{"concurrency":4,"inputPricePerMillion":1,"outputPricePerMillion":2}`, "settings", "update", "--input", "-")
 	var state model.State
 	_ = json.Unmarshal(invoke("", "scan"), &state)
 	if len(state.Tasks) != 2 {
@@ -77,9 +77,10 @@ func TestCLICompleteSetupSelectionAndSettingsWithoutGUI(t *testing.T) {
 			t.Fatal("rescan lost selection")
 		}
 	}
-	_ = json.Unmarshal(invoke(`{"maxTurns":0,"maxCostUSD":0}`, "settings", "update", "--input", "-"), &state)
-	if state.Config.MaxTurns != 0 || state.Config.MaxCostUSD != 0 || state.Config.OutputPricePerMillion != 2 || state.Config.InputPricePerMillion != 1 {
-		t.Fatal("partial settings update reset unrelated fields or failed to clear limits")
+	state = model.State{}
+	_ = json.Unmarshal(invoke(`{"concurrency":0}`, "settings", "update", "--input", "-"), &state)
+	if state.Config.Concurrency != 0 || state.Config.OutputPricePerMillion != 2 || state.Config.InputPricePerMillion != 1 {
+		t.Fatal("partial settings update reset unrelated fields or failed to reset concurrency")
 	}
 	var content model.TargetFileContent
 	_ = json.Unmarshal(invoke("", "files", "show", "--file", "a.txt"), &content)

@@ -18,7 +18,6 @@ import (
 )
 
 const targetFileListLimit = 50000
-const targetFileContentLimit = 1 << 20
 
 // targetFileRoot binds asynchronous reads to the workspace and folder that
 // requested them. Browsing never depends on the queue, rules or Git cleanliness.
@@ -195,7 +194,7 @@ func listTargetFiles(root string, limit int) ([]model.TargetFile, bool, error) {
 	return files, truncated, nil
 }
 
-// ReadTargetFile returns bounded, read-only UTF-8 content from the source root.
+// ReadTargetFile returns decoded, read-only content from the source root.
 // os.Root also prevents path escapes if an ancestor changes during the read.
 func (s *Service) ReadTargetFile(workspaceID, root, file string) (model.TargetFileContent, error) {
 	result := model.TargetFileContent{WorkspaceID: workspaceID, Root: root, File: file}
@@ -214,7 +213,7 @@ func (s *Service) ReadTargetFile(workspaceID, root, file string) (model.TargetFi
 	return result, nil
 }
 
-// readPreviewFile shares the bounded reader, but never resolves a caller's root.
+// readPreviewFile shares the reader, but never resolves a caller's root.
 // Public entry points must authorize the workspace and select the root first.
 func readPreviewFile(result model.TargetFileContent, root, file string) (model.TargetFileContent, error) {
 	handle, err := openTargetFileRoot(root)
@@ -227,33 +226,24 @@ func readPreviewFile(result model.TargetFileContent, root, file string) (model.T
 		return result, fmt.Errorf("対象ファイルを開けません: %w", err)
 	}
 	result.Size = info.Size()
-	if result.Size > targetFileContentLimit {
-		result.UnavailableReason = "1 MiBを超えるファイルはプレビューできません"
-	} else {
-		opened, err := handle.Open(filepath.FromSlash(file))
-		if err != nil {
-			return result, err
-		}
-		defer opened.Close()
-		current, err := opened.Stat()
-		if err != nil || !current.Mode().IsRegular() || !os.SameFile(info, current) {
-			return result, fmt.Errorf("対象ファイルが変更されています。再度選択してください")
-		}
-		data, err := io.ReadAll(io.LimitReader(opened, targetFileContentLimit+1))
-		if err != nil {
-			return result, fmt.Errorf("対象ファイルを読み込めません: %w", err)
-		}
-		result.Size = int64(len(data))
-		switch {
-		case len(data) > targetFileContentLimit:
-			result.UnavailableReason = "1 MiBを超えるファイルはプレビューできません"
-		case bytes.IndexByte(data, 0) >= 0:
-			result.UnavailableReason = "バイナリファイルはプレビューできません"
-		case !utf8.Valid(data):
-			result.UnavailableReason = "UTF-8以外の文字コードのファイルはプレビューできません"
-		default:
-			result.Content = strings.TrimPrefix(string(data), "\ufeff")
-		}
+	opened, err := handle.Open(filepath.FromSlash(file))
+	if err != nil {
+		return result, err
 	}
+	defer opened.Close()
+	current, err := opened.Stat()
+	if err != nil || !current.Mode().IsRegular() || !os.SameFile(info, current) {
+		return result, fmt.Errorf("対象ファイルが変更されています。再度選択してください")
+	}
+	data, err := io.ReadAll(opened)
+	if err != nil {
+		return result, fmt.Errorf("対象ファイルを読み込めません: %w", err)
+	}
+	result.Size = int64(len(data))
+	result.Content, err = sourceDisplay(data)
+	if err != nil {
+		result.UnavailableReason = err.Error()
+	}
+
 	return result, nil
 }

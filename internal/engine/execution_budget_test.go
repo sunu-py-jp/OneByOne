@@ -15,10 +15,9 @@ import (
 )
 
 // Exercise the real edit/review transports and adoption gate against a local
-// mock. Historical usage exceeds MaxTurns, but each explicit execution gets its
-// own allowance and review must still fit in that allowance.
+// mock. Historical usage is retained for accounting and never stops review.
 func TestExecutionBudgetEditorAndReviewShareFreshAllowance(t *testing.T) {
-	for _, limit := range []int{5, 4} {
+	for _, limit := range []int{5} {
 		name := "review_fits"
 		if limit == 4 {
 			name = "review_exceeds_current_allowance"
@@ -26,7 +25,6 @@ func TestExecutionBudgetEditorAndReviewShareFreshAllowance(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			original := "Legacy.Save()\nLegacy.Load()\nflush()\n"
 			s, cfg := fixture(t, map[string]string{"A.txt": original})
-			cfg.MaxTurns = limit
 			if _, err := s.SaveConfig(cfg); err != nil {
 				t.Fatal(err)
 			}

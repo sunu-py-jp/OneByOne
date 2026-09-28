@@ -65,11 +65,12 @@ func executePublishCommand(ctx context.Context, s resultPublicationService, args
 	// A pointer distinguishes an omitted message (use the reviewed summary) from
 	// an intentionally empty message. The commit title always needs user input.
 	var inputRequest struct {
-		WorkspaceID string  `json:"workspaceId"`
-		Revision    string  `json:"revision"`
-		Branch      string  `json:"branch"`
-		Title       string  `json:"title"`
-		Message     *string `json:"message"`
+		WorkspaceID   string  `json:"workspaceId"`
+		Revision      string  `json:"revision"`
+		Branch        string  `json:"branch"`
+		Title         string  `json:"title"`
+		Message       *string `json:"message"`
+		MessageAsFile bool    `json:"messageAsFile"`
 	}
 	if err := readCLIJSON(in, input, &inputRequest); err != nil {
 		return nil, err
@@ -82,7 +83,7 @@ func executePublishCommand(ctx context.Context, s resultPublicationService, args
 	}
 	request := model.PublishResultsRequest{
 		WorkspaceID: inputRequest.WorkspaceID, Revision: inputRequest.Revision,
-		Branch: inputRequest.Branch, Title: inputRequest.Title,
+		Branch: inputRequest.Branch, Title: inputRequest.Title, MessageAsFile: inputRequest.MessageAsFile,
 	}
 	if inputRequest.Message == nil {
 		preview, err := s.GetResultPublicationPreview()

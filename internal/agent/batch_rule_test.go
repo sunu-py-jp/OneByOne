@@ -77,7 +77,6 @@ func TestReadRulesFailedBatchDoesNotRecordPartialReads(t *testing.T) {
 	}{
 		{"missing body", "", errors.New("private filesystem detail")},
 		{"invalid UTF8", string([]byte{0xff}), nil},
-		{"oversized body", strings.Repeat("x", maxToolBytes+1), nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cache := map[string]string{"R000": "keep"}
@@ -95,23 +94,14 @@ func TestReadRulesFailedBatchDoesNotRecordPartialReads(t *testing.T) {
 	}
 }
 
-func TestReadRulesBoundsEncodedOutputAndAllowsSmallerBatches(t *testing.T) {
-	for _, body := range []string{
-		strings.Repeat("x", maxToolBytes/2),
-		strings.Repeat("\n", maxToolBytes/3), // Escaping alone pushes JSON over the limit.
-	} {
-		cache := map[string]string{}
-		in := Input{Rules: []model.Rule{{ID: "R001"}, {ID: "R002"}}, ReadRule: func(string) (string, error) { return body, nil }}
-		_, err := executeTool(in, functionCall{Name: "read_rules", Arguments: `{"ids":["R001","R002"]}`}, cache)
-		if err == nil || !strings.Contains(err.Error(), "split ids") || len(cache) != 0 {
-			t.Fatalf("oversized batch was cached: %d, %v", len(cache), err)
-		}
-		for _, id := range []string{"R001", "R002"} {
-			output, err := executeTool(in, functionCall{Name: "read_rules", Arguments: string(raw(map[string]any{"ids": []string{id}}))}, cache)
-			if err != nil || len(output) > maxToolBytes || cache[id] != body {
-				t.Fatalf("smaller batch failed: bytes %d, error %v", len(output), err)
-			}
-		}
+func TestReadRulesLargeBatchCanBeReadInPages(t *testing.T) {
+	body := strings.Repeat("大きいルール。\n", 20000)
+	in := Input{Rules: []model.Rule{{ID: "R001"}, {ID: "R002"}}, ReadRule: func(string) (string, error) { return body, nil }}
+	state := model.RepairState{Version: 1}
+	cache := map[string]string{}
+	output, err := readRulesPaged(in, &state, cache, functionCall{Name: "read_rules", Arguments: `{"ids":["R001","R002"]}`})
+	if err != nil || len(output) > 96<<10 || len(cache) != 0 || !strings.Contains(output, "nextOffset") {
+		t.Fatalf("large batch not paged: bytes=%d cache=%v err=%v", len(output), cache, err)
 	}
 }
 

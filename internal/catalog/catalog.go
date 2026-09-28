@@ -2,7 +2,6 @@
 package catalog
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -14,11 +13,11 @@ import (
 	"sort"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"onebyone/internal/model"
 	"onebyone/internal/ruleformat"
 	"onebyone/internal/rulepack"
+	"onebyone/internal/sourceencoding"
 )
 
 var defaultExclusions = []string{
@@ -207,6 +206,7 @@ func (c *Catalog) Scan(ctx context.Context, cfg model.Config) ([]model.Task, int
 	scanned := len(allFiles)
 	rulesByFile := map[string][]string{}
 	pathCache := map[string]map[string]bool{}
+	encodingCache := map[string]sourceencoding.Encoding{}
 	for i := range c.Rules {
 		rule := &c.Rules[i]
 		rule.CandidateCount = 0
@@ -235,7 +235,7 @@ func (c *Catalog) Scan(ctx context.Context, cfg model.Config) ([]model.Task, int
 			}
 		}
 		if rule.ContentPattern != "" {
-			matches, err := c.matchFiles(ctx, root, candidates, []string{rule.ContentPattern})
+			matches, err := c.matchFilesEncoded(ctx, root, candidates, []string{rule.ContentPattern}, encodingCache)
 			if err != nil {
 				return nil, scanned, 0, ruleError(rule.ID, err)
 			}
@@ -259,7 +259,6 @@ func (c *Catalog) Scan(ctx context.Context, cfg model.Config) ([]model.Task, int
 		}
 	}
 	tasks := make([]model.Task, 0, len(files))
-	maxBytes := cfg.EffectiveMaxFileBytes()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	for _, file := range files {
 		if err := ctx.Err(); err != nil {
@@ -278,25 +277,15 @@ func (c *Catalog) Scan(ctx context.Context, cfg model.Config) ([]model.Task, int
 			f.Close()
 			return nil, scanned, scanned - len(files), fmt.Errorf("source is not a readable regular file: %s", file)
 		}
-		// Hash without keeping oversized inputs in memory; preserve their presence
-		// in the ledger so an unsupported source cannot disappear silently.
 		h := sha256.New()
-		data, readErr := io.ReadAll(io.LimitReader(io.TeeReader(f, h), int64(maxBytes)+1))
-		if readErr == nil && len(data) > maxBytes {
-			_, readErr = io.Copy(h, f)
-		}
+		data, readErr := io.ReadAll(io.TeeReader(f, h))
 		closeErr := f.Close()
 		if readErr != nil || closeErr != nil {
 			return nil, scanned, scanned - len(files), fmt.Errorf("read source %s: %w", file, errors.Join(readErr, closeErr))
 		}
 		task := model.Task{File: file, Rules: rulesByFile[file], Status: "pending", InputHash: hex.EncodeToString(h.Sum(nil)), UpdatedAt: now, RulesApplied: []string{}, History: []model.Attempt{}}
-		switch {
-		case len(data) > maxBytes:
-			task.Status, task.Note = "needs_human", fmt.Sprintf("ファイルサイズが上限 %d bytes を超えています。", maxBytes)
-		case bytes.IndexByte(data, 0) >= 0:
-			task.Status, task.Note = "needs_human", "NULを含むバイナリまたは未対応の文字コードです。UTF-8ソースを使用してください。"
-		case !utf8.Valid(data):
-			task.Status, task.Note = "needs_human", "UTF-8以外の文字コードは自動編集できません。"
+		if _, err := sourceencoding.Detect(data); err != nil {
+			task.Status, task.Note = "needs_human", err.Error()
 		}
 		tasks = append(tasks, task)
 	}

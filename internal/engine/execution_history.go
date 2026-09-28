@@ -215,15 +215,15 @@ func freezeExecutionEvidence(r *executionRecord) error {
 func attemptEvidence(cfg model.Config, h model.Attempt) executionEvidence {
 	e := executionEvidence{Changes: []model.ChangeReportItem{}}
 	base := filepath.Join(cfg.QueuePath+".artifacts", h.ID)
-	if b, err := os.ReadFile(base + ".before"); err == nil {
-		e.Before = string(b)
+	before, _ := os.ReadFile(base + ".before")
+	e.Before, _ = sourceDisplay(before)
+	after, err := os.ReadFile(base + ".after")
+	if err != nil {
+		after = before
 	}
-	e.After = e.Before
-	if b, err := os.ReadFile(base + ".after"); err == nil {
-		e.After = string(b)
-	}
-	if b, err := os.ReadFile(base + ".diff"); err == nil {
-		e.Diff = string(b)
+	e.After, _ = sourceDisplay(after)
+	if data, err := os.ReadFile(base + ".diff"); err == nil {
+		e.Diff, _ = sourceDiffDisplay(data, before, after)
 	}
 	for _, item := range h.Changes {
 		item.SourceAttemptID = h.ID

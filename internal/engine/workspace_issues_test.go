@@ -206,12 +206,20 @@ func TestWorkspaceFailedTasksHaveRedactedFileDestinations(t *testing.T) {
 	s, _ := fixture(t, map[string]string{"A.txt": "Legacy.Save()\n"})
 	secret := s.state.Config.Credential
 	s.propose = func(context.Context, agent.Input) (model.Proposal, error) {
-		return model.Proposal{}, errors.New("provider failed " + secret)
+		return model.Proposal{Usage: model.Usage{Turns: 1}}, errors.New("provider failed " + secret)
 	}
-	if err := s.Start(1); err != nil {
+	_ = runTest(t, s, 1)
+	// Inspect an archived failed attempt directly. Automatic retries no longer
+	// turn a repeatable provider failure into a terminal state by a retry cap.
+	s.mu.Lock()
+	task := &s.state.Tasks[0]
+	task.Status = "failed"
+	task.History[len(task.History)-1].Outcome = "failed"
+	s.recountLocked()
+	s.mu.Unlock()
+	if err := s.persist(); err != nil {
 		t.Fatal(err)
 	}
-	s.Wait()
 	st := s.Snapshot()
 	issues := workspaceIssues(t, st, st.ActiveWorkspaceID)
 	if len(issues) != 1 || issues[0].ID != "task:A.txt" || issues[0].Page != "results" || issues[0].File != "A.txt" {

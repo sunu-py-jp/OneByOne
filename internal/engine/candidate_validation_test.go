@@ -102,7 +102,7 @@ func TestCandidateValidationKeepsBOMAndCRLF(t *testing.T) {
 }
 
 func TestCandidateValidationInvalidEditsAndStaleRequestAreRecoverable(t *testing.T) {
-	for _, kind := range []string{"absent", "empty", "overlap", "stale-hash", "oversize"} {
+	for _, kind := range []string{"absent", "empty", "overlap", "stale-hash"} {
 		t.Run(kind, func(t *testing.T) {
 			in := candidateFixture(t, "Legacy.Save()\n")
 			request := candidateRequest(in, "Legacy.Save()", "Modern.Save()")
@@ -115,9 +115,6 @@ func TestCandidateValidationInvalidEditsAndStaleRequestAreRecoverable(t *testing
 				request.Edits = append(request.Edits, model.Edit{OldText: "Save", NewText: "Load"})
 			case "stale-hash":
 				request.BaseHash = digest([]byte("different base"))
-			case "oversize":
-				in.Config.MaxFileBytes = len(in.Before)
-				request.Edits[0].NewText = strings.Repeat("x", 100)
 			}
 			journaled := false
 			in.Journal = func(model.CandidateValidation) error { journaled = true; return nil }

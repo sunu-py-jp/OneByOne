@@ -1,4 +1,4 @@
-import type { Attempt, Task } from "./types";
+import type { Attempt, State, Task } from "./types";
 
 type TaskState = Pick<Task, "status" | "resumeRequested" | "canDiscardChanges">;
 
@@ -24,10 +24,28 @@ const labels: Record<string, string> = {
   needs_human: "要確認", skipped: "変更不要", done: "完了",
 };
 
-export function taskStatusLabel(task: TaskState): string {
+export function taskStatusLabel(task: TaskState, phase?: string): string {
   const status = taskDisplayStatus(task);
+  if (status === "running") {
+    switch (phase) {
+      case "reviewing": return "独立レビュー中";
+      case "checking": return "検証中";
+      case "preparing": return "準備中";
+      case "applying": return "反映待ち・保存中";
+      case "finalizing": return "結果を保存中";
+    }
+  }
   if (status === "needs_human" && task.canDiscardChanges) return "修正済み・要確認あり";
   return labels[status] ?? status;
+}
+
+/** Per-file phases are authoritative; a global phase must never label every worker. */
+export function activeFilePhases(state: Pick<State, "running" | "filePhases" | "currentFile" | "currentFiles" | "phase">): Readonly<Record<string, string>> | undefined {
+  if (!state.running) return undefined;
+  if (state.currentFile && !state.filePhases?.[state.currentFile] && (state.currentFiles?.length || 0) <= 1) {
+    return { ...state.filePhases, [state.currentFile]: state.phase };
+  }
+  return state.filePhases;
 }
 
 export function isPartialAdoption(attempt?: Pick<Attempt, "outcome" | "partial" | "commit">): boolean {

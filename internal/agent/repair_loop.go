@@ -16,8 +16,8 @@ import (
 	"onebyone/internal/model"
 )
 
-// Run uses a fresh provider conversation for each invocation. Only the compact
-// repair journal survives an interruption; server IDs and reasoning never do.
+// Run carries durable plans and staged edits across bounded provider conversations.
+// Provider IDs and reasoning never serve as the source of truth for recovery.
 func Run(ctx context.Context, in Input) (proposal model.Proposal, err error) {
 	c, err := newClient(in.Config)
 	if err != nil {
@@ -25,17 +25,8 @@ func Run(ctx context.Context, in Input) (proposal model.Proposal, err error) {
 	}
 	defer c.http.CloseIdleConnections()
 	in.Config = c.cfg
-	if len(in.Content) > c.cfg.MaxFileBytes {
-		return proposal, fmt.Errorf("Target file exceeds MaxFileBytes (%d)", c.cfg.MaxFileBytes)
-	}
 	if !utf8.ValidString(in.Content) || !utf8.ValidString(in.SystemPrompt) {
 		return proposal, errors.New("Agent input must be valid UTF-8")
-	}
-	if len(in.SystemPrompt) > 512<<10 {
-		return proposal, errors.New("Rule prompt exceeds 512 KiB; shorten the common rules/index")
-	}
-	if len(in.PreviousFailure) > maxToolBytes {
-		return proposal, errors.New("Previous failure context exceeds 96 KiB")
 	}
 	if in.ReadRule == nil || in.SaveRepairState == nil {
 		return proposal, &fatalError{errors.New("Rule reader and repair-state persistence must be configured")}
@@ -87,27 +78,20 @@ func Run(ctx context.Context, in Input) (proposal model.Proposal, err error) {
 		return proposal, &fatalError{err}
 	}
 	if state.RequestPending || state.Usage.Uncertain {
-		if c.cfg.MaxCostUSD > 0 || !in.AllowUncertainResume {
-			return proposal, unknownUsage(errors.New("Previous LLM request has unverified usage; explicit unpriced resume is required and cost-limited runs cannot resume"))
+		if !in.AllowUncertainResume {
+			return proposal, unknownUsage(errors.New("Previous LLM request has unverified usage; explicit resume is required"))
 		}
 		state.RequestPending = false
 		state.Usage.Uncertain = true
 	}
 	initialUsage := state.Usage
+	initialReviewCount := len(state.Reviews)
 	initialElapsed := state.ElapsedMS
 	started := time.Now()
 	newUncertain := false
 	persist := func(reserveInFlightTime bool) error {
 		state.ElapsedMS = initialElapsed + time.Since(started).Milliseconds()
 		snapshot := cloneRepairState(state)
-		reservedElapsed := in.BudgetBaseline.ElapsedMS + int64(c.cfg.TimeoutSeconds)*1000
-		if reserveInFlightTime && c.cfg.TimeoutSeconds > 0 && snapshot.ElapsedMS < reservedElapsed {
-			// A crash cannot tell us how much of an in-flight request or validation deadline was consumed.
-			// Reserve the remaining time durably; a handled response/error replaces it
-			// with measured active time. Only an explicit new execution resets its
-			// baseline; automatic repair calls keep the same execution budget.
-			snapshot.ElapsedMS = reservedElapsed
-		}
 		if saveErr := in.SaveRepairState(snapshot); saveErr != nil {
 			return &fatalError{fmt.Errorf("Cannot persist repair state: %w", saveErr)}
 		}
@@ -123,25 +107,11 @@ func Run(ctx context.Context, in Input) (proposal model.Proposal, err error) {
 			proposal.Outcome = ""
 		}
 		proposal.Usage = usageDifference(state.Usage, initialUsage)
-		proposal.Usage.Uncertain = newUncertain
+		proposal.Usage.Uncertain = newUncertain || state.Usage.Uncertain && !initialUsage.Uncertain
+		for _, review := range state.Reviews[initialReviewCount:] {
+			proposal.Usage.Uncertain = proposal.Usage.Uncertain || review.Usage.Uncertain
+		}
 	}()
-	remainingMS := int64(c.cfg.TimeoutSeconds)*1000 - in.BudgetBaseline.used(state).ElapsedMS
-	if c.cfg.TimeoutSeconds > 0 && remainingMS <= 0 {
-		return proposal, errors.New("Per-file elapsed-time limit reached for this execution")
-	}
-	if c.cfg.MaxTurns > 0 && in.BudgetBaseline.used(state).ReadBytes > maxReadBytes {
-		return proposal, errors.New("Agent exceeded the 512 KiB tool-read limit for this execution")
-	}
-	if c.cfg.MaxTurns > 0 && in.BudgetBaseline.used(state).ToolCalls > maxToolCalls {
-		return proposal, errors.New("Agent exceeded the tool-call limit for this execution")
-	}
-	var cancel context.CancelFunc
-	if c.cfg.TimeoutSeconds > 0 {
-		ctx, cancel = context.WithTimeout(ctx, time.Duration(remainingMS)*time.Millisecond)
-	} else {
-		ctx, cancel = context.WithCancel(ctx)
-	}
-	defer cancel()
 	ruleCache := map[string]string{}
 	catalog := map[string]bool{}
 	for _, rule := range in.Rules {
@@ -152,25 +122,28 @@ func Run(ctx context.Context, in Input) (proposal model.Proposal, err error) {
 			return proposal, &fatalError{errors.New("Restored rule is outside the current catalog")}
 		}
 		value, readErr := in.ReadRule(id)
-		if readErr != nil || !utf8.ValidString(value) || len(value) > maxToolBytes {
+		if readErr != nil || !utf8.ValidString(value) {
 			return proposal, &fatalError{errors.New("Previously read rule could not be restored")}
 		}
 		ruleCache[id] = value
 	}
-	user := map[string]any{"file": in.File, "content": in.Content, "baseHash": in.BaseHash, "candidateRules": in.CandidateRules, "previousFailure": in.PreviousFailure}
-	if in.RepairState != nil {
-		used := in.BudgetBaseline.used(state)
-		user["repairState"] = map[string]any{"plan": state.Plan, "lastCandidate": state.LastCandidate, "historicalUsage": state.Usage, "executionUsage": map[string]any{"turns": used.Turns, "elapsedMs": used.ElapsedMS, "validationCount": used.ValidationCount, "reviewCount": used.ReviewCount, "toolCalls": used.ToolCalls, "readBytes": used.ReadBytes}}
-		user["previouslyReadRules"] = ruleCache
-	}
-	if upgradedAttribution {
-		user["attributionUpgrade"] = "The previous candidate used obsolete whole-edit attribution and was discarded. Your saved plan, read rules, review findings and usage remain available. Submit a new COMPLETE original-based candidate with exact per-item attributions, revalidate it, and finish normally. Do not repeat completed reads or stop because of this upgrade."
-		if len(state.Reviews) > 0 {
-			user["previousReview"] = state.Reviews[len(state.Reviews)-1]
+	if len(state.StagedEdits) == 0 && state.LastCandidate != nil && !state.LastCandidate.NoChange {
+		for index, edit := range state.LastCandidate.Request.Edits {
+			state.StagedEdits = append(state.StagedEdits, model.StagedEdit{ID: fmt.Sprintf("edit-%d", index+1), Edit: edit})
 		}
 	}
-	userJSON, _ := json.Marshal(user)
-	history := []json.RawMessage{raw(map[string]any{"role": "user", "content": string(userJSON)})}
+	reason := "Begin or resume this file using persisted incremental plans and edits."
+	if upgradedAttribution {
+		reason += " Previous attribution was obsolete; restage precise attributed edits and validate. Saved plan/review findings remain available."
+	}
+	pagedPrompt := len(in.SystemPrompt) > 64<<10
+	if pagedPrompt {
+		in.Rules = append([]model.Rule{}, in.Rules...)
+		for i := range in.Rules {
+			in.Rules[i].Always = false
+		}
+	}
+	history := repairContext(in, state, ruleCache, reason)
 	lastRejection := ""
 	// Resume a final candidate's interrupted review without asking the editor to
 	// recreate its final answer or resetting any request/cost counters.
@@ -179,7 +152,7 @@ func Run(ctx context.Context, in Input) (proposal model.Proposal, err error) {
 		var parseErr error
 		if candidate.NoChange {
 			parseErr = noChangePlan(state.Plan, in)
-			if parseErr == nil && (!currentNoChangeCandidate(candidate, state.Plan, in.BaseHash) || strings.TrimSpace(candidate.ReviewNote) == "" || len(candidate.ReviewNote) > 8192) {
+			if parseErr == nil && (!currentNoChangeCandidate(candidate, state.Plan, in.BaseHash) || strings.TrimSpace(candidate.ReviewNote) == "") {
 				parseErr = errors.New("Restored unchanged-source review does not match the current source and plan")
 			}
 			final = model.Proposal{Outcome: "skipped", CandidateID: candidate.Result.CandidateID, Note: candidate.ReviewNote}
@@ -200,13 +173,21 @@ func Run(ctx context.Context, in Input) (proposal model.Proposal, err error) {
 		history = append(history, raw(map[string]any{"role": "user", "content": reviewFeedback(state)}))
 	}
 	seenCallIDs := map[string]bool{}
-	for c.cfg.MaxTurns == 0 || in.BudgetBaseline.used(state).Turns < c.cfg.MaxTurns {
+	for {
 		if err := ctx.Err(); err != nil {
 			return proposal, err
 		}
-		// Keep the changing budget at the end of the prompt, outside the cached
-		// rules prefix and provider history. It includes this upcoming request.
-		prompt := instructions + "\n\n" + in.SystemPrompt + "\n\n" + turnBudgetPrompt(in.BudgetBaseline.used(state).Turns, c.cfg.MaxTurns)
+		if historyBytes(history) > historyRolloverBytes {
+			history = repairContext(in, state, ruleCache, "Conversation rolled over to keep context bounded; saved plans, edits and review findings are intact.")
+			seenCallIDs = map[string]bool{}
+			if in.Log != nil {
+				in.Log("会話を保存済みの計画・編集状態から引き継ぎました")
+			}
+		}
+		prompt := runPrompt(in)
+		if pagedPrompt {
+			prompt = incrementalPagedPrompt()
+		}
 		body, err := c.migrationRequest(history, prompt)
 		if err != nil {
 			return proposal, err
@@ -224,14 +205,29 @@ func Run(ctx context.Context, in Input) (proposal model.Proposal, err error) {
 			return proposal, err
 		}
 		if in.Log != nil {
-			if c.cfg.MaxTurns > 0 {
-				in.Log(fmt.Sprintf("%s turn %d/%d", c.providerLabel(), in.BudgetBaseline.used(state).Turns, c.cfg.MaxTurns))
-			} else {
-				in.Log(fmt.Sprintf("%s turn %d（上限なし）", c.providerLabel(), in.BudgetBaseline.used(state).Turns))
-			}
+			in.Log(fmt.Sprintf("%s turn %d", c.providerLabel(), state.Usage.Turns))
 		}
 		res, requestErr := c.request(ctx, body, in.Log)
 		if requestErr != nil {
+			state.Usage.Turns += max(0, res.RequestAttempts-1)
+			if IsUsageUnknown(requestErr) {
+				state.Usage.Uncertain = true
+				newUncertain = true
+			}
+			if IsContextLimit(requestErr) {
+				state.RequestPending = false
+				pagedPrompt = true
+				in.Rules = append([]model.Rule{}, in.Rules...)
+				for i := range in.Rules {
+					in.Rules[i].Always = false
+				}
+				history = minimalRepairContext(in, state, "Provider context limit: continue from saved state using small paged reads and staged edits.")
+				seenCallIDs = map[string]bool{}
+				if err := checkpoint(); err != nil {
+					return proposal, err
+				}
+				continue
+			}
 			if !IsUsageUnknown(requestErr) {
 				state.RequestPending = false
 			}
@@ -243,6 +239,9 @@ func Run(ctx context.Context, in Input) (proposal model.Proposal, err error) {
 		state.Usage.CachedTokens += usage.CachedTokens
 		state.Usage.OutputTokens += usage.OutputTokens
 		state.Usage.CostUSD += usage.CostUSD
+		state.Usage.Turns += max(0, usage.Turns-1)
+		state.Usage.Uncertain = state.Usage.Uncertain || usage.Uncertain
+		newUncertain = newUncertain || usage.Uncertain
 		state.RequestPending = IsUsageUnknown(usageErr)
 		if state.RequestPending {
 			state.Usage.Uncertain, newUncertain = true, true
@@ -253,15 +252,36 @@ func Run(ctx context.Context, in Input) (proposal model.Proposal, err error) {
 		if usageErr != nil {
 			return proposal, usageErr
 		}
-		if c.cfg.MaxCostUSD > 0 && state.Usage.CostUSD > c.cfg.MaxCostUSD {
-			return proposal, errors.New("Reported LLM usage exceeds the configured cost limit; no further request will be sent")
-		}
-		if err := completed(res); err != nil {
-			return proposal, err
+		if completionErr := completed(res); completionErr != nil {
+			if IsContextLimit(completionErr) {
+				pagedPrompt = true
+				in.Rules = append([]model.Rule{}, in.Rules...)
+				for i := range in.Rules {
+					in.Rules[i].Always = false
+				}
+				history = minimalRepairContext(in, state, "Provider context window reached while generating a response. Incomplete output was discarded; all prior saved plans and edits remain. Continue via small paged reads and incremental tool calls.")
+				seenCallIDs = map[string]bool{}
+				continue
+			}
+			if !IsOutputLimit(completionErr) {
+				return proposal, completionErr
+			}
+			c.growOutputLimit()
+			history = repairContext(in, state, ruleCache, "The previous response reached the provider output limit and was discarded without applying incomplete tool calls. Continue from saved state. Send ONE small update_state or stage_edits batch at a time; never resend the full plan or full candidate. Split large structural edits using exact minimal fragments.")
+			seenCallIDs = map[string]bool{}
+			if in.Log != nil {
+				in.Log("LLM応答が出力上限に達したため、保存済みの計画・編集から小さい単位で継続します")
+			}
+			continue
 		}
 		calls, finalText, err := parseOutput(res.Output)
 		if err != nil {
-			return proposal, err
+			if strings.Contains(err.Error(), "refused") {
+				return proposal, err
+			}
+			history = repairContext(in, state, ruleCache, "Provider output could not be decoded and no calls from that response were applied. Continue with a small valid tool call. Error: "+bounded(err.Error(), 1024))
+			seenCallIDs = map[string]bool{}
+			continue
 		}
 		// Only a rejection from the latest completed response explains a stop
 		// at this boundary. Older, corrected errors remain in the diagnostic log.
@@ -291,11 +311,11 @@ func Run(ctx context.Context, in Input) (proposal model.Proposal, err error) {
 			history = appendFinalFeedback(c, history, res, "Final response rejected: "+bounded(finalErr.Error(), 2048)+". Continue correcting the plan/candidate with the available tools. Only a genuine missing-context, conflicting-rule, cross-file or unavailable-API blocker recorded in update_state justifies needs_human; unfinished work and anticipated budget exhaustion do not.")
 			continue
 		}
-		if len(calls) > 8 || (c.cfg.MaxTurns > 0 && in.BudgetBaseline.used(state).ToolCalls+len(calls) > maxToolCalls) {
-			return proposal, errors.New("Agent exceeded the tool-call limit for this execution")
-		}
 		results := []toolResult{}
 		for _, call := range calls {
+			if err := ctx.Err(); err != nil {
+				return proposal, err
+			}
 			if call.CallID == "" || len(call.CallID) > 256 || seenCallIDs[call.CallID] {
 				return proposal, errors.New("LLM returned an empty, duplicate or oversized tool call ID")
 			}
@@ -305,21 +325,21 @@ func Run(ctx context.Context, in Input) (proposal model.Proposal, err error) {
 				return proposal, err
 			}
 			result, toolErr := executeRepairTool(ctx, in, call, &state, required, ruleCache, c.cfg, checkpoint, func() error { return persist(true) })
-			if errors.Is(toolErr, errValidationLimit) || IsFatal(toolErr) || errors.Is(toolErr, context.Canceled) || errors.Is(toolErr, context.DeadlineExceeded) {
+			if IsFatal(toolErr) || errors.Is(toolErr, context.Canceled) || errors.Is(toolErr, context.DeadlineExceeded) {
 				return proposal, toolErr
 			}
 			isError := toolErr != nil
 			if toolErr != nil {
 				result = "Tool error: " + bounded(toolErr.Error(), 2048)
 			}
-			if len(result) > maxToolBytes {
-				result = "Tool error: response exceeds 96 KiB; reduce the plan/context size or return needs_human"
-				isError = true
+			if len(result) > toolPreviewBytes {
+				page, _ := pageText(result, 0)
+				result = string(raw(map[string]any{"preview": page, "instruction": "Read full saved details with read_state. For source/context use smaller line ranges or returned nextOffset; size is a transfer boundary, not a human blocker."}))
 			}
 			toolRejection := ""
 			if isError {
 				toolRejection = "ツール " + safeIdentifier(call.Name) + " の拒否: " + bounded(result, 2048)
-			} else if call.Name == "validate_candidate" && state.LastCandidate != nil && !state.LastCandidate.Result.Passed {
+			} else if (call.Name == "validate_candidate" || call.Name == "validate_staged_candidate") && state.LastCandidate != nil && !state.LastCandidate.Result.Passed {
 				toolRejection = candidateValidationRejection(state.LastCandidate.Result)
 			}
 			if toolRejection != "" {
@@ -332,9 +352,6 @@ func Run(ctx context.Context, in Input) (proposal model.Proposal, err error) {
 			if err := checkpoint(); err != nil {
 				return proposal, err
 			}
-			if c.cfg.MaxTurns > 0 && in.BudgetBaseline.used(state).ReadBytes > maxReadBytes {
-				return proposal, errors.New("Agent exceeded the 512 KiB tool-read limit for this execution")
-			}
 			results = append(results, toolResult{CallID: call.CallID, Content: result, IsError: isError})
 			if in.Log != nil {
 				in.Log(fmt.Sprintf("Tool: %s (%d bytes)", safeIdentifier(call.Name), len(result)))
@@ -342,27 +359,6 @@ func Run(ctx context.Context, in Input) (proposal model.Proposal, err error) {
 		}
 		history = c.appendTurn(history, res, results)
 	}
-	return proposal, turnLimitError(in.BudgetBaseline.used(state).Turns, c.cfg.MaxTurns, lastRejection)
-}
-
-func turnBudgetPrompt(used, limit int) string {
-	if limit == 0 {
-		return fmt.Sprintf("Current execution has used %d per-file LLM turns. No turn limit is configured. Continue until the complete candidate passes mechanical validation and independent review, or a genuine human-decision blocker is found. Do not invent an execution window or stop because work remains or the complete candidate is lengthy. The runner enforces any separately configured time, validation and cost limits and user cancellation. Only genuine blockers recorded with update_state justify needs_human; unfinished work and anticipated limits do not. Never bypass validation or independent review.", used)
-	}
-	return fmt.Sprintf("Current per-file LLM turn budget: %d used of %d; %d remaining, including this request. This budget covers only the current execution. Editor, automatic repairs and independent-review requests share it; historical usage from earlier executions does not consume it. The budget resets to zero only when the user explicitly starts another execution. A modified final answer requires one additional independent-review request before adoption; reserve that turn. Use available requests to complete the plan and validate the candidate, avoiding redundant reads/status-only updates. The runner, not the model, enforces exhausted budgets and preserves progress. Do not return needs_human, mark work blocked or stop because the remaining budget seems insufficient, a complete proposal is lengthy, or revalidation is still pending. Those are unfinished work, not human-decision blockers. Continue useful work until completion or a runner-enforced stop. Never bypass validation or independent review to fit the budget.", used, limit, max(0, limit-used))
-}
-
-// TurnLimitError describes usage within this explicit execution, not history.
-func TurnLimitError(used, limit int) error {
-	return fmt.Errorf("今回の実行でファイル単位のLLMターン上限（MaxTurns）に達しました。今回 %d / 上限 %d ターン（編集と独立レビューの合計）です。再実行するとターン数は0から始まります。保存済みの計画と処理履歴は保持されます。", used, limit)
-}
-
-func turnLimitError(used, limit int, lastRejection string) error {
-	message := TurnLimitError(used, limit).Error()
-	if lastRejection != "" {
-		message += " 直前に完了できなかった理由: " + bounded(lastRejection, 2048)
-	}
-	return errors.New(message)
 }
 
 func independentReviewRejection(state model.RepairState) string {
@@ -386,19 +382,42 @@ func candidateValidationRejection(result model.CandidateValidation) string {
 	return "候補検証の不合格: 検証結果の指摘を修正してください"
 }
 
-var errValidationLimit = errors.New("Per-file candidate validation limit reached for this execution")
-
 func executeRepairTool(ctx context.Context, in Input, call functionCall, state *model.RepairState, required []string, cache map[string]string, cfg model.Config, checkpoint, reserveElapsed func() error) (string, error) {
 	switch call.Name {
+	case "stage_edits":
+		var update model.StageEditsRequest
+		if err := strictRequiredJSON(call.Arguments, &update, "planRevision", "baseHash", "edits", "removeEditIds"); err != nil {
+			return "", err
+		}
+		if err := requireNewCandidateAttribution(model.CandidateRequest{Edits: stagedEditsOnly(update.Edits)}, call.Arguments); err != nil {
+			return "", err
+		}
+		if err := stageEdits(state, update, in.Content, in.BaseHash); err != nil {
+			return "", err
+		}
+		if err := checkpoint(); err != nil {
+			return "", err
+		}
+		return string(raw(map[string]any{"planRevision": state.Plan.Revision, "stagedEditCount": len(state.StagedEdits), "instruction": "Edits saved, not yet validated. Continue staging; then validate_staged_candidate."})), nil
+	case "read_state":
+		return readSavedState(in, *state, call.Arguments)
+	case "read_target":
+		return readTarget(in, *state, call.Arguments, false)
+	case "read_candidate":
+		return readTarget(in, *state, call.Arguments, true)
+	case "read_rule", "read_rules", "read_rule_page":
+		output, err := readRulesPaged(in, state, cache, call)
+		state.ReadRuleIDs = sortedRuleIDs(cache)
+		return output, err
 	case "update_state":
 		var update model.PlanUpdate
-		if len(call.Arguments) > maxToolBytes || strictRequiredJSON(call.Arguments, &update, "expectedRevision", "ruleDecisions", "items") != nil {
-			return "", errors.New("update_state requires expectedRevision, ruleDecisions and items within 96 KiB")
+		if strictRequiredJSON(call.Arguments, &update, "expectedRevision", "ruleDecisions", "items") != nil {
+			return "", errors.New("update_state requires expectedRevision, ruleDecisions and items")
 		}
 		if err := requirePlanSourceLocationFields(call.Arguments); err != nil {
 			return "", err
 		}
-		plan, err := UpdateRepairPlan(state.Plan, update, in.Rules, required, sortedRuleIDs(cache))
+		plan, err := MergeRepairPlan(state.Plan, update, in.Rules, sortedRuleIDs(cache))
 		if err != nil {
 			return "", err
 		}
@@ -409,16 +428,33 @@ func executeRepairTool(ctx context.Context, in Input, call functionCall, state *
 		if err := checkpoint(); err != nil {
 			return "", err
 		}
-		return string(raw(map[string]any{"plan": plan, "revision": plan.Revision, "remainingItemIds": PlanRemainingItems(plan)})), nil
-	case "validate_candidate":
+		return string(raw(map[string]any{"revision": plan.Revision, "itemCount": len(plan.Items), "reviewedRuleCount": len(plan.RuleDecisions), "stagedEditCount": len(state.StagedEdits), "instruction": "Saved incrementally. Use read_state to inspect the full plan; omitted entries were retained."})), nil
+	case "validate_candidate", "validate_staged_candidate":
 		var request model.CandidateRequest
-		if len(call.Arguments) > maxRequestBytes || strictRequiredJSON(call.Arguments, &request, "planRevision", "baseHash", "edits", "addressedItemIds") != nil {
+		if call.Name == "validate_staged_candidate" {
+			var args struct {
+				PlanRevision int    `json:"planRevision"`
+				BaseHash     string `json:"baseHash"`
+			}
+			if err := strictRequiredJSON(call.Arguments, &args, "planRevision", "baseHash"); err != nil {
+				return "", err
+			}
+			if args.PlanRevision != state.Plan.Revision || args.BaseHash != in.BaseHash {
+				return "", errors.New("validation requires current planRevision and original baseHash")
+			}
+			request = stagedRequest(*state, in.BaseHash)
+		} else if strictRequiredJSON(call.Arguments, &request, "planRevision", "baseHash", "edits", "addressedItemIds") != nil {
 			return "", errors.New("validate_candidate requires planRevision, baseHash, edits and addressedItemIds")
 		}
 		if request.BaseHash != in.BaseHash {
 			return "", errors.New("Candidate baseHash differs from the original target; use the supplied baseHash")
 		}
-		if err := requireNewCandidateAttribution(request, call.Arguments); err != nil {
+		if call.Name == "validate_candidate" {
+			if err := requireNewCandidateAttribution(request, call.Arguments); err != nil {
+				return "", err
+			}
+		}
+		if err := requireCompletePlan(state.Plan, required); err != nil {
 			return "", err
 		}
 		if err := CheckCandidatePlan(state.Plan, request); err != nil {
@@ -429,10 +465,6 @@ func executeRepairTool(ctx context.Context, in Input, call functionCall, state *
 		}
 		if err := CheckCandidateHolds(state.Plan, request, in.Content); err != nil {
 			return "", err
-		}
-		maxValidations := cfg.MaxAttempts
-		if maxValidations > 0 && in.BudgetBaseline.used(*state).ValidationCount >= maxValidations {
-			return "", errValidationLimit
 		}
 		if in.ValidateCandidate == nil {
 			return "", &fatalError{errors.New("Candidate validator is not configured")}
@@ -455,6 +487,12 @@ func executeRepairTool(ctx context.Context, in Input, call functionCall, state *
 			return "", &fatalError{errors.New("Candidate validator returned inconsistent candidate metadata")}
 		}
 		state.LastCandidate = &model.CandidateRecord{Request: request, Result: journalValidation(result)}
+		if call.Name == "validate_candidate" {
+			state.StagedEdits = nil
+			for index, edit := range request.Edits {
+				state.StagedEdits = append(state.StagedEdits, model.StagedEdit{ID: fmt.Sprintf("edit-%d", index+1), Edit: edit})
+			}
+		}
 		if err := checkpoint(); err != nil {
 			return "", err
 		}
@@ -475,7 +513,7 @@ func parseCandidateFinal(text string, state model.RepairState, in Input, require
 	if err := strictRequiredJSON(text, &final, "outcome", "candidateId", "note"); err != nil {
 		return model.Proposal{}, errors.New("Final JSON must have only outcome, candidateId and note")
 	}
-	if len(final.Note) > 8192 || strings.TrimSpace(final.Note) == "" || len(final.CandidateID) > 256 {
+	if strings.TrimSpace(final.Note) == "" || len(final.CandidateID) > 256 {
 		return model.Proposal{}, errors.New("Final note/candidate ID is empty or oversized")
 	}
 	result := model.Proposal{Outcome: final.Outcome, Note: final.Note, Edits: []model.Edit{}, RulesApplied: []string{}}
@@ -578,8 +616,8 @@ func planHasHumanBlocker(plan model.RepairPlan) bool {
 }
 
 func validateExactEdits(edits []model.Edit, original string) error {
-	if len(edits) == 0 || len(edits) > 100 {
-		return errors.New("Candidate requires between 1 and 100 exact edits")
+	if len(edits) == 0 {
+		return errors.New("Candidate requires at least one exact edit")
 	}
 	type span struct{ start, end int }
 	spans := []span{}
@@ -659,7 +697,7 @@ func repairRequestID() (string, error) {
 }
 func validateRepairCounters(state model.RepairState) error {
 	u := state.Usage
-	if state.ElapsedMS < 0 || state.ToolCalls < 0 || state.ReadBytes < 0 || state.ValidationCount < 0 || state.ReviewCount < 0 || len(state.Reviews) > 128 || u.Turns < 0 || u.InputTokens < 0 || u.OutputTokens < 0 || u.CachedTokens < 0 || u.CachedTokens > u.InputTokens || u.CostUSD < 0 || len(state.ReadRuleIDs) > 256 {
+	if state.ElapsedMS < 0 || state.ToolCalls < 0 || state.ReadBytes < 0 || state.ValidationCount < 0 || state.ReviewCount < 0 || u.Turns < 0 || u.InputTokens < 0 || u.OutputTokens < 0 || u.CachedTokens < 0 || u.CachedTokens > u.InputTokens || u.CostUSD < 0 {
 		return errors.New("Repair state has invalid counters")
 	}
 	return nil

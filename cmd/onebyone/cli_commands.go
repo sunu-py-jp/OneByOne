@@ -132,8 +132,6 @@ func commandFlags(name string, args []string, configure func(*flag.FlagSet)) err
 
 var editableSettings = []string{
 	"excludedRuleIds", "concurrency",
-	"maxAttempts", "maxTurns",
-	"maxOutputTokens", "maxFileBytes", "timeoutSeconds", "maxCostUSD",
 	"inputPricePerMillion", "cachedInputPricePerMillion", "outputPricePerMillion",
 }
 
@@ -146,6 +144,9 @@ func publicSettings(cfg model.Config) map[string]json.RawMessage {
 		result[key] = all[key]
 		if key == "excludedRuleIds" && result[key] == nil {
 			result[key] = json.RawMessage("[]")
+		}
+		if key == "concurrency" && result[key] == nil {
+			result[key] = json.RawMessage("0")
 		}
 	}
 	return result
@@ -195,7 +196,7 @@ func executeSettingsCommand(ctx context.Context, s *engine.Service, args []strin
 				return nil, errors.New("変更できない設定項目があります。settings show の項目だけを指定してください")
 			}
 			if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-				return nil, errors.New("設定の null は使用できません。上限解除は0、配列の解除は [] を指定してください")
+				return nil, errors.New("設定の null は使用できません。並列数を既定値に戻す場合は0、配列の解除は [] を指定してください")
 			}
 		}
 		data, _ := json.Marshal(patch)
