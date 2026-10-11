@@ -14,12 +14,20 @@ export function CheckGitInstallation() {
   return window['go']['main']['App']['CheckGitInstallation']();
 }
 
+export function ChooseDiagnosticsFile() {
+  return window['go']['main']['App']['ChooseDiagnosticsFile']();
+}
+
 export function ChooseDirectory(arg1) {
   return window['go']['main']['App']['ChooseDirectory'](arg1);
 }
 
 export function ChooseRulePackage() {
   return window['go']['main']['App']['ChooseRulePackage']();
+}
+
+export function ClearDiagnostics() {
+  return window['go']['main']['App']['ClearDiagnostics']();
 }
 
 export function ClearLLMConnectionCredential(arg1) {
@@ -74,6 +82,10 @@ export function ExportReport() {
   return window['go']['main']['App']['ExportReport']();
 }
 
+export function ExportRuleImportTemplate() {
+  return window['go']['main']['App']['ExportRuleImportTemplate']();
+}
+
 export function ExportRulePackage() {
   return window['go']['main']['App']['ExportRulePackage']();
 }
@@ -100,6 +112,10 @@ export function GetResultPublicationPreview() {
 
 export function GetState() {
   return window['go']['main']['App']['GetState']();
+}
+
+export function ImportDiagnostics(arg1) {
+  return window['go']['main']['App']['ImportDiagnostics'](arg1);
 }
 
 export function ImportRulePackage(arg1, arg2) {

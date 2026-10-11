@@ -4,8 +4,8 @@ import { Icon } from "./icons";
 import { HoverTip } from "./HoverTip";
 import "./rule-package-actions.css";
 
-export function RulePackageActions({ disabled, exportDisabled, disabledReason, onImport, onExport }: {
-  disabled: boolean; exportDisabled: boolean; disabledReason?: string; onImport: () => void; onExport: () => void;
+export function RulePackageActions({ disabled, exportDisabled, disabledReason, onImport, onExport, onExportTemplate }: {
+  disabled: boolean; exportDisabled: boolean; disabledReason?: string; onImport: () => void; onExport: () => void; onExportTemplate: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [position, setPosition] = useState({ top: 0, left: 0 });
@@ -16,7 +16,10 @@ export function RulePackageActions({ disabled, exportDisabled, disabledReason, o
   useLayoutEffect(() => {
     if (!open || !trigger.current) return;
     const rect = trigger.current.getBoundingClientRect();
-    setPosition({ top: Math.min(rect.bottom + 6, window.innerHeight - 98), left: Math.max(10, Math.min(rect.right - 178, window.innerWidth - 188)) });
+    const menuRect = menu.current?.getBoundingClientRect();
+    const width = menuRect?.width || 248;
+    const height = menuRect?.height || 140;
+    setPosition({ top: Math.max(10, Math.min(rect.bottom + 6, window.innerHeight - height - 10)), left: Math.max(10, Math.min(rect.right - width, window.innerWidth - width - 10)) });
     menu.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
   }, [open]);
   useEffect(() => {
@@ -47,6 +50,7 @@ export function RulePackageActions({ disabled, exportDisabled, disabledReason, o
         }
       }}>
       <button type="button" role="menuitem" onClick={() => { close(); onImport(); }}><Icon name="folder" size={16} />JSON・CSVをインポート</button>
+      <button type="button" role="menuitem" onClick={() => { close(); onExportTemplate(); }}><Icon name="download" size={16} />Excel用テンプレート（CSV）</button>
       <HoverTip reason={exportDisabled ? "書き出すルールを追加してください。" : ""}><button type="button" role="menuitem" disabled={exportDisabled} onClick={() => { close(); onExport(); }}><Icon name="download" size={16} />書き出す</button></HoverTip>
     </div>, document.body)}
   </>;

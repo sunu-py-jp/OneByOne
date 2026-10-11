@@ -29,6 +29,6 @@ export function nextRuleId(ids: Iterable<string>): string {
   return String(next);
 }
 
-export function isCommonRule(rule: { pathPattern: string; contentPattern: string }): boolean {
-  return !rule.pathPattern.trim() && !rule.contentPattern.trim();
+export function isCommonRule(rule: { pathPattern: string; contentPattern: string; diagnosticPattern?: string }): boolean {
+  return !rule.pathPattern.trim() && !rule.contentPattern.trim() && !rule.diagnosticPattern?.trim();
 }

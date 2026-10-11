@@ -34,6 +34,8 @@ func dispatchCLIGroup(ctx context.Context, s *engine.Service, o options, in io.R
 	switch o.command {
 	case "workspace":
 		return executeWorkspaceCommand(ctx, s, o.commandArgs, in)
+	case "diagnostics":
+		return executeDiagnosticsCommand(ctx, s, o.commandArgs)
 	case "rules":
 		return executeRulesCommand(ctx, s, o.commandArgs, in)
 	case "llm":
@@ -131,7 +133,7 @@ func commandFlags(name string, args []string, configure func(*flag.FlagSet)) err
 }
 
 var editableSettings = []string{
-	"excludedRuleIds", "concurrency",
+	"excludedRuleIds", "concurrency", "diagnosticsOnly",
 	"inputPricePerMillion", "cachedInputPricePerMillion", "outputPricePerMillion",
 }
 
@@ -144,6 +146,9 @@ func publicSettings(cfg model.Config) map[string]json.RawMessage {
 		result[key] = all[key]
 		if key == "excludedRuleIds" && result[key] == nil {
 			result[key] = json.RawMessage("[]")
+		}
+		if key == "diagnosticsOnly" && result[key] == nil {
+			result[key] = json.RawMessage("false")
 		}
 		if key == "concurrency" && result[key] == nil {
 			result[key] = json.RawMessage("0")

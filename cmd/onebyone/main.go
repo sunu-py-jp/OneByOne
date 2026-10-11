@@ -327,7 +327,7 @@ func applyCLIConnection(s *engine.Service, cfg model.Config) error {
 
 func groupedCommand(command string) bool {
 	switch command {
-	case "workspace", "rules", "llm", "settings", "files", "runs", "publish":
+	case "workspace", "rules", "diagnostics", "llm", "settings", "files", "runs", "publish":
 		return true
 	}
 	return false
@@ -614,7 +614,8 @@ func printHelp(w io.Writer) {
 
   workspace  ワークスペースの作成・一覧・選択・変更・削除
   llm        LLM接続の登録・選択・テスト・OAuthサインイン
-  rules      ルールの追加・編集・削除、rules.json・CSVの取り込み、rules.jsonの書き出し
+  rules      ルールの追加・編集・削除、JSON・CSVの取り込み、JSON・入力用CSVの書き出し
+  diagnostics 診断JSONLの取り込み・解除・概要表示
   settings   並列数・対象ルール・料金単価の表示と変更
   files      対象フォルダまたは実行コピーのファイル一覧・内容
   scan       対象と候補ルールを抽出（選択・履歴を保持）
@@ -639,13 +640,14 @@ APIキーは llm save --input - の標準入力、またはプロバイダーの
 
 func printGroupHelp(w io.Writer, group string) {
 	help := map[string]string{
-		"workspace": "list | create --name NAME --root PATH | select --id ID | rename --name NAME | duplicate --name NAME | delete --id ID --yes | target --root PATH | validate --root PATH",
-		"llm":       "list | save --input JSON_FILE|- | select --id ID | test --id ID | login --id ID | logout --id ID | clear --id ID --yes | delete --id ID --yes",
-		"rules":     "list | show --id ID | create --input JSON_FILE|- | update --input JSON_FILE|- | delete --id ID --yes | import --input rules.json|rules.csv [--mode replace|merge] | export --output rules.json",
-		"settings":  "show | update --input JSON_FILE|-（指定した項目だけ変更。concurrencyは1〜10、0で既定2）",
-		"files":     "list | show --file PATH [--source target|execution]",
-		"runs":      "list | show --id EXECUTION_ID",
-		"publish":   "preview | diff --input JSON_FILE|-（workspaceId・revision・file必須） | create --input JSON_FILE|-（workspaceId・revision・branch・title必須）",
+		"workspace":   "list | create --name NAME --root PATH | select --id ID | rename --name NAME | duplicate --name NAME | delete --id ID --yes | target --root PATH | validate --root PATH",
+		"llm":         "list | save --input JSON_FILE|- | select --id ID | test --id ID | login --id ID | logout --id ID | clear --id ID --yes | delete --id ID --yes",
+		"rules":       "list | show --id ID | create --input JSON_FILE|- | update --input JSON_FILE|- | delete --id ID --yes | import --input rules.json|rules.csv [--mode replace|merge] | export --output rules.json | template --output rules-template.csv",
+		"diagnostics": "import --input diagnostics.jsonl | clear | show",
+		"settings":    "show | update --input JSON_FILE|-（指定した項目だけ変更。concurrencyは1〜10、0で既定2）",
+		"files":       "list | show --file PATH [--source target|execution]",
+		"runs":        "list | show --id EXECUTION_ID",
+		"publish":     "preview | diff --input JSON_FILE|-（workspaceId・revision・file必須） | create --input JSON_FILE|-（workspaceId・revision・branch・title必須）",
 	}
 	fmt.Fprintf(w, "使い方: onebyone %s <%s> [--config PATH] [--workspace ID] [--json]\n", group, help[group])
 }

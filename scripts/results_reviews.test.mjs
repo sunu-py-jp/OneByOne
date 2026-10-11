@@ -36,6 +36,18 @@ function render(reviews, { tab = 'checks', running = false, busy = false, readOn
   return renderToStaticMarkup(createElement(ResultsPanel, { state, busy, usable, canSetup: true, selectedFile: task.file, detailTab: tab, onSelectFile: noOp, onDetailTabChange: noOp, onStop: noOp, onExport: noOp, onRetry: noOp, onDiscard: noOp, onOpenWorktree: noOp, onSetup: noOp }));
 }
 
+test('result details display the attempt diagnostic snapshot after the current import changes', () => {
+  const html = render([], { taskChanges: {
+    sourceDiagnostics: [{ file: 'src/dispatch.js', message: 'later import', ruleIds: [] }],
+    history: [{ id: 'attempt-1', number: 1, checks: [], usage: emptyUsage, rulesApplied: [], sourceDiagnostics: [{ file: 'src/dispatch.js', line: 8, code: 'E001', message: 'attempt input diagnostic', ruleIds: ['R101'] }] }],
+  } });
+  assert.match(html, /取り込んだ診断/);
+  assert.match(html, /試行 1 開始時の記録/);
+  assert.match(html, /attempt input diagnostic/);
+  assert.match(html, /src\/dispatch\.js:8/);
+  assert.doesNotMatch(html, /later import/);
+});
+
 test('a corrected candidate retains both independent reviews without a stale tab warning', () => {
   const reviews = [review('first', 'needs_changes'), review('second', 'passed')];
   for (const tab of ['checks', 'history']) {

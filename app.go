@@ -10,6 +10,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"onebyone/internal/engine"
 	"onebyone/internal/model"
+	"onebyone/internal/rulepack"
 )
 
 type App struct {
@@ -149,6 +150,18 @@ func (a *App) SaveRules(edits []model.RuleEdit) (model.State, error) {
 func (a *App) CreateRule(input model.RuleEdit) (model.State, error) {
 	return a.service.CreateRule(input)
 }
+func (a *App) ChooseDiagnosticsFile() (string, error) {
+	return runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
+		Title:   "診断JSONLを取り込む",
+		Filters: []runtime.FileFilter{{DisplayName: "診断 (JSONL)", Pattern: "*.jsonl"}},
+	})
+}
+func (a *App) ImportDiagnostics(path string) (model.State, error) {
+	return a.service.ImportDiagnostics(path)
+}
+func (a *App) ClearDiagnostics() (model.State, error) {
+	return a.service.ClearDiagnostics()
+}
 func (a *App) ChooseRulePackage() (string, error) {
 	return runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
 		Title:   "ルールを取り込む",
@@ -172,6 +185,23 @@ func (a *App) ExportRulePackage() (string, error) {
 		path += ".json"
 	}
 	return a.service.ExportRulePackage(path)
+}
+func (a *App) ExportRuleImportTemplate() (string, error) {
+	path, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
+		Title: "Excel用テンプレートを保存", DefaultFilename: "rules-template.csv",
+		Filters:              []runtime.FileFilter{{DisplayName: "Excel用テンプレート (CSV UTF-8)", Pattern: "*.csv"}},
+		CanCreateDirectories: true,
+	})
+	if err != nil || path == "" {
+		return "", err
+	}
+	if filepath.Ext(path) == "" {
+		path += ".csv"
+	}
+	if err := rulepack.WriteCSVTemplate(path); err != nil {
+		return "", err
+	}
+	return path, nil
 }
 func (a *App) ExportReport() (string, error) {
 	return a.exportReport("")

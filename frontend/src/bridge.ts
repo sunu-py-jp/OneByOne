@@ -115,4 +115,8 @@ export const api: Backend = {
   ChooseRulePackage: () => native().ChooseRulePackage(),
   ImportRulePackage: async (path, mode) => normalizeState(await native().ImportRulePackage(path, mode)),
   ExportRulePackage: () => native().ExportRulePackage(),
+  ExportRuleImportTemplate: () => native().ExportRuleImportTemplate(),
+  ChooseDiagnosticsFile: () => native().ChooseDiagnosticsFile(),
+  ImportDiagnostics: async (path) => normalizeState(await native().ImportDiagnostics(path)),
+  ClearDiagnostics: async () => normalizeState(await native().ClearDiagnostics()),
 };

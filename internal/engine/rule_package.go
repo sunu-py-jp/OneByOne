@@ -264,6 +264,12 @@ func (s *Service) installRuleVersion(w model.Workspace, cfg model.Config, pkg *r
 	defer func() { cancel(); s.mu.Lock(); s.cancel = nil; s.mu.Unlock() }()
 	validation := cfg
 	validation.RGPath = "" // A package-provided executable is data, never an import hook.
+	diagnosticSummary, diagnosticsErr := readDiagnosticsSummary(cfg.DiagnosticsPath)
+	if diagnosticsErr != nil {
+		// Saving a valid draft must not prevent replacing or clearing a broken
+		// diagnostic import. Extraction/execution still check the saved reference.
+		validation.DiagnosticsPath, validation.DiagnosticsOnly = "", false
+	}
 	var cat *catalog.Catalog
 	var catalogErr error
 	if allowInvalid && len(pkg.Rules) == 0 {
@@ -303,6 +309,8 @@ func (s *Service) installRuleVersion(w model.Workspace, cfg model.Config, pkg *r
 	}
 	s.recountLocked()
 	s.setWorkspaceIssueLocked(s.state.ActiveWorkspaceID, "catalog", catalogErr, "rules", "")
+	s.state.Diagnostics = diagnosticSummary
+	s.setWorkspaceIssueLocked(s.state.ActiveWorkspaceID, "diagnostics", diagnosticsErr, "run", "")
 	// A run may have stopped on the same invalid catalog before this repair.
 	if issue := s.workspaceIssues[s.state.ActiveWorkspaceID]["run"]; issue.Page == "rules" && catalogErr == nil {
 		s.setWorkspaceIssueLocked(s.state.ActiveWorkspaceID, "run", nil, "", "")

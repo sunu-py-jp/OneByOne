@@ -262,6 +262,8 @@ func readSavedState(in Input, state model.RepairState, arguments string) (string
 		if len(state.Reviews) > 0 {
 			value = state.Reviews[len(state.Reviews)-1]
 		}
+	case "diagnostics":
+		value = in.SourceDiagnostics
 	case "catalog":
 		rows := make([]model.Rule, len(in.Rules))
 		copy(rows, in.Rules)
@@ -270,7 +272,7 @@ func readSavedState(in Input, state model.RepairState, arguments string) (string
 		}
 		value = rows
 	default:
-		return "", errors.New("section must be plan, edits, validation, review, reads or catalog")
+		return "", errors.New("section must be plan, edits, validation, review, reads, catalog or diagnostics")
 	}
 	page, err := pageText(string(raw(value)), args.Offset)
 	return string(raw(page)), err
@@ -314,7 +316,11 @@ func historyBytes(history []json.RawMessage) int {
 }
 
 func repairContext(in Input, state model.RepairState, cache map[string]string, reason string) []json.RawMessage {
-	data := map[string]any{"file": in.File, "baseHash": in.BaseHash, "totalLines": strings.Count(in.Content, "\n") + 1, "originalBytes": len(in.Content), "ruleCount": len(in.Rules), "candidateRuleCount": len(in.CandidateRules), "planRevision": state.Plan.Revision, "stagedEditCount": len(state.StagedEdits), "planItemCount": len(state.Plan.Items), "reviewedRuleCount": len(state.Plan.RuleDecisions), "reason": reason, "instruction": "Progress is saved locally. Use read_state sections plan, edits, validation, review, reads or catalog and read_target/read_candidate to inspect exact saved content, paging via nextOffset. Continue pending work; never rebuild or forget completed edits. All edits refer to the immutable original."}
+	data := map[string]any{"file": in.File, "baseHash": in.BaseHash, "totalLines": strings.Count(in.Content, "\n") + 1, "originalBytes": len(in.Content), "ruleCount": len(in.Rules), "candidateRuleCount": len(in.CandidateRules), "planRevision": state.Plan.Revision, "stagedEditCount": len(state.StagedEdits), "planItemCount": len(state.Plan.Items), "reviewedRuleCount": len(state.Plan.RuleDecisions), "reason": reason, "instruction": "Progress is saved locally. Use read_state sections plan, edits, validation, review, reads, catalog or diagnostics and read_target/read_candidate to inspect exact saved content, paging via nextOffset. Continue pending work; never rebuild or forget completed edits. All edits refer to the immutable original."}
+	data["sourceDiagnosticCount"] = len(in.SourceDiagnostics)
+	if len(raw(in.SourceDiagnostics)) <= contextPageBytes {
+		data["sourceDiagnostics"] = in.SourceDiagnostics
+	}
 	// Small files/plans stay directly visible. Larger artifacts remain complete in
 	// durable state and are available through paged tools, never summarized away.
 	if len(in.Content) <= contextPageBytes {
@@ -515,7 +521,8 @@ func incrementalPagedPrompt() string {
 	return instructions + "\nRule bodies are available through read_rules/read_rule_page. Read every supplied rule, including common rules, before recording its decision. Use read_state section catalog for rule IDs and metadata. No rule body is truncated."
 }
 func minimalRepairContext(in Input, state model.RepairState, reason string) []json.RawMessage {
-	data := map[string]any{"file": in.File, "baseHash": in.BaseHash, "totalLines": strings.Count(in.Content, "\n") + 1, "planRevision": state.Plan.Revision, "stagedEditCount": len(state.StagedEdits), "ruleCount": len(in.Rules), "reason": reason, "instruction": "All progress is durably saved. Use paged read_state/read_target/read_candidate/read_rule_page to inspect it, then continue small incremental updates. No prior work was discarded."}
+	data := map[string]any{"file": in.File, "baseHash": in.BaseHash, "totalLines": strings.Count(in.Content, "\n") + 1, "planRevision": state.Plan.Revision, "stagedEditCount": len(state.StagedEdits), "ruleCount": len(in.Rules), "reason": reason, "instruction": "All progress is durably saved. Use paged read_state/read_target/read_candidate/read_rule_page to inspect it (read_state section diagnostics for imported evidence), then continue small incremental updates. No prior work was discarded."}
+	data["sourceDiagnosticCount"] = len(in.SourceDiagnostics)
 	return []json.RawMessage{raw(map[string]any{"role": "user", "content": string(raw(data))})}
 
 }

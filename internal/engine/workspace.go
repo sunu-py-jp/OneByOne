@@ -199,6 +199,9 @@ func (s *Service) writeWorkspaceSetting(w model.Workspace, c model.Config) error
 		return e
 	}
 	savedConfig := storedConfig(c)
+	if err = s.validateWorkspaceDiagnosticsPath(w.ID, c.DiagnosticsPath); err != nil {
+		return err
+	}
 	savedConfig.LLMConnectionID = c.LLMConnectionID
 	saved := workspaceSetting{Version: workspaceSettingVersion, ID: w.ID, Name: w.Name, Config: savedConfig}
 	return store.WriteJSON(path, saved)
@@ -253,6 +256,9 @@ func (s *Service) readWorkspaceSetting(id string) (model.Workspace, model.Config
 	}
 	saved.Config.Provider, saved.Config.AuthMode = "azure", "api_key"
 	c, err = normalizeConfig(saved.Config)
+	if err == nil {
+		err = s.validateWorkspaceDiagnosticsPath(id, c.DiagnosticsPath)
+	}
 	return model.Workspace{ID: id, Name: name, Root: c.Root}, c, err
 }
 
@@ -599,6 +605,9 @@ func (s *Service) createWorkspace(name string, c model.Config, connectionID stri
 			return s.Snapshot(), err
 		}
 	}
+	if c, err = s.copyWorkspaceDiagnostics(c, w.ID); err != nil {
+		return s.Snapshot(), err
+	}
 	if err = s.writeWorkspaceSetting(w, c); err != nil {
 		return s.Snapshot(), err
 	}
@@ -646,9 +655,18 @@ func (s *Service) restoreWorkspace(c model.Config) error {
 	if queueErr == nil {
 		queueErr = s.restorePendingDiscards()
 	}
-	cat, catalogErr := passiveCatalog(c)
+	summary, diagnosticsErr := readDiagnosticsSummary(c.DiagnosticsPath)
+	catalogConfig := c
+	if diagnosticsErr != nil {
+		// Keep the rules page usable so a missing import can be repaired from
+		// execution settings. Actual extraction and execution still validate it.
+		catalogConfig.DiagnosticsPath, catalogConfig.DiagnosticsOnly = "", false
+	}
+	cat, catalogErr := passiveCatalog(catalogConfig)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.state.Diagnostics = summary
+	s.setWorkspaceIssueLocked(s.state.ActiveWorkspaceID, "diagnostics", diagnosticsErr, "run", "")
 	s.setWorkspaceIssueLocked(s.state.ActiveWorkspaceID, "target", targetErr, "target", "")
 	s.setWorkspaceIssueLocked(s.state.ActiveWorkspaceID, "queue", queueErr, "results", "")
 	s.setWorkspaceIssueLocked(s.state.ActiveWorkspaceID, "catalog", catalogErr, "rules", "")
@@ -663,6 +681,9 @@ func (s *Service) restoreWorkspace(c model.Config) error {
 	}
 	if queueErr != nil {
 		return queueErr
+	}
+	if diagnosticsErr != nil {
+		return diagnosticsErr
 	}
 	return catalogErr
 }

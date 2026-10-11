@@ -76,6 +76,8 @@ CLIはデスクトップアプリと同じ処理・保存先・検証を使い�
 | ルール一覧・詳細 | `rules list` / `rules show --id ID` |
 | ルール追加・更新・削除 | `rules create --input JSON` / `rules update --input JSON` / `rules delete --id ID --yes` |
 | JSON/CSV取り込み・JSON書き出し | `rules import --input rules.json --mode replace\|merge` / `rules export --output rules.json` |
+| Excel用入力テンプレート | `rules template --output rules-template.csv` |
+| 外部診断の取り込み・解除・概要 | `diagnostics import --input JSONL` / `diagnostics clear` / `diagnostics show` |
 | 実行設定・抽出条件の確認・変更 | `settings show` / `settings update --input JSON` |
 | 対象フォルダのファイル一覧・本文 | `files list` / `files show --file PATH` |
 | 実行用作業コピーの本文 | `files show --file PATH --source execution` |
@@ -122,14 +124,16 @@ APIキーを保存する場合はJSONの `credential` へ指定し、アクセ�
 
 ## ルールと設定を編集する
 
-`rules.json`はYAML front matter付きMarkdown文字列を`rules`配列へ格納する形式です。`rules import --input ./rules.csv`でCSVも取り込めます。CSVの必須ヘッダーは`id,name,description,path_pattern,content_pattern`で、追加列は列名をH1、セルを本文としてMarkdownにします。
+`rules.json`はYAML front matter付きMarkdown文字列を`rules`配列へ格納する形式です。`rules import --input ./rules.csv`でCSVも取り込めます。CSVの必須ヘッダーは`id,name,description,path_pattern,content_pattern`で、`diagnostic_pattern`は任意のメタデータ列です。それ以外の追加列は列名をH1、セルを本文としてMarkdownにします。
+
+`rules template --output ./rules-template.csv`で、上記5列・任意の`diagnostic_pattern`列・標準の本文見出しを含む空の入力テンプレートを書き出します。ワークスペースや既存ルールは不要です。Excelで編集し、CSV UTF-8形式で保存して取り込んでください。テンプレートはUTF-8 BOM付き・CRLF改行です。
 
 - `--mode replace`：ルール一覧を置き換える。
 - `--mode merge`：現在のルールを残して追加する。
 
 既存ルールがある場合は`--mode`が必須です。ない場合は`replace`として扱います。ルールIDはファイルの`id`を使い、`merge`で既存と重複したIDには`_2`、`_3`…を付けます。対象フォルダ・料金単価・LLM接続と既存の実行履歴は保持します。
 
-単一ルールの追加・更新APIは次のJSONを使います。公開`rules.json`の配列形式とは用途が異なります。両パターンが空なら共通ルールです。`name`と`description`は空白以外の値が必要です。`rules create`で`id`を省略すると、既存の数字IDの次の番号を割り当てます。IDは作成後に変更できません。
+単一ルールの追加・更新APIは次のJSONを使います。公開`rules.json`の配列形式とは用途が異なります。`pathPattern`・`contentPattern`・`diagnosticPattern`の3条件が空なら共通ルールです。`name`と`description`は空白以外の値が必要です。`rules create`で`id`を省略すると、既存の数字IDの次の番号を割り当てます。IDは作成後に変更できません。
 
 ```json
 {
@@ -163,7 +167,9 @@ APIキーを保存する場合はJSONの `credential` へ指定し、アクセ�
 }
 ```
 
-更新可能なのは`excludedRuleIds`、`concurrency`、`inputPricePerMillion`、`cachedInputPricePerMillion`、`outputPricePerMillion`です。`concurrency`は1〜10、`0`は既定の2へ戻します。単価は推定料金の集計用で、処理を止める条件ではありません。ターン・試行・時間・費用・出力トークン・対象ファイル容量の上限設定は廃止し、指定すると未定義項目として拒否します。過去のワークスペース設定に残る廃止値は読込時に破棄し、再保存しません。対象の絞り込みは各ルールの`pathPattern`・`contentPattern`、適用しないルールは`excludedRuleIds`で指定します。空配列なら全ルールを選択します。検証コマンドや旧シンボル定義の指定はありません。
+外部診断の形式・照合方法・保存については[診断JSONL](diagnostics.md)を参照してください。
+
+更新可能なのは`diagnosticsOnly`、`excludedRuleIds`、`concurrency`、`inputPricePerMillion`、`cachedInputPricePerMillion`、`outputPricePerMillion`です。`concurrency`は1〜10、`0`は既定の2へ戻します。単価は推定料金の集計用で、処理を止める条件ではありません。ターン・試行・時間・費用・出力トークン・対象ファイル容量の上限設定は廃止し、指定すると未定義項目として拒否します。過去のワークスペース設定に残る廃止値は読込時に破棄し、再保存しません。対象の絞り込みは各ルールの`pathPattern`・`contentPattern`・`diagnosticPattern`、適用しないルールは`excludedRuleIds`で指定します。空配列なら全ルールを選択します。検証コマンドや旧シンボル定義の指定はありません。
 
 ルールや抽出条件を変えたら `scan` で対象を更新し、選択を確認してから実行してください。`scan --root PATH` は対象フォルダを設定してから抽出します。ワークスペースがある場合は対象フォルダの変更、ない場合は作成を行います。
 

@@ -13,11 +13,11 @@ import (
 )
 
 func editDefinition(edit model.RuleEdit) model.RuleDefinition {
-	return model.RuleDefinition{ID: edit.ID, Name: edit.Name, Description: edit.Description, PathPattern: edit.PathPattern, ContentPattern: edit.ContentPattern, Body: edit.Body}
+	return model.RuleDefinition{ID: edit.ID, Name: edit.Name, Description: edit.Description, PathPattern: edit.PathPattern, ContentPattern: edit.ContentPattern, DiagnosticPattern: edit.DiagnosticPattern, Body: edit.Body}
 }
 
 func ruleRevision(rule model.Rule) string {
-	return ruleformat.Revision(model.RuleDefinition{ID: rule.ID, Name: rule.Title, Description: rule.Summary, PathPattern: rule.PathPattern, ContentPattern: rule.ContentPattern, Body: rule.Body})
+	return ruleformat.Revision(model.RuleDefinition{ID: rule.ID, Name: rule.Title, Description: rule.Summary, PathPattern: rule.PathPattern, ContentPattern: rule.ContentPattern, DiagnosticPattern: rule.DiagnosticPattern, Body: rule.Body})
 }
 
 // Caller owns op. Lock files remain stable and are outside exported rule assets.

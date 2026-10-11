@@ -34,6 +34,9 @@ func Run(ctx context.Context, in Input) (proposal model.Proposal, err error) {
 	if err := safeRelativePath(in.File); err != nil {
 		return proposal, err
 	}
+	if err := validateSourceDiagnostics(in.File, in.SourceDiagnostics); err != nil {
+		return proposal, err
+	}
 	required := make([]string, 0, len(in.Rules))
 	for _, rule := range in.Rules {
 		required = append(required, rule.ID)

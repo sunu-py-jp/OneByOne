@@ -11,17 +11,18 @@ const rules = [{ id: 'R001', title: 'Common', summary: 'Keep behavior', pathPatt
 const key = (cfg = config, definitions = rules, workspace = 'workspace-1') => selectionContextKey(workspace, cfg, definitions);
 
 test('a confirmed mapping is invalidated by source, destination, or extraction changes', () => {
-  for (const change of [{ root: '/other' }, { queuePath: '/new/queue.jsonl' }, { rulesPath: '/rules/v2' }]) {
+  for (const change of [{ root: '/other' }, { queuePath: '/new/queue.jsonl' }, { rulesPath: '/rules/v2' }, { diagnosticsPath: '/diagnostics/new.jsonl' }, { diagnosticsOnly: true }]) {
     assert.notEqual(key({ ...config, ...change }), key(), JSON.stringify(change));
   }
   assert.notEqual(key(config, rules, 'workspace-2'), key());
 });
 
 test('in-place edits of any rule content require selection review again', () => {
-  for (const field of ['id', 'title', 'summary', 'pathPattern', 'contentPattern', 'body']) {
+  for (const field of ['id', 'title', 'summary', 'pathPattern', 'contentPattern', 'diagnosticPattern', 'body']) {
     assert.notEqual(key(config, [{ ...rules[0], [field]: 'changed' }]), key(), field);
   }
   assert.notEqual(key(config, []), key());
+  assert.equal(key({ ...config, diagnosticsPath: '', diagnosticsOnly: false }, [{ ...rules[0], diagnosticPattern: '' }]), key());
 });
 
 test('LLM selection, execution limits, prices and statistics preserve checked files', () => {

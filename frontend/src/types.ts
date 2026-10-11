@@ -20,6 +20,9 @@ export interface Config {
   root: string;
   rulesPath: string;
   excludedRuleIds?: string[];
+  diagnosticsPath?: string;
+  diagnosticsSourceFile?: string;
+  diagnosticsOnly?: boolean;
   queuePath: string;
   rgPath: string;
   endpoint: string;
@@ -34,7 +37,20 @@ export interface Config {
 export interface RuleContent {
   pathPattern: string;
   contentPattern: string;
+  diagnosticPattern?: string;
   body: string;
+}
+export interface SourceDiagnostic {
+  file: string;
+  message: string;
+  line?: number;
+  code?: string;
+  ruleIds?: string[];
+}
+export interface DiagnosticsSummary {
+  name: string;
+  count: number;
+  fileCount: number;
 }
 export interface Rule extends RuleContent {
   id: string;
@@ -109,6 +125,7 @@ export interface ChangeReportItem {
 }
 export interface Attempt {
   id: string;
+  sourceDiagnostics?: SourceDiagnostic[];
   executionId?: string;
   number: number;
   startedAt: string;
@@ -139,6 +156,7 @@ export interface DiscardChange {
 }
 export interface Task {
   file: string;
+  sourceDiagnostics?: SourceDiagnostic[];
   excluded?: boolean;
   rules: string[];
   status: string;
@@ -247,6 +265,7 @@ export interface State {
   llmSettingsPath: string;
   activeWorkspaceId: string;
   config: Config;
+  diagnostics?: DiagnosticsSummary;
   tasks: Task[];
   rules: Rule[];
   logs: LogEntry[];
@@ -298,6 +317,10 @@ export interface Backend {
   ChooseRulePackage(): Promise<string>;
   ImportRulePackage(path: string, mode: "replace" | "merge"): Promise<State>;
   ExportRulePackage(): Promise<string>;
+  ExportRuleImportTemplate(): Promise<string>;
+  ChooseDiagnosticsFile(): Promise<string>;
+  ImportDiagnostics(path: string): Promise<State>;
+  ClearDiagnostics(): Promise<State>;
   Scan(): Promise<State>;
   Start(limit: number): Promise<void>;
   Stop(): Promise<void>;
@@ -344,6 +367,8 @@ export const defaultConfig: Config = {
   provider: "azure",
   root: "",
   rulesPath: "",
+  diagnosticsPath: "",
+  diagnosticsOnly: false,
   queuePath: "",
   rgPath: "",
   endpoint: "",
@@ -371,6 +396,7 @@ export const emptyState: State = {
   llmSettingsPath: "",
   activeWorkspaceId: "",
   config: defaultConfig,
+  diagnostics: undefined,
   tasks: [],
   rules: [],
   logs: [],
@@ -389,12 +415,14 @@ export const emptyState: State = {
 export function normalizeTask(task: Task): Task {
   return {
     ...task,
+    sourceDiagnostics: normalizeSourceDiagnostics(task.sourceDiagnostics),
     rules: task.rules || [],
     rulesApplied: task.rulesApplied || [],
     canDiscardChanges: Boolean(task.canDiscardChanges),
     discards: task.discards || [],
     history: (task.history || []).map((a) => ({
       ...a,
+      sourceDiagnostics: normalizeSourceDiagnostics(a.sourceDiagnostics),
       rulesApplied: a.rulesApplied || [],
       checks: a.checks || [],
       changes: a.changes || [],
@@ -407,6 +435,9 @@ export function normalizeTask(task: Task): Task {
       })),
     })),
   };
+}
+export function normalizeSourceDiagnostics(diagnostics?: SourceDiagnostic[]): SourceDiagnostic[] {
+  return (diagnostics || []).map(diagnostic => ({ ...diagnostic, ruleIds: diagnostic.ruleIds || [] }));
 }
 export function normalizeState(state: State): State {
   return {

@@ -141,6 +141,8 @@ func (s *Service) ChangeTargetFolder(root string) (model.State, error) {
 		return s.Snapshot(), fmt.Errorf("新しい結果の保存先を確保できません。もう一度変更してください")
 	}
 	c.QueuePath = queue
+	c.DiagnosticsPath, c.DiagnosticsOnly = "", false
+	c.DiagnosticsSourceFile = ""
 	if c, err = normalizeConfig(c); err != nil {
 		return s.Snapshot(), err
 	}

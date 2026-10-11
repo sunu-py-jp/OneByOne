@@ -29,6 +29,7 @@ export function RulePreviewPane({ rule, loading = false, error = "", caption, on
         <RuleMarkdown body={rule.body} />
         <section className="rule-preview-section rule-preview-patterns"><h3>対象ファイル</h3><pre><code>{rule.pathPattern || "全ファイル"}</code></pre></section>
         {rule.contentPattern && <section className="rule-preview-section"><h3>内容の条件</h3><pre><code>{rule.contentPattern}</code></pre></section>}
+        {rule.diagnosticPattern && <section className="rule-preview-section"><h3>診断の条件</h3><pre><code>{rule.diagnosticPattern}</code></pre></section>}
       </div> : <div className="rule-preview-message">ルールを選択してください</div>}
   </aside>;
 }

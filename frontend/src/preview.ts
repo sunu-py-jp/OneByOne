@@ -189,6 +189,7 @@ for (const rule of rules) {
 
 export const previewState: State = {
   executionRuns: [],
+  diagnostics: undefined,
   readOnly: false,
   llmSettingsPath: "/Users/you/Library/Application Support/OneByOne/private/llm-settings/",
   llmConnections: [
@@ -668,7 +669,7 @@ export function createPreviewWorkspace(name: string, root: string): State {
     ...structuredClone(previewState),
     selectedLLMConnectionId: "",
     config: { ...structuredClone(defaultConfig), root },
-    tasks: [], rules: [], logs: [], executionRuns: [], worktree: "", branch: "", currentFile: "", currentFiles: [], filePhases: {},
+    tasks: [], rules: [], diagnostics: undefined, logs: [], executionRuns: [], worktree: "", branch: "", currentFile: "", currentFiles: [], filePhases: {},
     phase: "idle", scannedCount: 0, excludedCount: 0, usage: { ...emptyUsage }, lastError: "",
   });
   return selectPreviewWorkspace(id);

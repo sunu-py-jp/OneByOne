@@ -5,6 +5,7 @@ import { HelpTip } from "./HelpTip";
 import { HoverTip } from "./HoverTip";
 import { TargetFilePath, TargetFileSource } from "./TargetFolderBrowser";
 import { RulePreviewPane } from "./RulePreviewPane";
+import { SourceDiagnostics } from "./SourceDiagnostics";
 import { ruleScope, ruleScopeLabels } from "./rule-scope";
 import { TaskFileList, TaskListStatus } from "./TaskFileList";
 import { compareTaskStatus, hasRuleCandidates, isCompletedTask } from "./task-state";
@@ -139,6 +140,7 @@ export function TargetFilesPanel({ tasks, rules, workspaceId, root, selected, on
             <Icon name="file" size={15} />
             {active ? <><div className="task-content-identity"><TargetFilePath file={activeFile} /><div className="task-header-candidates"><CandidateChips candidates={active.candidates} activeId={ruleId} onOpen={openRule} /></div></div><TaskListStatus task={active.task} /></> : <span>ファイルの内容</span>}
           </div>
+          {active && <SourceDiagnostics key={`${context}:${activeFile}`} diagnostics={active.task.sourceDiagnostics} rules={rules} onOpenRule={openRule} />}
           {detailError ? <div className="target-browser-message is-error" role="alert"><Icon name="warning" size={18} /><span>{detailError}</span><button className="text-button" onClick={() => setDetailRevision(value => value + 1)}>再読み込み</button></div>
             : visibleDetail?.unavailableReason ? <div className="target-browser-message"><Icon name="file" size={24} /><span>{visibleDetail.unavailableReason}</span></div>
             : visibleDetail ? <TargetFileSource key={`${context}:${activeFile}:${detailRevision}`} content={visibleDetail.content} />

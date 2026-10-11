@@ -6,10 +6,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 
 	"onebyone/internal/engine"
 	"onebyone/internal/model"
+	"onebyone/internal/rulepack"
 )
 
 // These command adapters leave validation, workspace ownership, package
@@ -138,7 +140,7 @@ func executeRulesCommand(ctx context.Context, s *engine.Service, args []string, 
 		return nil, err
 	}
 	if len(args) == 0 {
-		return nil, errors.New("rules の操作を指定してください: list / show / create / update / delete / import / export")
+		return nil, errors.New("rules の操作を指定してください: list / show / create / update / delete / import / export / template")
 	}
 	command, rest := args[0], args[1:]
 	var id, input, output, mode string
@@ -165,6 +167,10 @@ func executeRulesCommand(ctx context.Context, s *engine.Service, args []string, 
 		}
 	case "export":
 		configure = func(f *flag.FlagSet) { f.StringVar(&output, "output", "", "保存先 rules.json") }
+	case "template":
+		configure = func(f *flag.FlagSet) {
+			f.StringVar(&output, "output", "", "Excel用テンプレートの保存先 rules-template.csv")
+		}
 	default:
 		return nil, fmt.Errorf("不明な rules 操作 %q", command)
 	}
@@ -180,7 +186,7 @@ func executeRulesCommand(ctx context.Context, s *engine.Service, args []string, 
 		if err := requireWorkspaceRuleValue("input", input); err != nil {
 			return nil, err
 		}
-	case "export":
+	case "export", "template":
 		if err := requireWorkspaceRuleValue("output", output); err != nil {
 			return nil, err
 		}
@@ -247,6 +253,15 @@ func executeRulesCommand(ctx context.Context, s *engine.Service, args []string, 
 	case "export":
 		path, err := s.ExportRulePackage(output)
 		if err != nil {
+			return nil, err
+		}
+		return map[string]string{"path": path}, nil
+	case "template":
+		path, err := filepath.Abs(output)
+		if err != nil {
+			return nil, err
+		}
+		if err := rulepack.WriteCSVTemplate(path); err != nil {
 			return nil, err
 		}
 		return map[string]string{"path": path}, nil

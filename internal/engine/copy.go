@@ -6,8 +6,10 @@ func copyTask(t model.Task) model.Task {
 	t.Discards = append([]model.DiscardChange(nil), t.Discards...)
 	t.Rules = append([]string{}, t.Rules...)
 	t.RulesApplied = append([]string{}, t.RulesApplied...)
+	t.SourceDiagnostics = copySourceDiagnostics(t.SourceDiagnostics)
 	t.History = append([]model.Attempt{}, t.History...)
 	for i := range t.History {
+		t.History[i].SourceDiagnostics = copySourceDiagnostics(t.History[i].SourceDiagnostics)
 		t.History[i].RulesApplied = append([]string{}, t.History[i].RulesApplied...)
 		t.History[i].Checks = append([]model.Check{}, t.History[i].Checks...)
 		t.History[i].Reviews = copyReviews(t.History[i].Reviews)
@@ -17,6 +19,14 @@ func copyTask(t model.Task) model.Task {
 		}
 	}
 	return t
+}
+
+func copySourceDiagnostics(items []model.SourceDiagnostic) []model.SourceDiagnostic {
+	out := append([]model.SourceDiagnostic(nil), items...)
+	for i := range out {
+		out[i].RuleIDs = append([]string(nil), out[i].RuleIDs...)
+	}
+	return out
 }
 
 func copyReviews(reviews []model.IndependentReview) []model.IndependentReview {

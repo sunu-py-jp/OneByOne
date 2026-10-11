@@ -84,7 +84,7 @@ func (s *Service) processOne(parent context.Context, index int, cfg model.Config
 		}
 	}
 	resumeAttempt := allowResume && unfinishedRepair(t) && repairProvenanceMatches(checkpoint, cfg, cat, t.File, head, t.InputHash)
-	h := model.Attempt{ID: uid(), Number: t.Attempts + 1, StartedAt: now(), BaseCommit: head, Checks: []model.Check{}, RulesApplied: []string{}}
+	h := model.Attempt{ID: uid(), Number: t.Attempts + 1, StartedAt: now(), BaseCommit: head, Checks: []model.Check{}, RulesApplied: []string{}, SourceDiagnostics: copySourceDiagnostics(t.SourceDiagnostics)}
 	if resumeAttempt {
 		h = t.History[len(t.History)-1]
 		h.BaseCommit, h.FinishedAt, h.Outcome, h.Commit = head, "", "", ""
@@ -254,7 +254,7 @@ func (s *Service) processOne(parent context.Context, index int, cfg model.Config
 	if e = persistRepair(checkpoint.State); e != nil {
 		return e
 	}
-	in := agent.Input{Config: cfg, SystemPrompt: cat.SystemPrompt, File: t.File, Content: text.text, BaseHash: h.InputHash, Rules: cat.Rules, CandidateRules: t.Rules, PreviousFailure: failureContext(cfg, t), RepairState: &checkpoint.State, BudgetBaseline: budgets[t.File], SaveRepairState: persistRepair, AllowUncertainResume: allowResume, ReadRule: cat.ReadRule, ReadContext: func(p string, start, end int) (string, error) {
+	in := agent.Input{Config: cfg, SystemPrompt: cat.SystemPrompt, File: t.File, Content: text.text, BaseHash: h.InputHash, Rules: cat.Rules, CandidateRules: t.Rules, SourceDiagnostics: copySourceDiagnostics(h.SourceDiagnostics), PreviousFailure: failureContext(cfg, t), RepairState: &checkpoint.State, BudgetBaseline: budgets[t.File], SaveRepairState: persistRepair, AllowUncertainResume: allowResume, ReadRule: cat.ReadRule, ReadContext: func(p string, start, end int) (string, error) {
 		return readSnapshotContext(ctx, worktree, head, sourceRelative, p, start, end)
 	}, Log: func(msg string) { s.log("info", t.File+" · "+msg) }}
 	in.ValidateCandidate = func(validationCtx context.Context, request model.CandidateRequest) (model.CandidateValidation, error) {

@@ -8,9 +8,13 @@ export function ChangeTargetFolder(arg1:string):Promise<model.State>;
 
 export function CheckGitInstallation():Promise<model.GitInstallation>;
 
+export function ChooseDiagnosticsFile():Promise<string>;
+
 export function ChooseDirectory(arg1:string):Promise<string>;
 
 export function ChooseRulePackage():Promise<string>;
+
+export function ClearDiagnostics():Promise<model.State>;
 
 export function ClearLLMConnectionCredential(arg1:string):Promise<model.State>;
 
@@ -38,6 +42,8 @@ export function ExportExecutionReport(arg1:string):Promise<string>;
 
 export function ExportReport():Promise<string>;
 
+export function ExportRuleImportTemplate():Promise<string>;
+
 export function ExportRulePackage():Promise<string>;
 
 export function GetExecutionFileDetail(arg1:string,arg2:string,arg3:number):Promise<model.FileDetail>;
@@ -51,6 +57,8 @@ export function GetResultPublicationFileDiff(arg1:string,arg2:string,arg3:string
 export function GetResultPublicationPreview():Promise<model.ResultPublicationPreview>;
 
 export function GetState():Promise<model.State>;
+
+export function ImportDiagnostics(arg1:string):Promise<model.State>;
 
 export function ImportRulePackage(arg1:string,arg2:string):Promise<model.State>;
 

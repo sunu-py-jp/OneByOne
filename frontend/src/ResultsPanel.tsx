@@ -7,6 +7,8 @@ import { filterResults, isResultAttention as isAttention, summarizeResults, type
 import { useResultsSplitter } from "./useResultsSplitter";
 import { useResultSnapshot } from "./useResultSnapshot";
 import { RulePreviewPane } from "./RulePreviewPane";
+import { SourceDiagnostics } from "./SourceDiagnostics";
+import { resultSourceDiagnostics } from "./diagnostics";
 import { TaskFileList } from "./TaskFileList";
 import { activeFilePhases, attemptStatusLabel, isCompletedTask, isPartialAdoption, taskDisplayStatus, taskStatusLabel } from "./task-state";
 import { diffRuleAnnotations, recordedChanges, rulesForLine, ruleOrigins, originLabel, changeNote, heldSourceTarget, type LineRuleAnnotation } from "./result-line-rules";
@@ -315,6 +317,8 @@ export function ResultsPanel({ state, busy, usable, canSetup, selectedFile, onSe
           <header className="results-detail-heading"><Icon name="file" size={16} /><strong title={fullPath(state.config.root, selectedTask.file)}>{selectedTask.file}</strong>
             {appliedIDs.length > 0 && <RuleChips ids={appliedIDs} rules={rulesByID} origins={ruleOrigins(currentChanges)} onOpen={showRule} />}
             <ResultStatus status={taskDisplayStatus(selectedTask)} label={taskStatusLabel(selectedTask, filePhases?.[selectedTask.file])} /></header>
+          <SourceDiagnostics key={`${detailKey}:diagnostics`} diagnostics={resultSourceDiagnostics(selectedTask, attemptIndex)} rules={state.rules} onOpenRule={showRule}
+            caption={currentAttempt ? `試行 ${currentAttempt.number} 開始時の記録` : undefined} />
           {explanation && <div key={`${selectedFile}:${attemptIndex}:note`} className={`results-explanation${explanationNeedsAttention ? " attention" : ""}`} role="note" aria-label="処理の説明" tabIndex={0}>
             <Icon name={explanationNeedsAttention ? "warning" : "info"} size={14} /><p>{explanation}</p>
           </div>}

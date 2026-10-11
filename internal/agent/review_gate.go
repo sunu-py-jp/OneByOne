@@ -92,7 +92,7 @@ func reviewFinal(ctx context.Context, in Input, state *model.RepairState, final 
 	if in.Log != nil {
 		in.Log("独立レビューを開始します")
 	}
-	result, reviewErr := reviewer(ctx, ReviewInput{Config: in.Config, File: in.File, Before: in.Content, After: after, BaseHash: in.BaseHash, CandidateHash: candidate.Result.CandidateHash, Rules: rules, Holds: holds, Usage: state.Usage, TurnBaseline: in.BudgetBaseline.Turns, Log: in.Log, PriorProgress: priorProgress, SaveProgress: func(progress model.IndependentReview) error {
+	result, reviewErr := reviewer(ctx, ReviewInput{Config: in.Config, File: in.File, Before: in.Content, After: after, BaseHash: in.BaseHash, CandidateHash: candidate.Result.CandidateHash, Rules: rules, SourceDiagnostics: in.SourceDiagnostics, Holds: holds, Usage: state.Usage, TurnBaseline: in.BudgetBaseline.Turns, Log: in.Log, PriorProgress: priorProgress, SaveProgress: func(progress model.IndependentReview) error {
 		record.Assessments, record.Issues, record.HoldAssessments = progress.Assessments, progress.Issues, progress.HoldAssessments
 		publish()
 		return checkpoint()

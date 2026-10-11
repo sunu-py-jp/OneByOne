@@ -5,8 +5,9 @@ import type { Config, Rule } from "./types";
 export function selectionContextKey(workspaceId: string, config: Config, rules: Rule[]): string {
   return JSON.stringify([
     workspaceId, config.root, config.queuePath, config.rulesPath,
+    config.diagnosticsPath || "", config.diagnosticsSourceFile || "", Boolean(config.diagnosticsOnly),
     [...new Set(config.excludedRuleIds || [])].sort(),
-    rules.map(({ id, title, summary, pathPattern, contentPattern, body }) =>
-      [id, title, summary, pathPattern, contentPattern, body]).sort((a, b) => a[0].localeCompare(b[0])),
+    rules.map(({ id, title, summary, pathPattern, contentPattern, diagnosticPattern, body }) =>
+      [id, title, summary, pathPattern, contentPattern, diagnosticPattern || "", body]).sort((a, b) => a[0].localeCompare(b[0])),
   ]);
 }

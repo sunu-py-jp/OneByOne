@@ -216,6 +216,12 @@ func normalizeConfig(c model.Config) (model.Config, error) {
 	if c.AuthMode != "api_key" && c.AuthMode != "bearer" && !(c.Provider == "azure" && c.AuthMode == "oauth") {
 		return c, fmt.Errorf("認証方式が不正です")
 	}
+	if c.DiagnosticsOnly && c.DiagnosticsPath == "" {
+		return c, fmt.Errorf("診断があるファイルだけを対象にするには診断JSONLを取り込んでください")
+	}
+	if c.DiagnosticsSourceFile != "" && (c.DiagnosticsPath == "" || !filepath.IsLocal(filepath.FromSlash(c.DiagnosticsSourceFile)) || strings.ContainsAny(c.DiagnosticsSourceFile, "\\:\x00\r\n")) {
+		return c, fmt.Errorf("診断JSONLの元ファイルは対象フォルダ内の相対パスで指定してください")
+	}
 	c.ExcludedRuleIDs = normalizedWorkspaceRuleSelection(c)
 	return c, nil
 }
@@ -259,6 +265,15 @@ func (s *Service) SaveConfig(c model.Config) (model.State, error) {
 		c.QueuePath = old.QueuePath
 	} else if c.Root != old.Root && c.QueuePath == old.QueuePath {
 		c.QueuePath = ""
+	}
+	// Only ImportDiagnostics and ClearDiagnostics may change this app-owned
+	// reference; form saves cannot point into a different workspace or input.
+	c.DiagnosticsPath = old.DiagnosticsPath
+	c.DiagnosticsSourceFile = old.DiagnosticsSourceFile
+	if c.DiagnosticsOnly && !old.DiagnosticsOnly && c.DiagnosticsPath != "" {
+		if _, err := readDiagnosticsSummary(c.DiagnosticsPath); err != nil {
+			return s.Snapshot(), err
+		}
 	}
 	c, e := normalizeConfig(c)
 	if e != nil {
@@ -318,6 +333,9 @@ func (s *Service) load(path string) error {
 			c.Credential = connection.Credential
 			c.LLMConnectionID = connection.LLMConnectionID
 			c.ExcludedRuleIDs = append([]string(nil), connection.ExcludedRuleIDs...)
+			c.DiagnosticsPath = connection.DiagnosticsPath
+			c.DiagnosticsSourceFile = connection.DiagnosticsSourceFile
+			c.DiagnosticsOnly = connection.DiagnosticsOnly
 			c.Concurrency = connection.Concurrency
 			c.InputPricePerMillion = connection.InputPricePerMillion
 			c.CachedInputPricePerMillion = connection.CachedInputPricePerMillion
@@ -535,6 +553,7 @@ func (s *Service) Scan() (state model.State, err error) {
 			tasks[i].Excluded = p.Excluded
 			if p.InputHash == t.InputHash || hasWorktree || len(p.History) > 0 || p.Status == "done" || p.Status == "skipped" {
 				p.Rules = t.Rules
+				p.SourceDiagnostics = copySourceDiagnostics(t.SourceDiagnostics)
 				tasks[i] = p
 			}
 		}
@@ -557,6 +576,7 @@ func (s *Service) Scan() (state model.State, err error) {
 				previous.ExcludedBeforeScope = &wasExcluded
 			}
 			previous.Rules = []string{}
+			previous.SourceDiagnostics = nil
 			previous.Excluded = true
 			tasks = append(tasks, previous)
 		}
@@ -625,7 +645,7 @@ func (s *Service) Start(limit int) error {
 			return fmt.Errorf("実行するルールが選択されていません。実行設定でルールを選択してください")
 		}
 		if extractedHash == "" || fresh.Hash != extractedHash {
-			return fmt.Errorf("ルールが変更されています。対象抽出を再実行してください")
+			return fmt.Errorf("ルールまたは診断の設定・内容が変更されています。対象抽出を再実行してください")
 		}
 	}
 	s.mu.Lock()

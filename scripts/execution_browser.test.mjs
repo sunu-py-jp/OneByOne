@@ -27,6 +27,25 @@ const files = [task('src/a.js', 'pending', ['R002', 'R001']), task('src/deep/b.j
 const props = { tasks: files, rules: [rule('R001', true), rule('R002')], workspaceId: 'ws', root: '/project', selected: new Set(['src/a.js']), onSelection() {}, disabled: false };
 const render = extra => renderToStaticMarkup(createElement(TargetFilesPanel, { ...props, ...extra }));
 
+test('execution and review source panels include imported diagnostics for the active file', () => {
+  const sourceDiagnostics = [{ file: files[0].file, line: 12, code: 'TS2304', message: '名前が見つかりません', ruleIds: ['R002'] }];
+  for (const selectionEnabled of [true, false]) {
+    const html = render({ tasks: [{ ...files[0], sourceDiagnostics }, files[1]], selectionEnabled });
+    assert.match(html, /取り込んだ診断/);
+    assert.match(html, /src\/a\.js:12/);
+    assert.match(html, /TS2304/);
+    assert.match(html, /名前が見つかりません/);
+    assert.ok(html.indexOf('取り込んだ診断') > html.indexOf('task-content-header'));
+  }
+});
+
+test('rule previews include the diagnostic condition alongside path and content', () => {
+  const html = renderToStaticMarkup(createElement(RulePreviewPane, { rule: { ...rule('R002'), pathPattern: 'src/**', diagnosticPattern: 'TS2304|名前' }, onClose() {} }));
+  assert.match(html, /診断の条件/);
+  assert.match(html, /TS2304\|名前/);
+  assert.match(html, /パス＋内容＋診断のルール/);
+});
+
 test('execution list keeps selection and status while candidate rules appear only in the content header', () => {
   const html = render();
   assert.equal((html.match(/type="checkbox"/g) || []).length, 3); // select all, selected filter, one unfinished file

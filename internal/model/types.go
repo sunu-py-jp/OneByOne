@@ -10,6 +10,9 @@ type Config struct {
 	Provider                   string                                `json:"provider,omitempty"`
 	Root                       string                                `json:"root"`
 	RulesPath                  string                                `json:"rulesPath"`
+	DiagnosticsPath            string                                `json:"diagnosticsPath,omitempty"`
+	DiagnosticsSourceFile      string                                `json:"diagnosticsSourceFile,omitempty"`
+	DiagnosticsOnly            bool                                  `json:"diagnosticsOnly,omitempty"`
 	ExcludedRuleIDs            []string                              `json:"excludedRuleIds,omitempty"`
 	QueuePath                  string                                `json:"queuePath"`
 	RGPath                     string                                `json:"rgPath"`
@@ -25,22 +28,24 @@ type Config struct {
 }
 
 type RuleEdit struct {
-	ExpectedRevision string `json:"expectedRevision,omitempty"`
-	ID               string `json:"id"`
-	Name             string `json:"name"`
-	Description      string `json:"description"`
-	PathPattern      string `json:"pathPattern"`
-	ContentPattern   string `json:"contentPattern"`
-	Body             string `json:"body"`
+	DiagnosticPattern string `json:"diagnosticPattern,omitempty"`
+	ExpectedRevision  string `json:"expectedRevision,omitempty"`
+	ID                string `json:"id"`
+	Name              string `json:"name"`
+	Description       string `json:"description"`
+	PathPattern       string `json:"pathPattern"`
+	ContentPattern    string `json:"contentPattern"`
+	Body              string `json:"body"`
 }
 
 type RuleDefinition struct {
-	ID             string `json:"id" yaml:"id"`
-	Name           string `json:"name" yaml:"name"`
-	Description    string `json:"description" yaml:"description"`
-	PathPattern    string `json:"pathPattern" yaml:"path_pattern"`
-	ContentPattern string `json:"contentPattern" yaml:"content_pattern"`
-	Body           string `json:"body" yaml:"-"`
+	DiagnosticPattern string `json:"diagnosticPattern,omitempty" yaml:"diagnostic_pattern"`
+	ID                string `json:"id" yaml:"id"`
+	Name              string `json:"name" yaml:"name"`
+	Description       string `json:"description" yaml:"description"`
+	PathPattern       string `json:"pathPattern" yaml:"path_pattern"`
+	ContentPattern    string `json:"contentPattern" yaml:"content_pattern"`
+	Body              string `json:"body" yaml:"-"`
 }
 
 type RuleEditor struct {
@@ -52,15 +57,16 @@ type RuleEditor struct {
 }
 
 type Rule struct {
-	ID             string `json:"id"`
-	Title          string `json:"title"`
-	Summary        string `json:"summary"`
-	PathPattern    string `json:"pathPattern"`
-	ContentPattern string `json:"contentPattern"`
-	Body           string `json:"body"`
-	Always         bool   `json:"always"`
-	CandidateCount int    `json:"candidateCount"`
-	AppliedCount   int    `json:"appliedCount"`
+	DiagnosticPattern string `json:"diagnosticPattern,omitempty"`
+	ID                string `json:"id"`
+	Title             string `json:"title"`
+	Summary           string `json:"summary"`
+	PathPattern       string `json:"pathPattern"`
+	ContentPattern    string `json:"contentPattern"`
+	Body              string `json:"body"`
+	Always            bool   `json:"always"`
+	CandidateCount    int    `json:"candidateCount"`
+	AppliedCount      int    `json:"appliedCount"`
 }
 
 type Check struct {
@@ -80,26 +86,27 @@ type Usage struct {
 }
 
 type Attempt struct {
-	ID           string              `json:"id"`
-	ExecutionID  string              `json:"executionId,omitempty"`
-	Number       int                 `json:"number"`
-	StartedAt    string              `json:"startedAt"`
-	FinishedAt   string              `json:"finishedAt"`
-	Outcome      string              `json:"outcome"`
-	Partial      bool                `json:"partial,omitempty"`
-	Note         string              `json:"note"`
-	RulesApplied []string            `json:"rulesApplied"`
-	Checks       []Check             `json:"checks"`
-	Usage        Usage               `json:"usage"`
-	DiffPath     string              `json:"diffPath"`
-	Commit       string              `json:"commit"`
-	BaseCommit   string              `json:"baseCommit"`
-	CommitBase   string              `json:"commitBase,omitempty"`
-	InputHash    string              `json:"inputHash"`
-	OutputHash   string              `json:"outputHash"`
-	RepairPath   string              `json:"repairPath,omitempty"`
-	Reviews      []IndependentReview `json:"reviews,omitempty"`
-	Changes      []ChangeReportItem  `json:"changes,omitempty"`
+	SourceDiagnostics []SourceDiagnostic  `json:"sourceDiagnostics,omitempty"`
+	ID                string              `json:"id"`
+	ExecutionID       string              `json:"executionId,omitempty"`
+	Number            int                 `json:"number"`
+	StartedAt         string              `json:"startedAt"`
+	FinishedAt        string              `json:"finishedAt"`
+	Outcome           string              `json:"outcome"`
+	Partial           bool                `json:"partial,omitempty"`
+	Note              string              `json:"note"`
+	RulesApplied      []string            `json:"rulesApplied"`
+	Checks            []Check             `json:"checks"`
+	Usage             Usage               `json:"usage"`
+	DiffPath          string              `json:"diffPath"`
+	Commit            string              `json:"commit"`
+	BaseCommit        string              `json:"baseCommit"`
+	CommitBase        string              `json:"commitBase,omitempty"`
+	InputHash         string              `json:"inputHash"`
+	OutputHash        string              `json:"outputHash"`
+	RepairPath        string              `json:"repairPath,omitempty"`
+	Reviews           []IndependentReview `json:"reviews,omitempty"`
+	Changes           []ChangeReportItem  `json:"changes,omitempty"`
 }
 
 // AdoptedChanges identifies committed output, including a safe subset whose
@@ -109,20 +116,21 @@ func (a Attempt) AdoptedChanges() bool {
 }
 
 type Task struct {
-	CanDiscardChanges   bool            `json:"canDiscardChanges"`
-	Discards            []DiscardChange `json:"discards,omitempty"`
-	File                string          `json:"file"`
-	Excluded            bool            `json:"excluded,omitempty"`
-	ExcludedBeforeScope *bool           `json:"excludedBeforeScope,omitempty"`
-	Rules               []string        `json:"rules"`
-	Status              string          `json:"status"`
-	Attempts            int             `json:"attempts"`
-	RulesApplied        []string        `json:"rulesApplied"`
-	Note                string          `json:"note"`
-	InputHash           string          `json:"inputHash"`
-	UpdatedAt           string          `json:"updatedAt"`
-	History             []Attempt       `json:"history"`
-	ResumeRequested     bool            `json:"resumeRequested,omitempty"`
+	SourceDiagnostics   []SourceDiagnostic `json:"sourceDiagnostics,omitempty"`
+	CanDiscardChanges   bool               `json:"canDiscardChanges"`
+	Discards            []DiscardChange    `json:"discards,omitempty"`
+	File                string             `json:"file"`
+	Excluded            bool               `json:"excluded,omitempty"`
+	ExcludedBeforeScope *bool              `json:"excludedBeforeScope,omitempty"`
+	Rules               []string           `json:"rules"`
+	Status              string             `json:"status"`
+	Attempts            int                `json:"attempts"`
+	RulesApplied        []string           `json:"rulesApplied"`
+	Note                string             `json:"note"`
+	InputHash           string             `json:"inputHash"`
+	UpdatedAt           string             `json:"updatedAt"`
+	History             []Attempt          `json:"history"`
+	ResumeRequested     bool               `json:"resumeRequested,omitempty"`
 }
 
 // DiscardChange journals an explicit single-file return to the session baseline.
@@ -188,29 +196,30 @@ type LLMConnection struct {
 }
 
 type State struct {
-	ExecutionRuns           []ExecutionRun    `json:"executionRuns"`
-	LLMConnections          []LLMConnection   `json:"llmConnections,omitempty"`
-	SelectedLLMConnectionID string            `json:"selectedLLMConnectionId,omitempty"`
-	ReadOnly                bool              `json:"readOnly"`
-	WorkspaceLock           *WorkspaceLock    `json:"workspaceLock,omitempty"`
-	LLMSettingsPath         string            `json:"llmSettingsPath"`
-	Workspaces              []Workspace       `json:"workspaces"`
-	ActiveWorkspaceID       string            `json:"activeWorkspaceId"`
-	Config                  Config            `json:"config"`
-	Tasks                   []Task            `json:"tasks"`
-	Rules                   []Rule            `json:"rules"`
-	Logs                    []LogEntry        `json:"logs"`
-	Running                 bool              `json:"running"`
-	Phase                   string            `json:"phase"`
-	CurrentFile             string            `json:"currentFile"`
-	CurrentFiles            []string          `json:"currentFiles"`
-	FilePhases              map[string]string `json:"filePhases"`
-	Worktree                string            `json:"worktree"`
-	Branch                  string            `json:"branch"`
-	ScannedCount            int               `json:"scannedCount"`
-	ExcludedCount           int               `json:"excludedCount"`
-	Usage                   Usage             `json:"usage"`
-	LastError               string            `json:"lastError"`
+	Diagnostics             *DiagnosticSummary `json:"diagnostics,omitempty"`
+	ExecutionRuns           []ExecutionRun     `json:"executionRuns"`
+	LLMConnections          []LLMConnection    `json:"llmConnections,omitempty"`
+	SelectedLLMConnectionID string             `json:"selectedLLMConnectionId,omitempty"`
+	ReadOnly                bool               `json:"readOnly"`
+	WorkspaceLock           *WorkspaceLock     `json:"workspaceLock,omitempty"`
+	LLMSettingsPath         string             `json:"llmSettingsPath"`
+	Workspaces              []Workspace        `json:"workspaces"`
+	ActiveWorkspaceID       string             `json:"activeWorkspaceId"`
+	Config                  Config             `json:"config"`
+	Tasks                   []Task             `json:"tasks"`
+	Rules                   []Rule             `json:"rules"`
+	Logs                    []LogEntry         `json:"logs"`
+	Running                 bool               `json:"running"`
+	Phase                   string             `json:"phase"`
+	CurrentFile             string             `json:"currentFile"`
+	CurrentFiles            []string           `json:"currentFiles"`
+	FilePhases              map[string]string  `json:"filePhases"`
+	Worktree                string             `json:"worktree"`
+	Branch                  string             `json:"branch"`
+	ScannedCount            int                `json:"scannedCount"`
+	ExcludedCount           int                `json:"excludedCount"`
+	Usage                   Usage              `json:"usage"`
+	LastError               string             `json:"lastError"`
 }
 
 // ExecutionRun groups all file attempts started by one press of Execute.

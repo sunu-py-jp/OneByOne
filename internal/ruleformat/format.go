@@ -25,7 +25,7 @@ var (
 	decimalID = regexp.MustCompile(`^(0|[1-9][0-9]*)$`)
 )
 
-var frontMatterKeys = []string{"id", "name", "description", "path_pattern", "content_pattern"}
+var frontMatterKeys = []string{"id", "name", "description", "path_pattern", "content_pattern", "diagnostic_pattern"}
 
 const invalidIDMessage = "id は英数字で始まる64文字以内の英数字・ハイフン・アンダースコアで入力してください"
 
@@ -62,14 +62,19 @@ func Validate(d model.RuleDefinition) error {
 	if strings.TrimSpace(d.Description) == "" {
 		return fmt.Errorf("description を入力してください")
 	}
-	for _, v := range []string{d.Name, d.Description, d.PathPattern, d.ContentPattern, d.Body} {
+	for _, v := range []string{d.Name, d.Description, d.PathPattern, d.ContentPattern, d.DiagnosticPattern, d.Body} {
 		if !utf8.ValidString(v) || strings.ContainsRune(v, 0) {
 			return fmt.Errorf("ルールはNULを含まないUTF-8で入力してください")
 		}
 	}
-	for _, v := range []string{d.PathPattern, d.ContentPattern} {
+	for _, v := range []string{d.PathPattern, d.ContentPattern, d.DiagnosticPattern} {
 		if strings.ContainsAny(v, "\r\n\u0085  ") {
 			return fmt.Errorf("適用パターンは1行で入力してください")
+		}
+	}
+	if d.DiagnosticPattern != "" {
+		if _, err := regexp.Compile(d.DiagnosticPattern); err != nil {
+			return fmt.Errorf("diagnostic_pattern が不正です: %w", err)
 		}
 	}
 	data, _ := json.Marshal(d)
@@ -106,7 +111,7 @@ func parse(data []byte, strict bool) (map[string]*yaml.Node, string, error) {
 		return nil, "", fmt.Errorf("front matter を読み込めません: %w", err)
 	}
 	if len(node.Content) != 1 || node.Content[0].Kind != yaml.MappingNode {
-		return nil, "", fmt.Errorf("front matter はid・name・description・path_pattern・content_patternの項目で指定してください")
+		return nil, "", fmt.Errorf("front matter はid・name・description・path_pattern・content_pattern・diagnostic_patternの項目で指定してください")
 	}
 	known := map[string]bool{}
 	for _, key := range frontMatterKeys {
@@ -167,7 +172,7 @@ func Decode(data []byte) (model.RuleDefinition, error) {
 	for _, field := range []struct {
 		key  string
 		dest *string
-	}{{"name", &d.Name}, {"description", &d.Description}, {"path_pattern", &d.PathPattern}, {"content_pattern", &d.ContentPattern}} {
+	}{{"name", &d.Name}, {"description", &d.Description}, {"path_pattern", &d.PathPattern}, {"content_pattern", &d.ContentPattern}, {"diagnostic_pattern", &d.DiagnosticPattern}} {
 		v := fields[field.key]
 		if v == nil {
 			continue
@@ -183,6 +188,7 @@ func Decode(data []byte) (model.RuleDefinition, error) {
 	d.Description = strings.TrimSpace(d.Description)
 	d.PathPattern = strings.TrimSpace(d.PathPattern)
 	d.ContentPattern = strings.TrimSpace(d.ContentPattern)
+	d.DiagnosticPattern = strings.TrimSpace(d.DiagnosticPattern)
 	return d, Validate(d)
 }
 
@@ -210,6 +216,7 @@ func Encode(d model.RuleDefinition) ([]byte, error) {
 	d.Description = strings.TrimSpace(d.Description)
 	d.PathPattern = strings.TrimSpace(d.PathPattern)
 	d.ContentPattern = strings.TrimSpace(d.ContentPattern)
+	d.DiagnosticPattern = strings.TrimSpace(d.DiagnosticPattern)
 	idTag := "!!str"
 	if decimalID.MatchString(d.ID) {
 		idTag = "!!int"
@@ -219,6 +226,9 @@ func Encode(d model.RuleDefinition) ([]byte, error) {
 	out.WriteString("id: " + scalar(idTag, d.ID) + "\n")
 	for _, field := range []struct{ key, value string }{{"name", d.Name}, {"description", d.Description}, {"path_pattern", d.PathPattern}, {"content_pattern", d.ContentPattern}} {
 		out.WriteString(field.key + ": " + scalar("!!str", field.value) + "\n")
+	}
+	if d.DiagnosticPattern != "" {
+		out.WriteString("diagnostic_pattern: " + scalar("!!str", d.DiagnosticPattern) + "\n")
 	}
 	out.WriteString("---\n\n")
 	out.WriteString(d.Body)
@@ -233,7 +243,7 @@ func Revision(d model.RuleDefinition) string {
 	return hex.EncodeToString(sum[:])
 }
 func ToRule(id string, d model.RuleDefinition) model.Rule {
-	return model.Rule{ID: id, Title: d.Name, Summary: d.Description, PathPattern: d.PathPattern, ContentPattern: d.ContentPattern, Body: d.Body, Always: strings.TrimSpace(d.PathPattern) == "" && strings.TrimSpace(d.ContentPattern) == ""}
+	return model.Rule{ID: id, Title: d.Name, Summary: d.Description, PathPattern: d.PathPattern, ContentPattern: d.ContentPattern, DiagnosticPattern: d.DiagnosticPattern, Body: d.Body, Always: strings.TrimSpace(d.PathPattern) == "" && strings.TrimSpace(d.ContentPattern) == "" && strings.TrimSpace(d.DiagnosticPattern) == ""}
 }
 func Markdown(d model.RuleDefinition) string {
 	return "# " + d.Name + "\n\n" + d.Description + "\n\n" + d.Body

@@ -22,6 +22,7 @@ import { DeleteConfirmation } from "./DeleteConfirmation";
 import { Toast } from "./Toast";
 import { TargetFilesPanel } from "./TargetFilesPanel";
 import { ExecutionRuleSelection } from "./ExecutionRuleSelection";
+import { DiagnosticsSettings } from "./DiagnosticsSettings";
 import { ConcurrencyControl } from "./ConcurrencyControl";
 import { onlyConcurrencyChanged } from "./concurrency";
 import { TargetFolderBrowser } from "./TargetFolderBrowser";
@@ -374,7 +375,7 @@ export default function App() {
     const initial = currentRuleDraft || {
       id: selectedRule, name: ruleDetail?.title || "", expectedRevision: ruleEditor?.revision,
       description: ruleDetail?.summary || "", pathPattern: ruleDetail?.pathPattern || "",
-      contentPattern: ruleDetail?.contentPattern || "", body: ruleDetail?.body || "",
+      contentPattern: ruleDetail?.contentPattern || "", diagnosticPattern: ruleDetail?.diagnosticPattern || "", body: ruleDetail?.body || "",
     };
     setRuleDrafts((previous) => ({ ...previous, [ruleDraftKey]: { ...initial, [key]: value } }));
   };
@@ -393,7 +394,7 @@ export default function App() {
     const key = `${state.activeWorkspaceId}/__new`;
     if (!ruleDrafts[key]) {
       setRuleDrafts((previous) => ({ ...previous, [key]: {
-        id: nextRuleId(takenRuleIds), name: "", description: "", pathPattern: "", contentPattern: "",
+        id: nextRuleId(takenRuleIds), name: "", description: "", pathPattern: "", contentPattern: "", diagnosticPattern: "",
         body: "# 変更概要\n\n# 変換前\n\n# 変換後\n\n# 補足\n\n# 変換を保留にすべきケース\n\n# 修正後に残っていてはいけないパターン\n",
       } }));
     }
@@ -475,6 +476,10 @@ export default function App() {
     const path = await api.ExportRulePackage();
     if (path) setNotice({ type: "success", message: `ルールを保存しました: ${path}` });
   });
+  const exportRuleImportTemplate = () => perform("テンプレート書出し", async () => {
+    const path = await api.ExportRuleImportTemplate();
+    if (path) setNotice({ type: "success", message: `テンプレートを保存しました: ${path}。Excelで入力後、CSV UTF-8形式で保存して取り込んでください。` });
+  });
   async function save() {
     if (state.readOnly) throw new Error("このワークスペースは閲覧専用です。再度開いて編集権限を確認してください。");
     const next = await api.SaveConfig(draft);
@@ -495,8 +500,8 @@ export default function App() {
   }
   const filteredRules = state.rules.map((rule) => {
     const edit = ruleDrafts[`${state.activeWorkspaceId}/${rule.id}`];
-    return edit ? { ...rule, title: edit.name, summary: edit.description, pathPattern: edit.pathPattern, contentPattern: edit.contentPattern, body: edit.body, always: isCommonRule(edit) } : rule;
-  }).filter((rule) => `${rule.id} ${rule.title} ${rule.summary} ${rule.pathPattern} ${rule.contentPattern}`.toLowerCase().includes(ruleSearch.toLowerCase()));
+    return edit ? { ...rule, title: edit.name, summary: edit.description, pathPattern: edit.pathPattern, contentPattern: edit.contentPattern, diagnosticPattern: edit.diagnosticPattern, body: edit.body, always: isCommonRule(edit) } : rule;
+  }).filter((rule) => `${rule.id} ${rule.title} ${rule.summary} ${rule.pathPattern} ${rule.contentPattern} ${rule.diagnosticPattern || ""}`.toLowerCase().includes(ruleSearch.toLowerCase()));
   const invalidRuleIds = [...new Set(activeWorkspaceIssues.map((issue) => issue.ruleId).filter((id): id is string => Boolean(id)))]
     .filter((id) => !state.rules.some((rule) => rule.id === id));
   const filteredInvalidRuleIds = invalidRuleIds.filter((id) => id.toLowerCase().includes(ruleSearch.toLowerCase()));
@@ -906,6 +911,32 @@ export default function App() {
   }
   const refreshTargets = () => perform("対象ファイルを更新", async () => {
     await extractTargets(await flushWorkspaceChanges());
+  });
+  const importDiagnostics = () => perform("診断JSONLを取り込む", async () => {
+    await flushWorkspaceChanges();
+    const path = await api.ChooseDiagnosticsFile();
+    if (!path) return;
+    const next = await api.ImportDiagnostics(path);
+    acceptState(next, true);
+    setFileSelection(null);
+    setSelectionContext(null);
+    await extractTargets(next);
+  });
+  const clearDiagnostics = () => perform("診断JSONLを解除", async () => {
+    await flushWorkspaceChanges();
+    const next = await api.ClearDiagnostics();
+    acceptState(next, true);
+    setFileSelection(null);
+    setSelectionContext(null);
+    await extractTargets(next);
+  });
+  const changeDiagnosticsOnly = (only: boolean) => perform("診断の対象設定を更新", async () => {
+    const saved = await flushWorkspaceChanges();
+    const next = await api.SaveConfig({ ...saved.config, diagnosticsOnly: only });
+    acceptState(next, true);
+    setFileSelection(null);
+    setSelectionContext(null);
+    await extractTargets(next);
   });
   async function validateConfirmedSelection(): Promise<State> {
     if (!selectionIsCurrent) {
@@ -1468,6 +1499,10 @@ export default function App() {
                   <ExecutionRuleSelection rules={state.rules} excludedIds={draft.excludedRuleIds || []}
                     disabled={entryLocked || state.readOnly} onChange={ids => updateDraft("excludedRuleIds", ids)} />
                   </div>
+                  <DiagnosticsSettings diagnostics={state.diagnostics} path={draft.diagnosticsPath} only={Boolean(draft.diagnosticsOnly)}
+                    error={[...new Set(activeWorkspaceIssues.filter(issue => issue.section === "diagnostics" || issue.id === "diagnostics").map(issue => issue.message))].join("\n")}
+                    disabled={locked} disabledReason={state.running ? "実行中は診断を変更できません。" : busy ? "処理が終わるまでお待ちください。" : state.readOnly ? "このワークスペースは閲覧専用です。" : !usable ? "診断の取り込みはデスクトップアプリで利用できます。" : ""}
+                    onImport={importDiagnostics} onClear={clearDiagnostics} onOnlyChange={changeDiagnosticsOnly} />
                   {missingConnection && <div className="run-connection-note">
                     <Icon name="info" size={15} />
                     <span>{state.llmConnections.length ? selectedConnection ? "接続のモデル・認証情報を設定してください。" : "LLM接続を選択してください。" : "LLM接続を登録してください。"}</span>
@@ -1532,7 +1567,7 @@ export default function App() {
                           <button type="button" className="icon-button add-rule-button" aria-label="ルールを追加" title="ルールを追加" disabled={locked} onClick={beginNewRule}><Icon name="plus" size={17} /></button>
                           <RulePackageActions disabled={locked} exportDisabled={!state.rules.length && !hasRuleChanges}
                             disabledReason={busy ? "処理中です。完了までお待ちください。" : state.readOnly ? "このワークスペースは閲覧専用です。" : isPreview ? "画面プレビューではファイル操作はできません。" : undefined}
-                            onImport={beginPackageImport} onExport={exportRulePackage} />
+                            onImport={beginPackageImport} onExport={exportRulePackage} onExportTemplate={exportRuleImportTemplate} />
                         </div>
                       </div>
                       <div className="search-field">
@@ -1633,11 +1668,14 @@ export default function App() {
                                   aria-invalid={touchedRuleDrafts.has(ruleDraftKey) && !(currentRuleDraft?.description ?? ruleDetail?.summary ?? "").trim()}
                                   onBlur={() => touchRuleDraft()} onChange={e => changeRuleDraft("description", e.target.value)} placeholder="どのような変更をするルールか" />
                               </Field>
-                              <Field label="対象ファイル" hint="対象フォルダからの相対パスをglobで指定します。例: src/**/*.tsx。空欄なら全ファイル。内容の条件と両方指定した場合は、両方を満たすファイルに適用します。">
+                              <Field label="対象ファイル" hint="対象フォルダからの相対パスをglobで指定します。例: src/**/*.tsx。空欄なら全ファイル。内容・診断の条件も指定した場合は、指定したすべての条件を満たすファイルに適用します。">
                                 <input className="code-input" value={ruleValue("pathPattern")} disabled={locked || Boolean(ruleEditor?.readOnly)} onChange={e => changeRuleDraft("pathPattern", e.target.value)} spellCheck={false} placeholder="全ファイル" />
                               </Field>
                               <Field label="内容の条件" hint="ファイル内容に照合する正規表現です。空欄なら内容で絞り込みません。">
                                 <input className="code-input" value={ruleValue("contentPattern")} disabled={locked || Boolean(ruleEditor?.readOnly)} onChange={e => changeRuleDraft("contentPattern", e.target.value)} spellCheck={false} placeholder="絞り込みなし" />
+                              </Field>
+                              <Field label="診断の条件" className="rule-metadata-wide" hint="取り込んだ診断1件ごとの「code＋半角スペース＋message」に照合する正規表現です。例: TS2304|名前が見つかりません。GoのRE2構文で判定し、先読み・後読み・後方参照は使えません。空欄なら診断で絞り込みません。対象ファイル・内容の条件も指定した場合は、すべての条件を満たすファイルが候補になります。">
+                                <input className="code-input" value={ruleValue("diagnosticPattern")} disabled={locked || Boolean(ruleEditor?.readOnly)} onChange={e => changeRuleDraft("diagnosticPattern", e.target.value)} spellCheck={false} placeholder="絞り込みなし" />
                               </Field>
                             </div>
                             <RuleBodyEditor body={ruleValue("body")} readOnly={locked || Boolean(ruleEditor?.readOnly)} onChange={body => changeRuleDraft("body", body)} />

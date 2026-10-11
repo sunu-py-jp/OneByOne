@@ -252,8 +252,39 @@ test('preview bridge serves frozen runs while rejecting native execution and exp
     await assert.rejects(api.SignInLLMConnection('preview-azure'), /画面プレビュー/);
     await assert.rejects(api.SignOutLLMConnection('preview-azure'), /画面プレビュー/);
     assert.throws(() => api.CancelLLMSignIn(), /画面プレビュー/);
+    assert.throws(() => api.ChooseDiagnosticsFile(), /画面プレビュー/);
+    await assert.rejects(api.ImportDiagnostics('/tmp/errors.jsonl'), /画面プレビュー/);
+    await assert.rejects(api.ClearDiagnostics(), /画面プレビュー/);
   } finally {
     globalThis.window = originalWindow;
+  }
+});
+
+test('preview config saves preserve diagnostic snapshots and workspace changes do not leak imports', () => {
+  const original = structuredClone(preview.previewState);
+  const other = original.workspaces.find(workspace => workspace.id !== original.activeWorkspaceId && workspace.id !== 'framework-upgrade');
+  try {
+    preview.previewState.readOnly = false;
+    preview.previewState.diagnostics = { name: 'errors.jsonl', count: 1, fileCount: 1 };
+    const task = preview.previewState.tasks.find(item => item.history.length);
+    task.sourceDiagnostics = [{ file: task.file, code: 'E100', message: 'current import', ruleIds: ['R019'] }];
+    task.history[0].sourceDiagnostics = [{ file: task.file, line: 3, message: 'attempt import', ruleIds: ['R019'] }];
+    const state = preview.savePreviewConfig({ ...preview.previewState.config, diagnosticsPath: '/workspace/errors.jsonl' });
+    assert.deepEqual(state.tasks.find(item => item.file === task.file).sourceDiagnostics, task.sourceDiagnostics);
+    assert.deepEqual(state.tasks.find(item => item.file === task.file).history[0].sourceDiagnostics, task.history[0].sourceDiagnostics);
+    assert.equal(preview.selectPreviewWorkspace(other.id).diagnostics, undefined);
+    const restored = preview.selectPreviewWorkspace(original.activeWorkspaceId);
+    assert.deepEqual(restored.diagnostics, { name: 'errors.jsonl', count: 1, fileCount: 1 });
+    assert.equal(restored.config.diagnosticsPath, '/workspace/errors.jsonl');
+    assert.equal(restored.tasks.find(item => item.file === task.file).history[0].sourceDiagnostics[0].message, 'attempt import');
+    const created = preview.createPreviewWorkspace('No imported diagnostics', '/workspace/new-project');
+    assert.equal(created.diagnostics, undefined);
+    assert.equal(created.config.diagnosticsPath, '');
+    assert.equal(created.config.diagnosticsOnly, false);
+    preview.deletePreviewWorkspace(created.activeWorkspaceId);
+  } finally {
+    preview.selectPreviewWorkspace(original.activeWorkspaceId);
+    Object.assign(preview.previewState, original);
   }
 });
 

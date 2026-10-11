@@ -23,12 +23,39 @@ func TestMarkdownRoundTripPreservesBodyAndPattern(t *testing.T) {
 	if !strings.Contains(Markdown(d), d.Description) || !strings.Contains(Markdown(d), d.Body) {
 		t.Fatal("LLM did not receive description/body")
 	}
-	for _, change := range []func(*model.RuleDefinition){func(v *model.RuleDefinition) { v.ID += "0" }, func(v *model.RuleDefinition) { v.Name += "x" }, func(v *model.RuleDefinition) { v.Description += "x" }, func(v *model.RuleDefinition) { v.PathPattern += "x" }, func(v *model.RuleDefinition) { v.ContentPattern += "x" }, func(v *model.RuleDefinition) { v.Body += "x" }} {
+	for _, change := range []func(*model.RuleDefinition){func(v *model.RuleDefinition) { v.ID += "0" }, func(v *model.RuleDefinition) { v.Name += "x" }, func(v *model.RuleDefinition) { v.Description += "x" }, func(v *model.RuleDefinition) { v.PathPattern += "x" }, func(v *model.RuleDefinition) { v.ContentPattern += "x" }, func(v *model.RuleDefinition) { v.DiagnosticPattern += "x" }, func(v *model.RuleDefinition) { v.Body += "x" }} {
 		next := d
 		change(&next)
 		if Revision(d) == Revision(next) {
 			t.Fatal("revision missed field")
 		}
+	}
+}
+
+func TestDiagnosticPatternRoundTripAndValidation(t *testing.T) {
+	d := fixtureDefinition()
+	d.PathPattern, d.ContentPattern = "", ""
+	d.DiagnosticPattern = `^CS1061\b.*Legacy`
+	b, err := Encode(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := Decode(b)
+	if err != nil || !reflect.DeepEqual(d, got) {
+		t.Fatalf("diagnostic pattern did not round trip: %+v %v", got, err)
+	}
+	rule := ToRule(d.ID, got)
+	if rule.Always || rule.DiagnosticPattern != d.DiagnosticPattern {
+		t.Fatalf("diagnostic rule became common: %+v", rule)
+	}
+	for _, pattern := range []string{"[", "(?=lookahead)", "a\nb", "a\x00b"} {
+		d.DiagnosticPattern = pattern
+		if _, err := Encode(d); err == nil {
+			t.Fatalf("accepted invalid diagnostic pattern %q", pattern)
+		}
+	}
+	if _, err := Decode([]byte("---\nid: 1\nname: rule\ndescription: test\ndiagnostic_pattern: 123\n---\n")); err == nil {
+		t.Fatal("accepted a non-string diagnostic pattern")
 	}
 }
 func TestEncodedFrontMatterStartsWithReadableOneLineID(t *testing.T) {

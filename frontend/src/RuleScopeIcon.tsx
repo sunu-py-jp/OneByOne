@@ -4,10 +4,13 @@ import { Icon, type IconName } from "./icons";
 import { ruleScope, ruleScopeLabels, type RuleScope } from "./rule-scope";
 import "./rule-scope.css";
 
-const icons: Record<RuleScope, IconName> = { common: "asterisk", path: "folder", content: "file", both: "cube" };
+const icons: Record<RuleScope, IconName> = {
+  common: "asterisk", path: "folder", content: "file", both: "cube",
+  diagnostic: "warning", "path-diagnostic": "warning", "content-diagnostic": "warning", "both-diagnostic": "warning",
+};
 
 /** Shows the pattern state at a glance; its label appears as a chip on hover. */
-export function RuleScopeIcon({ rule, size = 14 }: { rule: { pathPattern?: string; contentPattern?: string }; size?: number }) {
+export function RuleScopeIcon({ rule, size = 14 }: { rule: { pathPattern?: string; contentPattern?: string; diagnosticPattern?: string }; size?: number }) {
   const scope = ruleScope(rule);
   const label = ruleScopeLabels[scope];
   const anchor = useRef<HTMLSpanElement>(null);

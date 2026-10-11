@@ -29,6 +29,7 @@ type Input struct {
 	SystemPrompt         string
 	File                 string
 	Content              string
+	SourceDiagnostics    []model.SourceDiagnostic
 	CandidateRules       []string
 	BaseHash             string
 	Rules                []model.Rule

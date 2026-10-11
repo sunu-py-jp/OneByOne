@@ -90,11 +90,13 @@ func (s *reviewRecoveryState) manifest(in ReviewInput, paged bool, feedback stri
 	if paged {
 		payload["sources"] = map[string]any{"beforeBytes": len(in.Before), "afterBytes": len(in.After)}
 		payload["ruleCount"], payload["holdCount"] = len(in.Rules), len(in.Holds)
+		payload["sourceDiagnosticCount"] = len(in.SourceDiagnostics)
 		payload["savedAssessmentCount"], payload["savedIssueCount"], payload["savedHoldCount"] = len(s.assessments), len(s.issues), len(s.holds)
 		payload["allSourcesAndRulesRead"] = s.completeRead(in)
-		payload["instructions"] = "Read the rule catalog and declared holds with read_review_catalog, saved findings with read_review_state, then the exact sources/rules through their read tools. Every tool is paged; continue until complete."
+		payload["instructions"] = "Read the rule catalog, imported diagnostics and declared holds with read_review_catalog, saved findings with read_review_state, then the exact sources/rules through their read tools. Every tool is paged; continue until complete."
 	} else {
 		payload["before"], payload["after"], payload["rules"], payload["holds"], payload["savedReview"] = in.Before, in.After, in.Rules, in.Holds, s.result(in)
+		payload["sourceDiagnostics"] = in.SourceDiagnostics
 	}
 	return payload
 }
@@ -103,7 +105,7 @@ func reviewCatalogText(in ReviewInput) string {
 	for _, r := range in.Rules {
 		catalog = append(catalog, map[string]any{"id": r.ID, "title": r.Title, "always": r.Always, "bytes": len(r.Body)})
 	}
-	return string(raw(map[string]any{"rules": catalog, "holds": in.Holds}))
+	return string(raw(map[string]any{"rules": catalog, "holds": in.Holds, "sourceDiagnostics": in.SourceDiagnostics}))
 }
 func (s *reviewRecoveryState) markAllRead(in ReviewInput) {
 	s.read["catalog"] = []reviewByteRange{{0, len(reviewCatalogText(in))}}
@@ -126,7 +128,7 @@ func coveredReviewBytes(ranges []reviewByteRange, total int) bool {
 	return end >= total
 }
 func (s *reviewRecoveryState) completeRead(in ReviewInput) bool {
-	if len(in.Holds) > 0 && !coveredReviewBytes(s.read["catalog"], len(reviewCatalogText(in))) {
+	if (len(in.Holds) > 0 || len(in.SourceDiagnostics) > 0) && !coveredReviewBytes(s.read["catalog"], len(reviewCatalogText(in))) {
 		return false
 	}
 	if !coveredReviewBytes(s.read["before"], len(in.Before)) || !coveredReviewBytes(s.read["after"], len(in.After)) {
@@ -347,7 +349,7 @@ func reviewRecoveryTools() []map[string]any {
 	issues := schema["issues"].(map[string]any)["items"]
 	record := objectSchema(map[string]any{"assessments": schema["assessments"], "issues": map[string]any{"type": "array", "items": objectSchema(map[string]any{"id": text, "issue": issues}, "id", "issue")}, "holdAssessments": schema["holdAssessments"], "removeIssueIds": map[string]any{"type": "array", "items": text}}, "assessments", "issues", "holdAssessments", "removeIssueIds")
 	return []map[string]any{
-		{"type": "function", "name": "read_review_catalog", "description": "Read all supplied rule identities and declared human holds as paged JSON.", "strict": true, "parameters": objectSchema(map[string]any{"offset": offset}, "offset")},
+		{"type": "function", "name": "read_review_catalog", "description": "Read all supplied rule identities, imported source diagnostics and declared human holds as paged JSON.", "strict": true, "parameters": objectSchema(map[string]any{"offset": offset}, "offset")},
 		{"type": "function", "name": "read_review_state", "description": "Read saved findings, stable issue IDs and source-read coverage as paged JSON.", "strict": true, "parameters": objectSchema(map[string]any{"offset": offset}, "offset")},
 		{"type": "function", "name": "read_review_source", "description": "Read the complete before or after source by UTF-8 byte pages. Continue using nextOffset until complete.", "strict": true, "parameters": objectSchema(map[string]any{"source": map[string]any{"type": "string", "enum": []string{"before", "after"}}, "offset": offset}, "source", "offset")},
 		{"type": "function", "name": "read_review_rule", "description": "Read a supplied rule body by UTF-8 byte pages.", "strict": true, "parameters": objectSchema(map[string]any{"ruleId": text, "offset": offset}, "ruleId", "offset")},

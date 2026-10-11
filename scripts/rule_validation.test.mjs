@@ -39,7 +39,20 @@ test('pattern state distinguishes path, content, both and common rules', () => {
   assert.equal(ruleScope({ pathPattern: 'src/**/*.tsx', contentPattern: ' ' }), 'path');
   assert.equal(ruleScope({ pathPattern: '', contentPattern: '\\bStore\\b' }), 'content');
   assert.equal(ruleScope({ pathPattern: '**/*.js', contentPattern: 'save\\(' }), 'both');
-  assert.deepEqual(ruleScopeLabels, { common: '共通', path: 'パス', content: '内容', both: 'パス＋内容' });
+  for (const [scope, label] of Object.entries({ common: '共通', path: 'パス', content: '内容', both: 'パス＋内容' })) assert.equal(ruleScopeLabels[scope], label);
   assert.equal(isCommonRule({ pathPattern: '', contentPattern: '' }), true);
   assert.equal(isCommonRule({ pathPattern: 'src/**', contentPattern: '' }), false);
+});
+
+test('a diagnostic condition prevents common scope and preserves combined conditions', () => {
+  for (const [pathPattern, contentPattern, scope, label] of [
+    ['', '', 'diagnostic', '診断'], ['src/**', '', 'path-diagnostic', 'パス＋診断'],
+    ['', 'save', 'content-diagnostic', '内容＋診断'], ['src/**', 'save', 'both-diagnostic', 'パス＋内容＋診断'],
+  ]) {
+    const rule = { pathPattern, contentPattern, diagnosticPattern: 'TS2304' };
+    assert.equal(ruleScope(rule), scope);
+    assert.equal(ruleScopeLabels[scope], label);
+    assert.equal(isCommonRule(rule), false);
+  }
+  assert.equal(isCommonRule({ pathPattern: '', contentPattern: '', diagnosticPattern: '  ' }), true);
 });

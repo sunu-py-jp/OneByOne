@@ -224,7 +224,28 @@ export namespace model {
 	        this.durationMs = source["durationMs"];
 	    }
 	}
+	export class SourceDiagnostic {
+	    file: string;
+	    message: string;
+	    line?: number;
+	    code?: string;
+	    ruleIds?: string[];
+
+	    static createFrom(source: any = {}) {
+	        return new SourceDiagnostic(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.file = source["file"];
+	        this.message = source["message"];
+	        this.line = source["line"];
+	        this.code = source["code"];
+	        this.ruleIds = source["ruleIds"];
+	    }
+	}
 	export class Attempt {
+	    sourceDiagnostics?: SourceDiagnostic[];
 	    id: string;
 	    executionId?: string;
 	    number: number;
@@ -252,6 +273,7 @@ export namespace model {
 
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sourceDiagnostics = this.convertValues(source["sourceDiagnostics"], SourceDiagnostic);
 	        this.id = source["id"];
 	        this.executionId = source["executionId"];
 	        this.number = source["number"];
@@ -300,6 +322,9 @@ export namespace model {
 	    provider?: string;
 	    root: string;
 	    rulesPath: string;
+	    diagnosticsPath?: string;
+	    diagnosticsSourceFile?: string;
+	    diagnosticsOnly?: boolean;
 	    excludedRuleIds?: string[];
 	    queuePath: string;
 	    rgPath: string;
@@ -323,6 +348,9 @@ export namespace model {
 	        this.provider = source["provider"];
 	        this.root = source["root"];
 	        this.rulesPath = source["rulesPath"];
+	        this.diagnosticsPath = source["diagnosticsPath"];
+	        this.diagnosticsSourceFile = source["diagnosticsSourceFile"];
+	        this.diagnosticsOnly = source["diagnosticsOnly"];
 	        this.excludedRuleIds = source["excludedRuleIds"];
 	        this.queuePath = source["queuePath"];
 	        this.rgPath = source["rgPath"];
@@ -335,6 +363,22 @@ export namespace model {
 	        this.inputPricePerMillion = source["inputPricePerMillion"];
 	        this.cachedInputPricePerMillion = source["cachedInputPricePerMillion"];
 	        this.outputPricePerMillion = source["outputPricePerMillion"];
+	    }
+	}
+	export class DiagnosticSummary {
+	    name: string;
+	    count: number;
+	    fileCount: number;
+
+	    static createFrom(source: any = {}) {
+	        return new DiagnosticSummary(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.count = source["count"];
+	        this.fileCount = source["fileCount"];
 	    }
 	}
 	export class DiscardChange {
@@ -408,6 +452,7 @@ export namespace model {
 	    }
 	}
 	export class Rule {
+	    diagnosticPattern?: string;
 	    id: string;
 	    title: string;
 	    summary: string;
@@ -424,6 +469,7 @@ export namespace model {
 
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.diagnosticPattern = source["diagnosticPattern"];
 	        this.id = source["id"];
 	        this.title = source["title"];
 	        this.summary = source["summary"];
@@ -436,6 +482,7 @@ export namespace model {
 	    }
 	}
 	export class Task {
+	    sourceDiagnostics?: SourceDiagnostic[];
 	    canDiscardChanges: boolean;
 	    discards?: DiscardChange[];
 	    file: string;
@@ -457,6 +504,7 @@ export namespace model {
 
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sourceDiagnostics = this.convertValues(source["sourceDiagnostics"], SourceDiagnostic);
 	        this.canDiscardChanges = source["canDiscardChanges"];
 	        this.discards = this.convertValues(source["discards"], DiscardChange);
 	        this.file = source["file"];
@@ -600,6 +648,7 @@ export namespace model {
 	    }
 	}
 	export class State {
+	    diagnostics?: DiagnosticSummary;
 	    executionRuns: ExecutionRun[];
 	    llmConnections?: LLMConnection[];
 	    selectedLLMConnectionId?: string;
@@ -630,6 +679,7 @@ export namespace model {
 
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.diagnostics = this.convertValues(source["diagnostics"], DiagnosticSummary);
 	        this.executionRuns = this.convertValues(source["executionRuns"], ExecutionRun);
 	        this.llmConnections = this.convertValues(source["llmConnections"], LLMConnection);
 	        this.selectedLLMConnectionId = source["selectedLLMConnectionId"];
@@ -897,6 +947,7 @@ export namespace model {
 
 
 	export class RuleEdit {
+	    diagnosticPattern?: string;
 	    expectedRevision?: string;
 	    id: string;
 	    name: string;
@@ -911,6 +962,7 @@ export namespace model {
 
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.diagnosticPattern = source["diagnosticPattern"];
 	        this.expectedRevision = source["expectedRevision"];
 	        this.id = source["id"];
 	        this.name = source["name"];
@@ -958,6 +1010,7 @@ export namespace model {
 		    return a;
 		}
 	}
+
 
 	export class TargetFile {
 	    file: string;

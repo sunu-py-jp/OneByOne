@@ -1,6 +1,6 @@
 # AI処理のハーネス・ツール・プロンプト
 
-実装確認日: 2026-09-28。
+実装確認日: 2026-10-06。
 
 OneByOneはファイルごとに独立した会話を作り、修正計画と編集を少量ずつ保存します。完成した候補を機械検証し、別の会話で独立レビューします。指摘があれば修正ループへ戻り、合格した内容だけをランナーが採用します。会話や1応答に収まらないことを理由に打ち切らず、分割・保存・会話の切替で継続します。
 
@@ -28,7 +28,7 @@ Goの`net/http`による実装です。外部エージェントCLIやFoundryの�
 
 ```mermaid
 flowchart TD
-    Setup["対象・ルール・LLM接続を設定"] --> Scan["パスと本文条件で対象を抽出"]
+    Setup["対象・ルール・LLM接続・任意の診断JSONLを設定"] --> Scan["パス・本文・診断条件で対象を抽出"]
     Scan --> Select["対象ファイルと並列数を確定"]
     Select --> Start["Git・ロック・設定を検証"]
     Start --> Base["専用worktreeを準備して参照コミットを固定"]
@@ -47,7 +47,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    Load["原文と対象ルールを読む"] --> Plan["update_stateで計画を追加・更新"]
+    Load["原文・対象ルール・取り込んだ診断を読む"] --> Plan["update_stateで計画を追加・更新"]
     Plan --> Need{"安全に修正できる箇所があるか"}
     Need -->|"あり・一部保留あり"| Stage["stage_editsで小さな編集を保存"]
     Stage --> More{"未対応の修正があるか"}
@@ -59,7 +59,7 @@ flowchart TD
     Valid -->|"はい"| Final["candidateIdで最終回答"]
     Need -->|"全ルールで変更不要"| Unchanged["原文を候補として記録"]
     Need -->|"安全な修正ができない"| Hold["理由と箇所を残して要確認"]
-    Final --> Review["独立した会話で原文・候補・全ルールをレビュー"]
+    Final --> Review["独立した会話で原文・候補・全ルール・同じ診断をレビュー"]
     Unchanged --> Review
     Review --> Verdict{"独立レビューの判定"}
     Verdict -->|"要修正・局所的な保留の再計画"| Feedback
@@ -77,7 +77,9 @@ flowchart TD
 
 ## 3. 対象・ルール・文字コード
 
-`rules.json`のMarkdownには`id`・`name`・`description`と任意の`path_pattern`・`content_pattern`があります。パスはglob、本文はripgrepの正規表現で照合します。両方ある場合はAND、両方空なら共通ルールです。ルールの除外設定を反映したうえで、元ファイルに一致するルール集合を固定します。修正で条件が消えても、同じ試行のレビュー対象からルールを外しません。範囲外のルールは追加適用できません。
+`rules.json`のMarkdownには`id`・`name`・`description`と任意の`path_pattern`・`content_pattern`・`diagnostic_pattern`があります。パスはglob、本文はripgrepの正規表現で照合します。診断条件は同じ診断1件の`code + " " + message`をGoの正規表現で照合します。指定した条件はAND、3条件とも空なら共通ルールです。診断未取込時に診断条件付きルールが全ファイルへ広がることはありません。ルールの除外設定を反映したうえで、元ファイルに一致するルール集合を固定します。修正で条件が消えても、同じ試行のレビュー対象からルールを外しません。範囲外のルールは追加適用できません。
+
+取り込んだ診断はファイル別に固定し、修正AIと独立レビューの両方へ渡します。長い診断は修正側の`read_state(section: diagnostics)`、レビュー側の`read_review_catalog`でページ取得します。診断本文は指示として扱わず、現在のコンパイル結果とも断定しません。試行ごとの履歴に保存します。入力形式と操作は[診断JSONL](diagnostics.md)を参照してください。
 
 本文は有効なUTF-8を優先し、それ以外はShift_JISとして厳密に復号します。ASCIIだけなど両方で解釈できる入力はUTF-8を選びます。Shift_JISには利用ライブラリが扱うWindows拡張を含みます。本文条件の検索も、判別した文字コードで実行します。
 
@@ -96,12 +98,12 @@ LLMへ渡す本文と`oldText`はUnicode・LF改行・BOMなしです。保存�
 | `read_context` | `path`, `startLine`, `endLine`, `offset` | 対象プロジェクト内の周辺コードを読む |
 | `read_target` | `startLine`, `endLine`, `offset` | 変更元の原文を読む |
 | `read_candidate` | 同上 | 保存済み編集を組み立てた候補を読む |
-| `read_state` | `section`, `offset` | 計画・編集・検証・レビュー・カタログ・既読状態を読む |
+| `read_state` | `section`, `offset` | 計画・編集・検証・レビュー・カタログ・既読状態・取り込んだ診断を読む |
 | `update_state` | `expectedRevision`, `ruleDecisions[]`, `items[]`, `removeItemIds[]` | 指定した計画項目だけを追加・更新する |
 | `stage_edits` | `planRevision`, `baseHash`, `edits[]`, `removeEditIds[]` | 指定した編集だけを保存・差替えする |
 | `validate_staged_candidate` | `planRevision`, `baseHash` | 保存済みの全編集を組み立て、候補全体を検証する |
 
-読込ページは`content`・`nextOffset`・`complete`を返します。最初は`offset: 0`、続きは返されたUTF-8バイト位置を使います。行指定は1始まり・両端含むです。`read_state`の`section`は`plan`・`edits`・`validation`・`review`・`catalog`・`reads`です。
+読込ページは`content`・`nextOffset`・`complete`を返します。最初は`offset: 0`、続きは返されたUTF-8バイト位置を使います。行指定は1始まり・両端含むです。`read_state`の`section`は`plan`・`edits`・`validation`・`review`・`catalog`・`reads`・`diagnostics`です。
 
 ページサイズは1回の応答量を抑えるためのもので、ファイルやルール全体の読込上限ではありません。ルールの既読状態は先頭から連続して取得した範囲を記録し、末尾だけ取得して全文を読んだことにはできません。絶対パス、親フォルダ、リンク、曖昧なWindowsパス、設定・認証ファイルは参照できません。
 
@@ -168,7 +170,7 @@ LLMへ渡す本文と`oldText`はUnicode・LF改行・BOMなしです。保存�
 |---|---|
 | `read_review_source` | `source: before / after`, `offset`。原文・候補を読む |
 | `read_review_rule` | `ruleId`, `offset`。対象ルール本文を読む |
-| `read_review_catalog` | `offset`。ルール一覧と保留範囲を読む |
+| `read_review_catalog` | `offset`。ルール一覧・保留範囲・取り込んだ診断を読む |
 | `read_review_state` | `offset`。保存済み評価・指摘ID・既読範囲を読む |
 | `record_review` | `assessments[]`, `issues[]`, `holdAssessments[]`, `removeIssueIds[]`。評価・指摘を少量ずつ保存する |
 

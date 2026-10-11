@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"onebyone/internal/catalog"
+	"onebyone/internal/diagnostics"
 	"onebyone/internal/model"
 )
 
@@ -51,6 +52,10 @@ func (s *Service) setWorkspaceIssueLocked(id, source string, err error, page, fi
 	var diagnostic *catalog.DiagnosticError
 	if errors.As(err, &diagnostic) {
 		issue.Page, issue.RuleID, issue.Section, issue.File = "rules", diagnostic.RuleID, diagnostic.Section, ""
+	}
+	var inputError *diagnostics.InputError
+	if errors.As(err, &inputError) {
+		issue.Page, issue.RuleID, issue.Section, issue.File = "run", "", "diagnostics", ""
 	}
 	s.workspaceIssues[id][source] = issue
 }
@@ -136,13 +141,20 @@ func (s *Service) inspectWorkspaceDiagnostics(id string, c model.Config, updateR
 	_, targetErr := s.ValidateTargetFolder(c.Root)
 	probe := &Service{state: emptyState(c)}
 	queueErr := probe.restoreWorkspaceQueue(c)
-	cat, catalogErr := passiveCatalog(c)
+	summary, diagnosticsErr := readDiagnosticsSummary(c.DiagnosticsPath)
+	catalogConfig := c
+	if diagnosticsErr != nil {
+		catalogConfig.DiagnosticsPath, catalogConfig.DiagnosticsOnly = "", false
+	}
+	cat, catalogErr := passiveCatalog(catalogConfig)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.setWorkspaceIssueLocked(id, "target", targetErr, "target", "")
 	s.setWorkspaceIssueLocked(id, "queue", queueErr, "results", "")
 	s.setWorkspaceIssueLocked(id, "catalog", catalogErr, "rules", "")
+	s.setWorkspaceIssueLocked(id, "diagnostics", diagnosticsErr, "run", "")
 	if updateRules && id == s.state.ActiveWorkspaceID {
+		s.state.Diagnostics = summary
 		s.cat = cat
 		s.state.Rules = []model.Rule{}
 		if cat != nil {

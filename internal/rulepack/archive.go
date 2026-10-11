@@ -204,6 +204,10 @@ func Write(path string, p *Package) error {
 	if err != nil {
 		return err
 	}
+	return writeRegularFile(path, b)
+}
+
+func writeRegularFile(path string, data []byte) error {
 	parent, err := openDirectory(filepath.Dir(path))
 	if err != nil {
 		return err
@@ -216,7 +220,7 @@ func Write(path string, p *Package) error {
 	} else if !os.IsNotExist(statErr) {
 		return statErr
 	}
-	return store.WriteFile(path, b, 0600)
+	return store.WriteFile(path, data, 0600)
 }
 
 // CSV metadata columns may occur in any order. Remaining columns become H1 sections.
@@ -241,7 +245,7 @@ func DecodeCSV(data []byte) (*Package, error) {
 		indexes[h] = i
 		headers[i] = h
 	}
-	meta := map[string]bool{"id": true, "name": true, "description": true, "path_pattern": true, "content_pattern": true}
+	meta := map[string]bool{"id": true, "name": true, "description": true, "path_pattern": true, "content_pattern": true, "diagnostic_pattern": true}
 	for _, key := range []string{"id", "name", "description", "path_pattern", "content_pattern"} {
 		if _, ok := indexes[key]; !ok {
 			return nil, fmt.Errorf("CSVに必須カラム %s がありません", key)
@@ -264,6 +268,9 @@ func DecodeCSV(data []byte) (*Package, error) {
 			return nil, fmt.Errorf("ルールは%d件以内にしてください", MaxFiles)
 		}
 		d := model.RuleDefinition{ID: row[indexes["id"]], Name: row[indexes["name"]], Description: row[indexes["description"]], PathPattern: row[indexes["path_pattern"]], ContentPattern: row[indexes["content_pattern"]]}
+		if index, ok := indexes["diagnostic_pattern"]; ok {
+			d.DiagnosticPattern = row[index]
+		}
 		var body strings.Builder
 		for i, h := range headers {
 			if !meta[h] && strings.TrimSpace(row[i]) != "" {
