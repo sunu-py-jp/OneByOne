@@ -133,6 +133,7 @@ func commandFlags(name string, args []string, configure func(*flag.FlagSet)) err
 }
 
 var editableSettings = []string{
+	"mode", "solution",
 	"excludedRuleIds", "concurrency", "diagnosticsOnly",
 	"inputPricePerMillion", "cachedInputPricePerMillion", "outputPricePerMillion",
 }
@@ -144,6 +145,12 @@ func publicSettings(cfg model.Config) map[string]json.RawMessage {
 	result := make(map[string]json.RawMessage, len(editableSettings))
 	for _, key := range editableSettings {
 		result[key] = all[key]
+		if key == "mode" && (result[key] == nil || string(result[key]) == `""`) {
+			result[key] = json.RawMessage(`"files"`)
+		}
+		if key == "solution" && (result[key] == nil || string(result[key]) == "null") {
+			result[key], _ = json.Marshal(model.DefaultSolutionSettings())
+		}
 		if key == "excludedRuleIds" && result[key] == nil {
 			result[key] = json.RawMessage("[]")
 		}
@@ -203,6 +210,26 @@ func executeSettingsCommand(ctx context.Context, s *engine.Service, args []strin
 			if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 				return nil, errors.New("設定の null は使用できません。並列数を既定値に戻す場合は0、配列の解除は [] を指定してください")
 			}
+			if key == "solution" {
+				var fields map[string]json.RawMessage
+				if err := json.Unmarshal(raw, &fields); err != nil {
+					return nil, errors.New("solution はビルド設定のオブジェクトで指定してください")
+				}
+				for _, value := range fields {
+					if bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+						return nil, errors.New("solution の設定項目に null は使用できません")
+					}
+				}
+			}
+		}
+		// Decode nested patches into a private copy with defaults. In particular,
+		// an omitted maxIterations must not accidentally become unlimited (zero).
+		if _, ok := patch["solution"]; ok {
+			settings := model.DefaultSolutionSettings()
+			if cfg.Solution != nil {
+				settings = *cfg.Solution
+			}
+			cfg.Solution = &settings
 		}
 		data, _ := json.Marshal(patch)
 		decoder := json.NewDecoder(bytes.NewReader(data))

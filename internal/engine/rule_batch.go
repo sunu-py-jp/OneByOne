@@ -10,6 +10,7 @@ import (
 	"onebyone/internal/model"
 	"onebyone/internal/ruleformat"
 	"onebyone/internal/rulepack"
+	"onebyone/internal/solutionrules"
 	"onebyone/internal/store"
 )
 
@@ -76,6 +77,15 @@ func (s *Service) saveRules(edits []model.RuleEdit) (model.State, error) {
 	ids := make([]string, 0, len(edits))
 	for _, edit := range edits {
 		edit.ID = strings.TrimSpace(edit.ID)
+		if cfg.SolutionMode() {
+			if edit.PathPattern != "" || edit.ContentPattern != "" || edit.DiagnosticPattern != "" {
+				return s.Snapshot(), ruleBatchError(edit.ID, fmt.Errorf("ソリューションルールには抽出条件を指定できません"))
+			}
+			if err := solutionrules.Validate([]solutionrules.Rule{{ID: edit.ID, Description: edit.Description, Content: edit.Body}}); err != nil {
+				return s.Snapshot(), ruleBatchError(edit.ID, err)
+			}
+			edit.Name = edit.ID
+		}
 		if edit.ID == "" && edit.ExpectedRevision == "" {
 			edit.ID = nextRuleID(taken)
 			taken[strings.ToLower(edit.ID)] = true

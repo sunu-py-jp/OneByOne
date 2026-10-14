@@ -113,6 +113,7 @@ func (a *App) SignOutLLMConnection(id string) (model.State, error) {
 }
 func (a *App) SaveConfig(c model.Config) (model.State, error) { return a.service.SaveConfig(c) }
 func (a *App) Scan() (model.State, error)                     { return a.service.Scan() }
+func (a *App) DiscoverSolutions() ([]string, error)           { return a.service.DiscoverSolutions() }
 func (a *App) Start(limit int) error                          { return a.service.Start(limit) }
 func (a *App) Stop()                                          { a.service.Stop() }
 func (a *App) RetryTasks(files []string) (model.State, error) { return a.service.RetryTasks(files) }
@@ -133,6 +134,9 @@ func (a *App) SetTaskSelection(files []string) (model.State, error) {
 }
 func (a *App) GetFileDetail(file string, attempt int) (model.FileDetail, error) {
 	return a.service.GetFileDetail(file, attempt)
+}
+func (a *App) GetSolutionFileDetail(file string) (model.FileDetail, error) {
+	return a.service.GetSolutionFileDetail(file)
 }
 func (a *App) GetExecutionRun(id string) (model.ExecutionRunResult, error) {
 	return a.service.GetExecutionRun(id)
@@ -163,10 +167,29 @@ func (a *App) ClearDiagnostics() (model.State, error) {
 	return a.service.ClearDiagnostics()
 }
 func (a *App) ChooseRulePackage() (string, error) {
+	if a.service.Snapshot().Config.SolutionMode() {
+		return runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{Title: "ソリューション用ルールを取り込む", Filters: []runtime.FileFilter{{DisplayName: "ルール (JSON・CSV・SKILL.md)", Pattern: "*.json;*.csv;SKILL.md"}}})
+	}
 	return runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
 		Title:   "ルールを取り込む",
 		Filters: []runtime.FileFilter{{DisplayName: "ルール (JSON・CSV)", Pattern: "*.json;*.csv"}},
 	})
+}
+func (a *App) ChooseSolutionSkillsDirectory() (string, error) {
+	return runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: "SKILL.md を含むスキルフォルダを選択"})
+}
+func (a *App) ImportSolutionSkills(path, mode string) (model.State, error) {
+	return a.service.ImportSolutionSkills(path, mode)
+}
+func (a *App) ExportSolutionSkills() (string, error) {
+	path, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: "スキルの書き出し先フォルダを選択", CanCreateDirectories: true})
+	if err != nil || path == "" {
+		return "", err
+	}
+	if err := a.service.ExportSolutionSkills(path); err != nil {
+		return "", err
+	}
+	return path, nil
 }
 func (a *App) ImportRulePackage(path, mode string) (model.State, error) {
 	return a.service.ImportRulePackage(path, mode)

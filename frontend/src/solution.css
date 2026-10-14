@@ -1,0 +1,48 @@
+.solution-hint { color: var(--text-secondary); font-size: 12px; line-height: 1.7; margin: 0; }
+.solution-mode-select { max-width: 740px; }
+.solution-mode-select > select { width: 100%; }
+.solution-settings, .solution-review, .solution-results { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
+.solution-settings, .solution-review { padding: 22px; background: #fff; border: 1px solid var(--line); border-radius: 10px; }
+.solution-settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.solution-settings-grid .field { margin: 0; }
+.solution-settings-grid .field > input { width: 100%; }
+.solution-wide { grid-column: 1 / -1; }
+.solution-section-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
+.solution-section-heading h2 { font-size: 16px; margin: 0; }
+.solution-section-heading > span { color: var(--text-secondary); font-size: 12px; }
+.solution-path-input { display: flex; gap: 8px; }
+.solution-path-input > input { flex: 1; min-width: 0; }
+.solution-facts { display: grid; grid-template-columns: 170px minmax(0, 1fr); gap: 12px 20px; margin: 0; }
+.solution-facts dt { color: var(--text-secondary); }
+.solution-facts dd { margin: 0; overflow-wrap: anywhere; }
+.solution-process { margin: 0; padding: 18px 18px 18px 36px; background: var(--accent-pale); border-radius: 8px; line-height: 2; }
+.solution-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.solution-run-note { margin: 0; padding: 14px 18px; background: #fff; border: 1px solid var(--line); border-radius: 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.solution-build-results, .solution-file-results { display: flex; flex-direction: column; gap: 14px; padding: 20px; background: #fff; border: 1px solid var(--line); border-radius: 10px; min-width: 0; }
+.solution-file-results h3 { font-size: 14px; margin: 0; }
+.solution-build-results .field, .solution-file-results .field { margin: 0; }
+.solution-build-status { display: flex; gap: 16px; font-size: 12px; }
+.solution-diagnostics { max-height: 360px; overflow: auto; border: 1px solid var(--line); border-radius: 6px; }
+.solution-diagnostics table { border-collapse: collapse; width: 100%; font-size: 12px; }
+.solution-diagnostics th, .solution-diagnostics td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; overflow-wrap: anywhere; }
+.solution-diagnostics th { background: #f7f8fa; position: sticky; top: 0; }
+.solution-diagnostics td:first-child { white-space: nowrap; }
+.solution-build-output { font-size: 12px; }
+.solution-build-output summary { cursor: pointer; color: var(--accent); padding: 8px 0; }
+.solution-build-output pre { max-height: 440px; overflow: auto; background: #f7f8fa; border: 1px solid var(--line); padding: 14px; border-radius: 6px; font-size: 11px; line-height: 1.6; }
+.solution-code-tabs { display: flex; gap: 8px; }
+.solution-code-tabs button { background: #fff; border: 1px solid var(--line); border-radius: 6px; padding: 6px 14px; }
+.solution-code-tabs button[aria-selected="true"] { color: var(--accent); border-color: var(--accent); background: var(--accent-pale); }
+.solution-file-results .results-code { max-height: 640px; }
+.solution-usage { display: flex; flex-wrap: wrap; gap: 6px 20px; color: var(--text-secondary); font-size: 12px; }
+.solution-review-results { display: flex; flex-direction: column; gap: 12px; padding: 20px; background: #fff; border: 1px solid var(--line); border-radius: 10px; }
+.solution-review-results h3 { margin: 0; font-size: 14px; }
+.solution-review-results h3 > span { margin-left: 8px; color: var(--text-secondary); font-size: 12px; font-weight: normal; }
+.solution-independent-review { border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; }
+.solution-independent-review > summary { cursor: pointer; font-size: 12px; }
+.solution-independent-review > summary strong { margin-left: 16px; }
+.solution-independent-review > p { line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
+.solution-review-assessments { display: grid; gap: 12px; margin: 12px 0; font-size: 12px; }
+.solution-review-assessments dt { display: flex; flex-wrap: wrap; gap: 12px; }
+.solution-review-assessments dd { margin: 6px 0 0; color: var(--text-secondary); line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 850px) { .solution-settings-grid { grid-template-columns: minmax(0, 1fr); } .solution-facts { grid-template-columns: 130px minmax(0, 1fr); } .solution-path-input { flex-wrap: wrap; } }

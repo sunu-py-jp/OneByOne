@@ -19,6 +19,8 @@ export function countReadyTargets(tasks: Task[], selectedFiles?: ReadonlySet<str
 }
 
 export interface WorkflowNavigationState {
+  mode?: "files" | "solution";
+  solutionIssue?: string;
   busy: boolean;
   running: boolean;
   available: boolean;
@@ -49,8 +51,9 @@ export function workflowBlockReasons(state: WorkflowNavigationState): Record<Wor
   const review = setup || (state.readOnly ? "閲覧専用です。編集権限を取得してから実行してください。" : "")
     || (state.selectedRuleCount === 0 ? "適用するルールを1件以上選択してください。" : "")
     || (!state.connectionReady ? "使用するLLM接続を選び、モデルと認証情報を設定してください。" : "")
-    || (!state.selectionCurrent ? "設定が変更されています。対象ファイルを更新してください。" : "")
-    || (state.selectedCount === 0 ? "処理するファイルを1つ以上選択してください。" : "")
-    || (state.readyCount <= 0 ? "選択中に処理可能なファイルがありません。処理するファイルを再試行に追加してください。" : "");
+    || (state.mode === "solution" ? state.solutionIssue || ""
+      : !state.selectionCurrent ? "設定が変更されています。対象ファイルを更新してください。"
+      : state.selectedCount === 0 ? "処理するファイルを1つ以上選択してください。"
+      : state.readyCount <= 0 ? "選択中に処理可能なファイルがありません。処理するファイルを再試行に追加してください。" : "");
   return { target: idle, rules: target, run: setup, review, results: base, publish: idle };
 }

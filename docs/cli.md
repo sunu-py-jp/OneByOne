@@ -2,11 +2,13 @@
 
 CLIはデスクトップアプリと同じ処理・保存先・検証を使います。GUIを先に開かなくても、ワークスペース作成、LLM接続、ルールの取り込み、実行、結果確認、新規ブランチへの結果反映まで行えます。
 
+VB.NETの `.sln` を処理する場合は、[ソリューションモード](solution-mode.md#cliでの実行)の設定例を使用してください。`settings update` で `mode: "solution"` と `solution` を保存すると、`run` が初回ビルド・ルールに沿った複数ファイル修正・再ビルドを行います。以下のファイル選択・並列数・抽出条件はファイル単位モードの操作です。
+
 以下の例は、配布フォルダでmacOSの `./onebyone` を使います。Windows PowerShellでは `./onebyone-cli.exe` に読み替えてください。開発ビルドの実行ファイルは `build/bin/` にあります。CLIを移動する場合は同梱の `tools/`・`bin/` も保持してください。
 
 ## 最初の実行
 
-対象は初回コミットがあり、未コミット変更のないGitリポジトリ、またはその中のフォルダです。Git・ripgrepは配布物に同梱します。対象ソースはUTF-8 / Shift_JISを自動判別し、元の文字コード・BOM・改行を保持して編集します。対象プロジェクトのビルド・テストは別途実行してください。
+対象は初回コミットがあり、未コミット変更のないGitリポジトリ、またはその中のフォルダです。Git・ripgrepは配布物に同梱します。対象ソースはUTF-8 / Shift_JISを自動判別し、元の文字コード・BOM・改行を保持して編集します。ファイル単位モードでは対象プロジェクトのビルド・テストを別途実行してください。ソリューションモードのビルドにはWindowsとVS2022 / Build Tools 2022が必要です。
 
 ```sh
 ./onebyone doctor
@@ -124,7 +126,7 @@ APIキーを保存する場合はJSONの `credential` へ指定し、アクセ�
 
 ## ルールと設定を編集する
 
-`rules.json`はYAML front matter付きMarkdown文字列を`rules`配列へ格納する形式です。`rules import --input ./rules.csv`でCSVも取り込めます。CSVの必須ヘッダーは`id,name,description,path_pattern,content_pattern`で、`diagnostic_pattern`は任意のメタデータ列です。それ以外の追加列は列名をH1、セルを本文としてMarkdownにします。
+ファイル単位モードの`rules.json`はYAML front matter付きMarkdown文字列を`rules`配列へ格納する形式です。`rules import --input ./rules.csv`でCSVも取り込めます。CSVの必須ヘッダーは`id,name,description,path_pattern,content_pattern`で、`diagnostic_pattern`は任意のメタデータ列です。それ以外の追加列は列名をH1、セルを本文としてMarkdownにします。ソリューションモードでは `{"rules":[{"id":"...","description":"...","content":"..."}]}` の3項目形式、同名3列のCSV、`SKILL.md` またはスキルフォルダを取り込みます。`rules export-skills --output DIR` でスキルフォルダを書き出せます。
 
 `rules template --output ./rules-template.csv`で、上記5列・任意の`diagnostic_pattern`列・標準の本文見出しを含む空の入力テンプレートを書き出します。ワークスペースや既存ルールは不要です。Excelで編集し、CSV UTF-8形式で保存して取り込んでください。テンプレートはUTF-8 BOM付き・CRLF改行です。
 
@@ -169,7 +171,7 @@ APIキーを保存する場合はJSONの `credential` へ指定し、アクセ�
 
 外部診断の形式・照合方法・保存については[診断JSONL](diagnostics.md)を参照してください。
 
-更新可能なのは`diagnosticsOnly`、`excludedRuleIds`、`concurrency`、`inputPricePerMillion`、`cachedInputPricePerMillion`、`outputPricePerMillion`です。`concurrency`は1〜10、`0`は既定の2へ戻します。単価は推定料金の集計用で、処理を止める条件ではありません。ターン・試行・時間・費用・出力トークン・対象ファイル容量の上限設定は廃止し、指定すると未定義項目として拒否します。過去のワークスペース設定に残る廃止値は読込時に破棄し、再保存しません。対象の絞り込みは各ルールの`pathPattern`・`contentPattern`・`diagnosticPattern`、適用しないルールは`excludedRuleIds`で指定します。空配列なら全ルールを選択します。検証コマンドや旧シンボル定義の指定はありません。
+更新可能なのは`mode`、`solution`、`diagnosticsOnly`、`excludedRuleIds`、`concurrency`、`inputPricePerMillion`、`cachedInputPricePerMillion`、`outputPricePerMillion`です。`mode`は`files`または`solution`、`solution`は[ビルド設定](solution-mode.md)のオブジェクトで、入れ子の指定済み項目だけを更新します。実行済みワークスペースのモードは変更できません。`concurrency`はファイル単位モードの1〜10、`0`は既定の2へ戻します。単価は推定料金の集計用で、処理を止める条件ではありません。ファイル単位のターン・試行・時間・費用・出力トークン・対象ファイル容量の旧上限設定は廃止し、指定すると未定義項目として拒否します。過去の設定に残る廃止値は読込時に破棄し、再保存しません。ソリューションモードの`maxIterations`と`buildTimeoutSeconds`は`solution`内で指定します。ファイル単位の絞り込みは各ルールの`pathPattern`・`contentPattern`・`diagnosticPattern`、適用しないルールは両モードとも`excludedRuleIds`で指定します。空配列なら全ルールを選択します。利用者指定の検証コマンドや旧シンボル定義の指定はありません。
 
 ルールや抽出条件を変えたら `scan` で対象を更新し、選択を確認してから実行してください。`scan --root PATH` は対象フォルダを設定してから抽出します。ワークスペースがある場合は対象フォルダの変更、ない場合は作成を行います。
 
@@ -281,3 +283,5 @@ Ctrl+Cは処理の停止と保存を待って終了します。再開は同じ�
 | `130` | Ctrl+Cなどで中断 |
 
 過去の実行や今回除外したファイルの失敗だけで、今回の `run` を終了コード `2` にはしません。
+
+ソリューションモードの `run` は `solutionRun.status` を判定し、`completed` は `0`、`failed` / `needs_human` は `2`、`stopped` は `130` を返します。開始前の設定・操作エラーは `1` です。ファイルの変更がまだ1件もない初回ビルド失敗や修正上限到達も成功扱いにしません。

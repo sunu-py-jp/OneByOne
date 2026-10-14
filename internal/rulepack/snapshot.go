@@ -10,6 +10,9 @@ func Snapshot(path string) (*Package, error) {
 	if err != nil {
 		return nil, err
 	}
+	if isSolutionDocument(data) {
+		return decodeSolutionDocument(data)
+	}
 	docs, err := decodeDocument(data)
 	if err != nil {
 		return nil, err

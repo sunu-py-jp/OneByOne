@@ -87,6 +87,9 @@ func (s *Service) DiscardFileChanges(file string) (model.State, error) {
 	s.mu.Lock()
 	cfg, m, tasks := s.state.Config, s.meta, copyTasks(s.state.Tasks)
 	s.mu.Unlock()
+	if cfg.SolutionMode() {
+		return s.Snapshot(), fmt.Errorf("ソリューションのビルド検証を保つため、ファイル単位の変更破棄はできません")
+	}
 	index := -1
 	for i, t := range tasks {
 		if t.File == file {

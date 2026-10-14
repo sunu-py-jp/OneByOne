@@ -7,6 +7,7 @@ import (
 	"onebyone/internal/model"
 	"onebyone/internal/ruleformat"
 	"onebyone/internal/rulepack"
+	"onebyone/internal/solutionrules"
 	"onebyone/internal/store"
 	"os"
 	"path/filepath"
@@ -37,7 +38,24 @@ func (s *Service) ImportRulePackage(path, mode string) (model.State, error) {
 	if w.ID == "" || cfg.Root == "" {
 		return s.Snapshot(), fmt.Errorf("先にワークスペースを選択してください")
 	}
-	incoming, err := rulepack.Read(path)
+	var incoming *rulepack.Package
+	var err error
+	if cfg.SolutionMode() {
+		var rules []solutionrules.Rule
+		var absolute string
+		absolute, err = filepath.Abs(path)
+		if err == nil {
+			rules, err = solutionrules.Read(canonicalAlias(absolute))
+		}
+		if err == nil {
+			incoming, err = rulepack.FromSolutionRules(rules)
+		}
+	} else {
+		incoming, err = rulepack.Read(path)
+		if err == nil && incoming.Solution {
+			err = fmt.Errorf("3項目のルールはソリューションモードで取り込んでください")
+		}
+	}
 	if err != nil {
 		return s.Snapshot(), err
 	}
@@ -54,6 +72,9 @@ func (s *Service) ImportRulePackage(path, mode string) (model.State, error) {
 			}
 		}
 		renamed := mergedRuleIDs(packageRuleIDs(current), packageRuleIDs(incoming))
+		if cfg.SolutionMode() {
+			renamed = mergedSolutionRuleIDs(packageRuleIDs(current), packageRuleIDs(incoming))
+		}
 		pkg = &rulepack.Package{Rules: append([]rulepack.Entry{}, current.Rules...)}
 		for _, entry := range incoming.Rules {
 			if id := renamed[entry.ID]; id != entry.ID {
@@ -198,6 +219,7 @@ func (s *Service) installRulePackage(w model.Workspace, cfg model.Config, pkg *r
 }
 
 func (s *Service) installRuleVersion(w model.Workspace, cfg model.Config, pkg *rulepack.Package, allowInvalid bool) (model.State, error) {
+	pkg.Solution = cfg.SolutionMode()
 	settings, err := s.workspacePath(w.ID, "setting.json")
 	if err != nil {
 		return s.Snapshot(), err

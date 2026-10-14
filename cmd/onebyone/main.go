@@ -120,7 +120,9 @@ func executeContext(ctx context.Context, args []string, input io.Reader, stdout,
 				if err = s.Start(o.limit); err == nil {
 					waitForRun(s, stderr)
 					state := s.Snapshot()
-					if state.LastError != "" {
+					if state.Config.SolutionMode() && state.SolutionRun != nil {
+						code, err = executionExitCode(s, previous)
+					} else if state.LastError != "" {
 						err = errors.New(state.LastError)
 					} else {
 						code, err = executionExitCode(s, previous)
@@ -268,6 +270,18 @@ func executionExitCode(s *engine.Service, previous map[string]bool) (int, error)
 }
 
 func executionResultExitCode(result model.ExecutionRunResult) int {
+	if result.State.Config.SolutionMode() && result.State.SolutionRun != nil {
+		switch result.State.SolutionRun.Status {
+		case "completed":
+			return 0
+		case "failed", "needs_human":
+			return 2
+		case "stopped":
+			return 130
+		default:
+			return 1
+		}
+	}
 	if result.Run.Error != "" || result.Run.Status == "failed" {
 		return 1
 	}
@@ -590,6 +604,13 @@ func writeJSON(w io.Writer, value any) error {
 }
 
 func printSummary(w io.Writer, state model.State) {
+	if state.Config.SolutionMode() && state.SolutionRun != nil {
+		run := state.SolutionRun
+		fmt.Fprintf(w, "ソリューション: %s | 状態 %s | 修正 %d 回 | ビルド %d 回\n", state.Config.Solution.Path, run.Status, run.Iteration, len(run.Builds))
+		if run.Note != "" {
+			fmt.Fprintln(w, "終了・進捗理由:", run.Note)
+		}
+	}
 	counts := map[string]int{}
 	for _, task := range state.Tasks {
 		counts[task.Status]++
@@ -608,15 +629,15 @@ func printSummary(w io.Writer, state model.State) {
 }
 
 func printHelp(w io.Writer) {
-	fmt.Fprintln(w, `OneByOne — 1ファイルずつ独立したAIコンテキストで修正するCLI
+	fmt.Fprintln(w, `OneByOne — ファイル単位・VB.NETソリューション単位で修正するCLI
 
 使い方: onebyone [--config PATH] <command> [options] [--workspace ID] [--json]
 
   workspace  ワークスペースの作成・一覧・選択・変更・削除
   llm        LLM接続の登録・選択・テスト・OAuthサインイン
-  rules      ルールの追加・編集・削除、JSON・CSVの取り込み、JSON・入力用CSVの書き出し
+  rules      ルールの追加・編集・削除、JSON・CSV・Skillsの取り込みと書き出し
   diagnostics 診断JSONLの取り込み・解除・概要表示
-  settings   並列数・対象ルール・料金単価の表示と変更
+  settings   処理モード・ソリューション設定・並列数・対象ルール・料金単価の表示と変更
   files      対象フォルダまたは実行コピーのファイル一覧・内容
   scan       対象と候補ルールを抽出（選択・履歴を保持）
   selection  --file PATH / --all / --none で処理対象を確定
@@ -642,9 +663,9 @@ func printGroupHelp(w io.Writer, group string) {
 	help := map[string]string{
 		"workspace":   "list | create --name NAME --root PATH | select --id ID | rename --name NAME | duplicate --name NAME | delete --id ID --yes | target --root PATH | validate --root PATH",
 		"llm":         "list | save --input JSON_FILE|- | select --id ID | test --id ID | login --id ID | logout --id ID | clear --id ID --yes | delete --id ID --yes",
-		"rules":       "list | show --id ID | create --input JSON_FILE|- | update --input JSON_FILE|- | delete --id ID --yes | import --input rules.json|rules.csv [--mode replace|merge] | export --output rules.json | template --output rules-template.csv",
+		"rules":       "list | show --id ID | create --input JSON_FILE|- | update --input JSON_FILE|- | delete --id ID --yes | import --input rules.json|rules.csv|SKILL.md|SKILLS_DIR [--mode replace|merge] | export --output rules.json | export-skills --output DIR | template --output rules-template.csv",
 		"diagnostics": "import --input diagnostics.jsonl | clear | show",
-		"settings":    "show | update --input JSON_FILE|-（指定した項目だけ変更。concurrencyは1〜10、0で既定2）",
+		"settings":    "show | update --input JSON_FILE|-（指定した項目だけ変更。modeはfiles/solution、solutionはビルド設定、concurrencyは1〜10、0で既定2）",
 		"files":       "list | show --file PATH [--source target|execution]",
 		"runs":        "list | show --id EXECUTION_ID",
 		"publish":     "preview | diff --input JSON_FILE|-（workspaceId・revision・file必須） | create --input JSON_FILE|-（workspaceId・revision・branch・title必須）",

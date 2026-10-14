@@ -14,7 +14,7 @@ import { Icon, type IconName } from "./icons";
 import { HelpTip } from "./HelpTip";
 import { HoverTip } from "./HoverTip";
 import { RuleBodyEditor } from "./RuleBodyEditor";
-import { nextRuleId, ruleDraftErrors, ruleIdError, isCommonRule } from "./rule-validation";
+import { nextRuleId, ruleDraftErrors, ruleIdError, solutionRuleDraftErrors, solutionRuleIdError, isCommonRule } from "./rule-validation";
 import { RuleScopeIcon } from "./RuleScopeIcon";
 import { RulePackageActions, RulePackageImportDialog } from "./RulePackageActions";
 import { WorkspaceIssues } from "./WorkspaceIssues";
@@ -23,6 +23,8 @@ import { Toast } from "./Toast";
 import { TargetFilesPanel } from "./TargetFilesPanel";
 import { ExecutionRuleSelection } from "./ExecutionRuleSelection";
 import { DiagnosticsSettings } from "./DiagnosticsSettings";
+import { WorkspaceModeSelect, SolutionSettings, SolutionReview, SolutionExecutionResultsPanel } from "./SolutionPanel";
+import { solutionConfigurationIssue } from "./solution";
 import { ConcurrencyControl } from "./ConcurrencyControl";
 import { onlyConcurrencyChanged } from "./concurrency";
 import { TargetFolderBrowser } from "./TargetFolderBrowser";
@@ -205,7 +207,7 @@ export default function App() {
   const [touchedRuleDrafts, setTouchedRuleDrafts] = useState<Set<string>>(new Set());
   const [ruleDrafts, setRuleDrafts] = useState<Record<string, RuleEdit>>({});
   const [draftSaveError, setDraftSaveError] = useState<{ key: string; message: string } | null>(null);
-  const [packageImport, setPackageImport] = useState<{ path: string; workspaceId: string } | null>(null);
+  const [packageImport, setPackageImport] = useState<{ path: string; workspaceId: string; skills?: boolean } | null>(null);
   const ruleSessionQueue = useRef<Promise<unknown>>(Promise.resolve());
   const ruleRequestVersion = useRef(0);
   const [logsOpen, setLogsOpen] = useState(false);
@@ -238,6 +240,8 @@ export default function App() {
   const showGitSetup = gitSetup.open && !workspaceDialog && !packageImport && !deleteTarget && !discardTarget && !state.running && !busy;
   const entryLocked = Boolean(busy) || state.running || (!usable && !isPreview);
   const locked = Boolean(busy) || state.running || !usable || state.readOnly;
+  const solutionMode = draft.mode === "solution";
+  const modeEstablished = Boolean(state.worktree || state.executionRuns.length || state.solutionRun);
   const replaceDraft = useCallback((config: Config) => {
     setDraft({ ...config, credential: "" });
     setDirty(false);
@@ -325,7 +329,7 @@ export default function App() {
   const takenRuleIds = new Set([...state.rules.map(rule => rule.id), ...activeWorkspaceIssues.flatMap(issue => issue.ruleId ? [issue.ruleId] : [])].map(id => id.toLowerCase()));
   const workspaceDraftErrors = Object.entries(ruleDrafts)
     .filter(([key]) => key.startsWith(`${state.activeWorkspaceId}/`))
-    .flatMap(([key, edit]) => ruleDraftErrors(edit, key.endsWith("/__new") ? takenRuleIds : undefined).map((message, index) => ({ key, issue: { id: `draft:${key}:${index}`, message, page: "rules" as const, ruleId: key.slice(state.activeWorkspaceId.length + 1) } })));
+    .flatMap(([key, edit]) => (solutionMode ? solutionRuleDraftErrors : ruleDraftErrors)(edit, key.endsWith("/__new") ? takenRuleIds : undefined).map((message, index) => ({ key, issue: { id: `draft:${key}:${index}`, message, page: "rules" as const, ruleId: key.slice(state.activeWorkspaceId.length + 1) } })));
   const firstRuleDraftError = workspaceDraftErrors[0]?.issue.message || "";
   const touchRuleDraft = (key = `${state.activeWorkspaceId}/${selectedRule}`) => setTouchedRuleDrafts(previous => new Set([...previous, key]));
   const revealRuleDraftErrors = () => setTouchedRuleDrafts(previous => new Set([...previous, ...workspaceDraftErrors.map(item => item.key)]));
@@ -377,7 +381,9 @@ export default function App() {
       description: ruleDetail?.summary || "", pathPattern: ruleDetail?.pathPattern || "",
       contentPattern: ruleDetail?.contentPattern || "", diagnosticPattern: ruleDetail?.diagnosticPattern || "", body: ruleDetail?.body || "",
     };
-    setRuleDrafts((previous) => ({ ...previous, [ruleDraftKey]: { ...initial, [key]: value } }));
+    const edit = { ...initial, [key]: value };
+    if (solutionMode) Object.assign(edit, { name: edit.id, pathPattern: "", contentPattern: "", diagnosticPattern: "" });
+    setRuleDrafts((previous) => ({ ...previous, [ruleDraftKey]: edit }));
   };
   const discardRuleDraft = () => {
     if (draftSaveError?.key === ruleDraftKey) setDraftSaveError(null);
@@ -394,7 +400,7 @@ export default function App() {
     const key = `${state.activeWorkspaceId}/__new`;
     if (!ruleDrafts[key]) {
       setRuleDrafts((previous) => ({ ...previous, [key]: {
-        id: nextRuleId(takenRuleIds), name: "", description: "", pathPattern: "", contentPattern: "", diagnosticPattern: "",
+        id: solutionMode ? "" : nextRuleId(takenRuleIds), name: "", description: "", pathPattern: "", contentPattern: "", diagnosticPattern: "",
         body: "# 変更概要\n\n# 変換前\n\n# 変換後\n\n# 補足\n\n# 変換を保留にすべきケース\n\n# 修正後に残っていてはいけないパターン\n",
       } }));
     }
@@ -409,7 +415,7 @@ export default function App() {
       throw new Error(firstRuleDraftError);
     }
     let next = state;
-    if (fileSelection && !state.readOnly) {
+    if (fileSelection && !state.readOnly && !solutionMode) {
       const changed = next.tasks.some((item) => fileSelection.has(item.file) === Boolean(item.excluded));
       if (changed) {
         next = await api.SetTaskSelection([...fileSelection]);
@@ -422,7 +428,7 @@ export default function App() {
     if (edits.length && !isPreview) {
       await ruleSessionQueue.current;
       try {
-        next = await api.SaveRules(edits.map(([, edit]) => ({ ...edit, id: edit.id.trim(), name: edit.name.trim(), description: edit.description.trim() })));
+        next = await api.SaveRules(edits.map(([, edit]) => ({ ...edit, id: edit.id.trim(), name: solutionMode ? edit.id.trim() : edit.name.trim(), description: edit.description.trim() })));
       } catch (error) {
         const message = errorMessage(error);
         const affected = edits.find(([, edit]) => edit.id.trim() && message.includes(`rule ${edit.id.trim()}:`)) || edits[0];
@@ -451,12 +457,12 @@ export default function App() {
       setBusy("");
     }
   }
-  async function importRulePackage(path: string, workspaceId: string, mode: "replace" | "merge") {
+  async function importRulePackage(path: string, workspaceId: string, mode: "replace" | "merge", skills = false) {
     if (workspaceId !== state.activeWorkspaceId) throw new Error("ワークスペースが変更されています。取り込み直してください。");
     await flushWorkspaceChanges();
     await ruleSessionQueue.current;
     await api.CloseRule();
-    const next = await api.ImportRulePackage(path, mode);
+    const next = skills ? await api.ImportSolutionSkills(path, mode) : await api.ImportRulePackage(path, mode);
     acceptState(next, true);
     setPackageImport(null);
     setSelectedRule(next.rules[0]?.id || "");
@@ -465,11 +471,24 @@ export default function App() {
     setNotice({ type: "success", message: mode === "merge" ? "ルールをマージしました。" : "ルールを読み込みました。" });
   }
   const beginPackageImport = () => perform("ルール選択", async () => {
+    await flushWorkspaceChanges();
     const path = await api.ChooseRulePackage();
     if (!path) return;
     const next = await flushWorkspaceChanges();
     if (next.rules.length || invalidRuleIds.length) setPackageImport({ path, workspaceId: next.activeWorkspaceId });
     else await importRulePackage(path, next.activeWorkspaceId, "replace");
+  });
+  const beginSkillsImport = () => perform("スキルフォルダ選択", async () => {
+    const next = await flushWorkspaceChanges();
+    const path = await api.ChooseSolutionSkillsDirectory();
+    if (!path) return;
+    if (next.rules.length || invalidRuleIds.length) setPackageImport({ path, workspaceId: next.activeWorkspaceId, skills: true });
+    else await importRulePackage(path, next.activeWorkspaceId, "replace", true);
+  });
+  const exportSolutionSkills = () => perform("スキル書出し", async () => {
+    await flushWorkspaceChanges();
+    const path = await api.ExportSolutionSkills();
+    if (path) setNotice({ type: "success", message: `スキルを書き出しました: ${path}。各ルールは ID/SKILL.md で保存されています。` });
   });
   const exportRulePackage = () => perform("ルール書出し", async () => {
     await flushWorkspaceChanges();
@@ -868,6 +887,8 @@ export default function App() {
   const readyReviewCount = countReadyTargets(state.tasks, selectedTargetFiles);
   const selectionIsCurrent = selectionContext !== null && selectionContext === selectionContextKey(state.activeWorkspaceId, draft, state.rules);
   const navigationState = {
+    mode: draft.mode,
+    solutionIssue: solutionMode ? solutionConfigurationIssue(draft.solution) : "",
     busy: Boolean(busy),
     running: state.running,
     available: usable || isPreview,
@@ -885,7 +906,7 @@ export default function App() {
   const navigation = workflowAvailability(navigationState);
   const navigationReasons = workflowBlockReasons(navigationState);
   const pendingSetupChanges = (dirty && !onlyConcurrencyChanged(draft, state.config)) || hasRuleChanges;
-  const startDisabledReason = navigationReasons.review || (pendingSetupChanges ? "設定を保存して対象ファイルを確認してください。" : "");
+  const startDisabledReason = navigationReasons.review || (pendingSetupChanges ? solutionMode ? "設定を保存してソリューションを確認してください。" : "設定を保存して対象ファイルを確認してください。" : "");
 
   async function validateSetup(next: State, refresh = true): Promise<State> {
     if (!isPreview && refresh) next = await api.GetState();
@@ -903,6 +924,7 @@ export default function App() {
     setSelectionContext(null);
     next = await validateSetup(next);
     setPage("run");
+    if (next.config.mode === "solution") { setFileSelection(null); return; }
     if (next.readOnly) return;
     next = await api.Scan();
     acceptState(next, true);
@@ -939,6 +961,15 @@ export default function App() {
     await extractTargets(next);
   });
   async function validateConfirmedSelection(): Promise<State> {
+    if (solutionMode) {
+      const next = await validateSetup(await flushWorkspaceChanges());
+      const issue = solutionConfigurationIssue(next.config.solution);
+      if (issue) { setPage("run"); throw new Error(issue); }
+      if (next.readOnly) throw new Error("ワークスペースの編集権限が必要です。");
+      if (!hasReadyLLMConnection(next)) { setPage("run"); throw new Error("実行設定で利用できるLLM接続を選択してください。"); }
+      if (!next.rules.some(rule => !next.config.excludedRuleIds?.includes(rule.id))) { setPage("run"); throw new Error("適用するルールを1件以上選択してください。"); }
+      return next;
+    }
     if (!selectionIsCurrent) {
       setPage("run");
       throw new Error("実行設定で対象ファイルを更新し、処理対象を確定してください。");
@@ -1482,6 +1513,8 @@ export default function App() {
                 <>
                 <div className="execution-primary-content">
                 <div className="execution-settings">
+                  <WorkspaceModeSelect mode={draft.mode} disabled={entryLocked || state.readOnly || modeEstablished} onChange={value => { updateDraft("mode", value); setFileSelection(null); setSelectionContext(null); }} />
+                  {modeEstablished && <p className="solution-hint">実行済みのワークスペースのモードは固定です。別モードは新しいワークスペースで設定してください。</p>}
                   <div className="execution-settings-controls">
                   <Field label="使用するLLM接続">
                     <select value={state.selectedLLMConnectionId} disabled={personalLocked || state.readOnly}
@@ -1497,18 +1530,20 @@ export default function App() {
                     </select>
                   </Field>
                   <ExecutionRuleSelection rules={state.rules} excludedIds={draft.excludedRuleIds || []}
+                    solutionMode={solutionMode}
                     disabled={entryLocked || state.readOnly} onChange={ids => updateDraft("excludedRuleIds", ids)} />
                   </div>
-                  <DiagnosticsSettings diagnostics={state.diagnostics} path={draft.diagnosticsPath} only={Boolean(draft.diagnosticsOnly)}
+                  {!solutionMode && <DiagnosticsSettings diagnostics={state.diagnostics} path={draft.diagnosticsPath} only={Boolean(draft.diagnosticsOnly)}
                     error={[...new Set(activeWorkspaceIssues.filter(issue => issue.section === "diagnostics" || issue.id === "diagnostics").map(issue => issue.message))].join("\n")}
                     disabled={locked} disabledReason={state.running ? "実行中は診断を変更できません。" : busy ? "処理が終わるまでお待ちください。" : state.readOnly ? "このワークスペースは閲覧専用です。" : !usable ? "診断の取り込みはデスクトップアプリで利用できます。" : ""}
-                    onImport={importDiagnostics} onClear={clearDiagnostics} onOnlyChange={changeDiagnosticsOnly} />
+                    onImport={importDiagnostics} onClear={clearDiagnostics} onOnlyChange={changeDiagnosticsOnly} />}
                   {missingConnection && <div className="run-connection-note">
                     <Icon name="info" size={15} />
                     <span>{state.llmConnections.length ? selectedConnection ? "接続のモデル・認証情報を設定してください。" : "LLM接続を選択してください。" : "LLM接続を登録してください。"}</span>
                     <button className="text-button" disabled={personalLocked} onClick={() => openConnection(selectedConnection?.id || state.llmConnections[0]?.id || "__new")}>接続設定を開く</button>
                   </div>}
                 </div>
+                {solutionMode ? <SolutionSettings config={draft.solution} workspaceId={state.activeWorkspaceId} disabled={entryLocked || state.readOnly} onChange={value => updateDraft("solution", value)} /> : <>
                 {!selectionIsCurrent && <div className="selection-refresh-note" role="status"><Icon name="info" size={14} />設定が変わった場合は、対象ファイルを更新して選択してください。</div>}
                 <TargetFilesPanel key={`${state.activeWorkspaceId}:${state.config.root}`} workspaceId={state.activeWorkspaceId} tasks={state.tasks} rules={state.rules} root={state.config.root}
                   selected={selectedTargetFiles} onSelection={setFileSelection}
@@ -1517,14 +1552,17 @@ export default function App() {
                   disabledReason={entryLocked ? state.running ? "実行中は対象を変更できません。" : "処理が終わるまでお待ちください。" : state.readOnly ? "このワークスペースは閲覧専用です。" : "対象ファイルを更新してから選択してください。"}
                   disabled={entryLocked || state.readOnly || !selectionIsCurrent}
                   action={<HoverTip reason={entryLocked || state.readOnly || reviewBlocked ? navigationReasons.run || (state.readOnly ? "このワークスペースは閲覧専用です。" : "設定のエラーを解消してください。") : ""}><button className="text-button" disabled={entryLocked || state.readOnly || reviewBlocked} onClick={refreshTargets}>
-                    <Icon name="refresh" size={14} />対象を更新</button></HoverTip>} />
+                    <Icon name="refresh" size={14} />対象を更新</button></HoverTip>} /></>}
                 </div>
                 </>
               )}
-              {page === "review" && <TargetFilesPanel key={`${state.activeWorkspaceId}:${state.config.root}`} workspaceId={state.activeWorkspaceId} tasks={state.tasks.filter((item) => selectedTargetFiles.has(item.file))} rules={state.rules} root={state.config.root}
+              {page === "review" && (solutionMode ? <SolutionReview state={state} onEdit={() => navigatePage("run")} /> : <TargetFilesPanel key={`${state.activeWorkspaceId}:${state.config.root}`} workspaceId={state.activeWorkspaceId} tasks={state.tasks.filter((item) => selectedTargetFiles.has(item.file))} rules={state.rules} root={state.config.root}
                 selected={selectedTargetFiles} onSelection={setFileSelection} disabled={entryLocked || state.readOnly} selectionEnabled={false}
-                action={<HoverTip reason={navigationReasons.run}><button className="text-button" disabled={!navigation.run} onClick={() => navigatePage("run")}>対象を変更<Icon name="arrow" size={13} /></button></HoverTip>} />}
-              {page === "results" && <ResultsPanel key={state.activeWorkspaceId} state={state} busy={Boolean(busy)} usable={usable} canSetup={navigation.run}
+                action={<HoverTip reason={navigationReasons.run}><button className="text-button" disabled={!navigation.run} onClick={() => navigatePage("run")}>対象を変更<Icon name="arrow" size={13} /></button></HoverTip>} />)}
+              {page === "results" && (solutionMode ? <SolutionExecutionResultsPanel key={state.activeWorkspaceId} state={state} busy={Boolean(busy)} usable={usable} canSetup={navigation.run}
+                onStop={() => perform("停止", async () => { await api.Stop(); acceptState(await api.GetState()); })}
+                onExport={executionId => perform("結果出力", async () => { const path = executionId ? await api.ExportExecutionReport(executionId) : await api.ExportReport(); if (path) setNotice({ type: "info", message: `レポートを保存しました: ${path}` }); })}
+                onOpenWorktree={() => perform("作業コピーを開く", () => api.OpenWorktree())} onSetup={() => navigatePage("run")} /> : <ResultsPanel key={state.activeWorkspaceId} state={state} busy={Boolean(busy)} usable={usable} canSetup={navigation.run}
                 selectedFile={selectedFile} onSelectFile={selectTask} detailTab={detailTab} onDetailTabChange={setDetailTab}
                 onStop={() => perform("停止", async () => { await api.Stop(); acceptState(await api.GetState()); })}
                 onExport={executionId => perform("結果出力", async () => {
@@ -1532,7 +1570,7 @@ export default function App() {
                   if (path) setNotice({ type: "info", message: `レポートを保存しました: ${path}` });
                 })}
                 onRetry={retry} onDiscard={beginDiscard} onOpenWorktree={() => perform("作業コピーを開く", () => api.OpenWorktree())}
-                onSetup={() => navigatePage("run")} />}
+                onSetup={() => navigatePage("run")} />)}
               {page === "publish" && <ResultPublicationPanel key={publicationDraftKey} state={state} busy={Boolean(busy)} usable={usable}
                 initialDraft={publicationDrafts.current[publicationDraftKey]}
                 onDraftChange={value => { publicationDrafts.current[publicationDraftKey] = value; }}
@@ -1558,37 +1596,38 @@ export default function App() {
                       <div className="panel-title">
                         <div className="title-with-help">
                           <h2>ルール一覧 <span>{state.rules.length + invalidRuleIds.length + Number(Boolean(ruleDrafts[`${state.activeWorkspaceId}/__new`]))}</span></h2>
-                          <HelpTip label="ルール一覧">
+                          <HelpTip label="ルール一覧">{solutionMode ? <p>ルールは ID・説明・内容の3項目です。IDがスキル名、説明が description、内容が SKILL.md のMarkdown本文になります。</p> : <>
                             <p>対象ファイル・内容の条件が両方空欄のルールは、すべてのファイルに適用します。</p>
                             <p>条件を指定したルールは、一致するファイルだけを対象にします。ルールを選択して内容を確認・編集できます。</p>
-                          </HelpTip>
+                          </>}</HelpTip>
                         </div>
                         <div className="rule-list-actions">
                           <button type="button" className="icon-button add-rule-button" aria-label="ルールを追加" title="ルールを追加" disabled={locked} onClick={beginNewRule}><Icon name="plus" size={17} /></button>
                           <RulePackageActions disabled={locked} exportDisabled={!state.rules.length && !hasRuleChanges}
+                            solutionMode={solutionMode} onImportSkills={beginSkillsImport} onExportSkills={exportSolutionSkills}
                             disabledReason={busy ? "処理中です。完了までお待ちください。" : state.readOnly ? "このワークスペースは閲覧専用です。" : isPreview ? "画面プレビューではファイル操作はできません。" : undefined}
                             onImport={beginPackageImport} onExport={exportRulePackage} onExportTemplate={exportRuleImportTemplate} />
                         </div>
                       </div>
                       <div className="search-field">
                         <Icon name="search" size={16} />
-                        <input aria-label="ルールを検索" value={ruleSearch} onChange={(e) => setRuleSearch(e.target.value)} placeholder="ID・名前で検索" />
+                        <input aria-label="ルールを検索" value={ruleSearch} onChange={(e) => setRuleSearch(e.target.value)} placeholder={solutionMode ? "ID・説明で検索" : "ID・名前で検索"} />
                       </div>
                       <div className="rules-list-scroll" role="list" aria-label="ルール">
                         {ruleDrafts[`${state.activeWorkspaceId}/__new`] && (
                           <button className={`rule-list-item compact-rule-item ${selectedRule === "__new" ? "selected" : ""}`} disabled={Boolean(busy)} onClick={() => selectRule("__new")}>
-                            <RuleScopeIcon rule={ruleDrafts[`${state.activeWorkspaceId}/__new`]} />
+                            {solutionMode ? <Icon name="rules" size={16} /> : <RuleScopeIcon rule={ruleDrafts[`${state.activeWorkspaceId}/__new`]} />}
                             <span className="rule-id">{ruleDrafts[`${state.activeWorkspaceId}/__new`].id.trim() || "新規"}</span>
-                            <strong>{ruleDrafts[`${state.activeWorkspaceId}/__new`].name || "新しいルール"}</strong><span className="rule-draft-icon" role="img" aria-label="未保存の変更"><Icon name="edit" size={14} /></span>
+                            <strong>{(solutionMode ? ruleDrafts[`${state.activeWorkspaceId}/__new`].description : ruleDrafts[`${state.activeWorkspaceId}/__new`].name) || "新しいルール"}</strong><span className="rule-draft-icon" role="img" aria-label="未保存の変更"><Icon name="edit" size={14} /></span>
                             {ruleIssuesFor("__new").length > 0 && <span className="rule-list-error-icon" role="img" aria-label="入力エラー" title={ruleIssuesFor("__new").map(issue => issue.message).join("\n")}><Icon name="warning" size={15} /></span>}
                           </button>
                         )}
                         {filteredRules.map((rule) => (
                           <button key={rule.id} className={`rule-list-item compact-rule-item ${selectedRule === rule.id ? "selected" : ""}`}
-                            disabled={Boolean(busy)} onClick={() => selectRule(rule.id)} title={`${rule.id} ${rule.title}`}>
-                            <RuleScopeIcon rule={rule} />
+                            disabled={Boolean(busy)} onClick={() => selectRule(rule.id)} title={`${rule.id} ${solutionMode ? rule.summary : rule.title}`}>
+                            {solutionMode ? <Icon name="rules" size={16} /> : <RuleScopeIcon rule={rule} />}
                             <span className="rule-id" title={rule.id}>{rule.id}</span>
-                            <strong>{ruleDrafts[`${state.activeWorkspaceId}/${rule.id}`]?.name ?? rule.title ?? rule.id}</strong>
+                            <strong>{solutionMode ? rule.summary : ruleDrafts[`${state.activeWorkspaceId}/${rule.id}`]?.name ?? rule.title ?? rule.id}</strong>
                             {ruleDrafts[`${state.activeWorkspaceId}/${rule.id}`] && <span className="rule-draft-icon" role="img" aria-label="未保存の変更"><Icon name="edit" size={14} /></span>}
                             {ruleIssuesFor(rule.id).length > 0 && <span className="rule-list-error-icon" role="img" aria-label="入力エラー" title={ruleIssuesFor(rule.id).map(issue => issue.message).join("\n")}><Icon name="warning" size={15} /></span>}
                           </button>
@@ -1603,7 +1642,7 @@ export default function App() {
                           </button>
                         ))}
                         {!filteredRules.length && !filteredInvalidRuleIds.length && !ruleDrafts[`${state.activeWorkspaceId}/__new`] && (
-                          <div className="small-empty"><Icon name="rules" size={28} /><p>{state.rules.length ? "一致するルールがありません。" : "「…」からJSON・CSVを読み込むか、ルールを追加してください。"}</p></div>
+                          <div className="small-empty"><Icon name="rules" size={28} /><p>{state.rules.length ? "一致するルールがありません。" : solutionMode ? "「…」からJSON・SKILL.md・スキルフォルダを読み込むか、ルールを追加してください。" : "「…」からJSON・CSVを読み込むか、ルールを追加してください。"}</p></div>
                         )}
                       </div>
                     </div>
@@ -1627,9 +1666,9 @@ export default function App() {
                         <>
                           <div className="rule-reader-header">
                             <div className="rule-reader-identity">
-                              <RuleScopeIcon rule={currentRuleDraft ?? ruleDetail ?? {}} />
+                              {solutionMode ? <Icon name="rules" size={16} /> : <RuleScopeIcon rule={currentRuleDraft ?? ruleDetail ?? {}} />}
                               <span className="rule-id" title={ruleDetail?.id}>{selectedRule === "__new" ? currentRuleDraft?.id.trim() || "新規" : ruleDetail?.id}</span>
-                              <strong title={currentRuleDraft?.name ?? ruleDetail?.title}>{(currentRuleDraft?.name ?? ruleDetail?.title)?.trim() || "名称未入力"}</strong>
+                              {!solutionMode && <strong title={currentRuleDraft?.name ?? ruleDetail?.title}>{(currentRuleDraft?.name ?? ruleDetail?.title)?.trim() || "名称未入力"}</strong>}
                               <WorkspaceIssues workspaceName={`ルール ${selectedRule === "__new" ? currentRuleDraft?.id.trim() || "新規" : selectedRule}`} issues={selectedRuleIssues}
                                 onSelect={() => document.getElementById("rule-error-details")?.focus()} />
                             </div>
@@ -1652,23 +1691,23 @@ export default function App() {
                           <div className="rule-edit-scroll rule-markdown-edit">
                             <div className="rule-metadata-grid">
                               <div className="rule-identity-fields">
-                                <Field label="ID" hint="英数字で始まる64文字以内の英数字・ハイフン・アンダースコアで指定します。作成後は変更できません。">
+                                <Field label="ID" hint={solutionMode ? "そのままスキル名になります。64文字以内の英小文字・数字・ハイフンで指定します。先頭・末尾・連続するハイフンは使えません。作成後は変更できません。" : "英数字で始まる64文字以内の英数字・ハイフン・アンダースコアで指定します。作成後は変更できません。"}>
                                   <input className="code-input" value={currentRuleDraft?.id ?? ruleDetail?.id ?? ""} readOnly={selectedRule !== "__new"} disabled={locked || Boolean(ruleEditor?.readOnly)}
-                                    aria-invalid={selectedRule === "__new" && touchedRuleDrafts.has(ruleDraftKey) && Boolean(ruleIdError(currentRuleDraft?.id ?? "", takenRuleIds))}
-                                    onBlur={() => touchRuleDraft()} onChange={e => changeRuleDraft("id", e.target.value)} spellCheck={false} placeholder="1" />
+                                    aria-invalid={selectedRule === "__new" && touchedRuleDrafts.has(ruleDraftKey) && Boolean((solutionMode ? solutionRuleIdError : ruleIdError)(currentRuleDraft?.id ?? "", takenRuleIds))}
+                                    onBlur={() => touchRuleDraft()} onChange={e => changeRuleDraft("id", e.target.value)} spellCheck={false} placeholder={solutionMode ? "vbnet-null-handling" : "1"} />
                                 </Field>
-                                <Field label="名称">
+                                {!solutionMode && <Field label="名称">
                                   <input value={currentRuleDraft?.name ?? ruleDetail?.title ?? ""} disabled={locked || Boolean(ruleEditor?.readOnly)}
                                     aria-invalid={touchedRuleDrafts.has(ruleDraftKey) && !(currentRuleDraft?.name ?? ruleDetail?.title ?? "").trim()}
                                     onBlur={() => touchRuleDraft()} onChange={e => changeRuleDraft("name", e.target.value)} placeholder="ルールの名前" />
-                                </Field>
+                                </Field>}
                               </div>
                               <Field label="説明" className="rule-metadata-wide" hint="AIがルールの内容を判断するための説明です。対象の型名や処理、変更の目的を簡潔に記載してください。">
                                 <textarea value={currentRuleDraft?.description ?? ruleDetail?.summary ?? ""} rows={2} disabled={locked || Boolean(ruleEditor?.readOnly)}
                                   aria-invalid={touchedRuleDrafts.has(ruleDraftKey) && !(currentRuleDraft?.description ?? ruleDetail?.summary ?? "").trim()}
                                   onBlur={() => touchRuleDraft()} onChange={e => changeRuleDraft("description", e.target.value)} placeholder="どのような変更をするルールか" />
                               </Field>
-                              <Field label="対象ファイル" hint="対象フォルダからの相対パスをglobで指定します。例: src/**/*.tsx。空欄なら全ファイル。内容・診断の条件も指定した場合は、指定したすべての条件を満たすファイルに適用します。">
+                              {!solutionMode && <><Field label="対象ファイル" hint="対象フォルダからの相対パスをglobで指定します。例: src/**/*.tsx。空欄なら全ファイル。内容・診断の条件も指定した場合は、指定したすべての条件を満たすファイルに適用します。">
                                 <input className="code-input" value={ruleValue("pathPattern")} disabled={locked || Boolean(ruleEditor?.readOnly)} onChange={e => changeRuleDraft("pathPattern", e.target.value)} spellCheck={false} placeholder="全ファイル" />
                               </Field>
                               <Field label="内容の条件" hint="ファイル内容に照合する正規表現です。空欄なら内容で絞り込みません。">
@@ -1676,15 +1715,15 @@ export default function App() {
                               </Field>
                               <Field label="診断の条件" className="rule-metadata-wide" hint="取り込んだ診断1件ごとの「code＋半角スペース＋message」に照合する正規表現です。例: TS2304|名前が見つかりません。GoのRE2構文で判定し、先読み・後読み・後方参照は使えません。空欄なら診断で絞り込みません。対象ファイル・内容の条件も指定した場合は、すべての条件を満たすファイルが候補になります。">
                                 <input className="code-input" value={ruleValue("diagnosticPattern")} disabled={locked || Boolean(ruleEditor?.readOnly)} onChange={e => changeRuleDraft("diagnosticPattern", e.target.value)} spellCheck={false} placeholder="絞り込みなし" />
-                              </Field>
+                              </Field></>}
                             </div>
-                            <RuleBodyEditor body={ruleValue("body")} readOnly={locked || Boolean(ruleEditor?.readOnly)} onChange={body => changeRuleDraft("body", body)} />
-                            {ruleDetail && <div className="rule-retry-action action-with-help"><Button className="small" icon="refresh" disabled={locked || dirty || hasRuleChanges || Boolean(targetFolderError) || !state.tasks.some(item => item.rulesApplied.includes(ruleDetail.id))}
+                            <RuleBodyEditor body={ruleValue("body")} label={solutionMode ? "内容" : "本文"} readOnly={locked || Boolean(ruleEditor?.readOnly)} onChange={body => changeRuleDraft("body", body)} />
+                            {ruleDetail && !solutionMode && <div className="rule-retry-action action-with-help"><Button className="small" icon="refresh" disabled={locked || dirty || hasRuleChanges || Boolean(targetFolderError) || !state.tasks.some(item => item.rulesApplied.includes(ruleDetail.id))}
                               onClick={() => retry(state.tasks.filter(item => item.rulesApplied.includes(ruleDetail.id)).map(item => item.file))}>適用済みを再試行</Button><HelpTip label="適用済みを再試行">このルールを適用したファイルだけを再試行します。</HelpTip></div>}
                           </div>
                         </>
                       ) : selectedRuleIssues.length === 0 && (
-                        <div className="detail-empty"><div className="empty-icon"><Icon name="rules" size={29} /></div><strong>{selectedRule ? "ルールを読み込み中…" : "ルールを選択してください"}</strong><p>名称・説明・対象の条件とMarkdown本文を確認・編集できます。</p></div>
+                        <div className="detail-empty"><div className="empty-icon"><Icon name="rules" size={29} /></div><strong>{selectedRule ? "ルールを読み込み中…" : "ルールを選択してください"}</strong><p>{solutionMode ? "ID・説明・内容を確認・編集できます。そのままスキルとして書き出せます。" : "名称・説明・対象の条件とMarkdown本文を確認・編集できます。"}</p></div>
                       )}
                     </div>
                   </section>
@@ -1694,6 +1733,8 @@ export default function App() {
 
               {page === "target" && (
                 <div className="settings-content target-folder-content" data-issue-section="target" tabIndex={-1}>
+                  <WorkspaceModeSelect mode={draft.mode} disabled={entryLocked || state.readOnly || modeEstablished} onChange={value => { updateDraft("mode", value); setFileSelection(null); setSelectionContext(null); }} />
+                  {modeEstablished && <p className="solution-hint">実行済みのワークスペースのモードは固定です。別モードは新しいワークスペースで設定してください。</p>}
                   <Field label="対象フォルダ" hint="選択時にGit管理・初回コミット・リポジトリ全体の未コミット変更を確認します。変更後は対象ファイルの再抽出が必要です。以前の実行結果は保持されます。">
                     <div className={`path-field target-root-field${targetFolderError ? " path-field-error" : ""}`}>
                       <input value={selectedTarget?.path || activeWorkspace?.root || draft.root} readOnly aria-readonly="true"
@@ -1715,12 +1756,12 @@ export default function App() {
               {stepIndex > 0 && <Button className="back-button" disabled={!navigation[steps[stepIndex - 1].id]}
                 disabledReason={navigationReasons[steps[stepIndex - 1].id]}
                 onClick={() => navigatePage(steps[stepIndex - 1].id)}><Icon name="chevron" className="back-chevron" size={14} />前へ</Button>}
-              <span>{state.readOnly ? "閲覧専用" : (page === "run" || page === "review") ? `${number(selectedTargetCount)} 件選択 · 今回 ${number(readyReviewCount)} 件を処理` : dirty || hasRuleChanges ? "変更は移動時に保存されます" : ""}</span>
+              <span>{state.readOnly ? "閲覧専用" : (page === "run" || page === "review") ? solutionMode ? "ソリューション単位 · ビルドと修正を繰り返す" : `${number(selectedTargetCount)} 件選択 · 今回 ${number(readyReviewCount)} 件を処理` : dirty || hasRuleChanges ? "変更は移動時に保存されます" : ""}</span>
             </div>
             {page === "review" ? <div className="review-start-actions">
-              <ConcurrencyControl value={draft.concurrency} disabled={entryLocked || state.readOnly} onChange={value => updateDraft("concurrency", value)} />
+              {!solutionMode && <ConcurrencyControl value={draft.concurrency} disabled={entryLocked || state.readOnly} onChange={value => updateDraft("concurrency", value)} />}
               <Button icon="play" className="primary" loading={busy === "実行開始"}
-              disabled={locked || reviewBlocked || missingConnection || pendingSetupChanges || !selectionIsCurrent || !readyReviewCount}
+              disabled={locked || reviewBlocked || missingConnection || pendingSetupChanges || Boolean(navigationReasons.review)}
               disabledReason={startDisabledReason || (isPreview ? "画面プレビューではAI処理を実行できません。" : "現在は実行できません。")}
               onClick={() => start(0)}>実行</Button></div> : stepIndex < steps.length - 1 && <Button icon="arrow" className="primary"
               disabled={!navigation[steps[stepIndex + 1].id]}
@@ -1765,8 +1806,9 @@ export default function App() {
         installation={gitSetup.installation} checking={gitSetup.checking} error={gitSetup.error}
         onRetry={retryGitInstallation} onDownload={gitSetup.openGuide} onDismiss={gitSetup.dismiss} />}
       {packageImport && <RulePackageImportDialog path={packageImport.path} busy={Boolean(busy)} error={notice?.type === "error" ? notice.message : undefined}
+        solutionMode={solutionMode}
         onCancel={() => { setPackageImport(null); setNotice(null); }}
-        onConfirm={mode => perform("パッケージ読込", () => importRulePackage(packageImport.path, packageImport.workspaceId, mode))} />}
+        onConfirm={mode => perform("パッケージ読込", () => importRulePackage(packageImport.path, packageImport.workspaceId, mode, packageImport.skills))} />}
       {deleteTarget && <DeleteConfirmation kind={deleteTarget.kind} name={deleteTarget.name} busy={busy === "削除"}
         error={deleteError} onCancel={() => setDeleteTarget(null)} onConfirm={confirmDelete} />}
       {discardTarget && <DeleteConfirmation kind="changes" name={discardTarget.file} busy={Boolean(busy)}

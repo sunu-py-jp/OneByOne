@@ -3,6 +3,8 @@ package model
 import "context"
 
 type Config struct {
+	Mode     string            `json:"mode,omitempty"`
+	Solution *SolutionSettings `json:"solution,omitempty"`
 	// AcquireToken exists only during a local execution. Never serialize an
 	// OAuth token provider into workspaces, reports, or the frontend bridge.
 	AcquireToken               func(context.Context) (string, error) `json:"-"`
@@ -196,6 +198,7 @@ type LLMConnection struct {
 }
 
 type State struct {
+	SolutionRun             *SolutionRun       `json:"solutionRun,omitempty"`
 	Diagnostics             *DiagnosticSummary `json:"diagnostics,omitempty"`
 	ExecutionRuns           []ExecutionRun     `json:"executionRuns"`
 	LLMConnections          []LLMConnection    `json:"llmConnections,omitempty"`

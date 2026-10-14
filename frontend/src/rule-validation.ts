@@ -17,6 +17,22 @@ export function ruleDraftErrors(rule: Pick<RuleEdit, "id" | "name" | "descriptio
   return errors;
 }
 
+export function solutionRuleIdError(id: string, takenIds?: ReadonlySet<string>): string {
+  id = id.trim();
+  if (!id) return "IDを入力してください。";
+  if (id.length > 64 || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(id)) return "IDは64文字以内の英小文字・数字・ハイフンで入力してください。先頭・末尾・連続するハイフンは使えません。";
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/.test(id)) return "Windowsの予約名はIDに使えません。";
+  return takenIds?.has(id) ? "同じIDのルールが既にあります。" : "";
+}
+
+export function solutionRuleDraftErrors(rule: Pick<RuleEdit, "id" | "description" | "body">, takenIds?: ReadonlySet<string>): string[] {
+  const errors = [solutionRuleIdError(rule.id, takenIds)].filter(Boolean);
+  if (!rule.description.trim()) errors.push("説明を入力してください。");
+  else if ([...rule.description].length > 1024) errors.push("説明は1024文字以内で入力してください。");
+  if (!rule.body.trim()) errors.push("内容を入力してください。");
+  return errors;
+}
+
 /** Continues the numeric sequence; non-numeric IDs are skipped but never reused. */
 export function nextRuleId(ids: Iterable<string>): string {
   const taken = new Set<string>();

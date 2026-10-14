@@ -54,6 +54,7 @@ export const api: Backend = {
       ? Promise.resolve("/workspace/sample-project")
       : native().ChooseDirectory(kind),
   Scan: async () => normalizeState(isPreview ? scanPreviewTasks() : await native().Scan()),
+  DiscoverSolutions: () => isPreview ? Promise.resolve([]) : native().DiscoverSolutions(),
   Start: (limit) => native().Start(limit),
   Stop: () => native().Stop(),
   RetryTasks: async (files) => normalizeState(await native().RetryTasks(files)),
@@ -62,6 +63,7 @@ export const api: Backend = {
     isPreview
       ? Promise.resolve(previewDetail(file, attempt))
       : native().GetFileDetail(file, attempt),
+  GetSolutionFileDetail: (file) => native().GetSolutionFileDetail(file),
   GetExecutionRun: async (id) => normalizeExecutionRunResult(isPreview ? previewExecutionRun(id) : await native().GetExecutionRun(id)),
   GetExecutionFileDetail: (id, file, attempt) => isPreview
     ? Promise.resolve(previewExecutionFileDetail(id, file, attempt))
@@ -113,6 +115,9 @@ export const api: Backend = {
   CancelLLMSignIn: () => native().CancelLLMSignIn(),
   SignOutLLMConnection: async (id) => normalizeState(await native().SignOutLLMConnection(id)),
   ChooseRulePackage: () => native().ChooseRulePackage(),
+  ChooseSolutionSkillsDirectory: () => native().ChooseSolutionSkillsDirectory(),
+  ImportSolutionSkills: async (path, mode) => normalizeState(await native().ImportSolutionSkills(path, mode)),
+  ExportSolutionSkills: () => native().ExportSolutionSkills(),
   ImportRulePackage: async (path, mode) => normalizeState(await native().ImportRulePackage(path, mode)),
   ExportRulePackage: () => native().ExportRulePackage(),
   ExportRuleImportTemplate: () => native().ExportRuleImportTemplate(),

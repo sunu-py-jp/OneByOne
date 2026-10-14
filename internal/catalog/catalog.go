@@ -51,6 +51,9 @@ type Catalog struct {
 
 // Load freezes definitions for the entire run; later edits cannot alter an active review.
 func Load(ctx context.Context, cfg model.Config) (_ *Catalog, err error) {
+	if cfg.SolutionMode() {
+		cfg.DiagnosticsPath, cfg.DiagnosticsSourceFile, cfg.DiagnosticsOnly = "", "", false
+	}
 	defer func() {
 		var diagnostic *DiagnosticError
 		if err != nil && !errors.As(err, &diagnostic) {
@@ -68,6 +71,9 @@ func Load(ctx context.Context, cfg model.Config) (_ *Catalog, err error) {
 	pkg, err := rulepack.Snapshot(rulesPath)
 	if err != nil {
 		return nil, err
+	}
+	if len(pkg.Rules) > 0 && pkg.Solution != cfg.SolutionMode() {
+		return nil, fmt.Errorf("ルール形式がモードと一致しません。ソリューションモードは id・description・content の3項目で取り込んでください")
 	}
 	ids := make([]string, 0, len(pkg.Rules))
 	for _, entry := range pkg.Rules {

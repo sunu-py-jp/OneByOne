@@ -14,6 +14,8 @@ export interface TargetFileContent {
   unavailableReason: string;
 }
 export interface Config {
+  mode?: "files" | "solution";
+  solution?: SolutionConfig;
   concurrency: number;
   llmConnectionId?: string;
   provider: "openai" | "azure" | "claude";
@@ -33,6 +35,46 @@ export interface Config {
   inputPricePerMillion: number;
   cachedInputPricePerMillion: number;
   outputPricePerMillion: number;
+}
+export interface SolutionConfig {
+  path: string;
+  msbuildPath: string;
+  configuration: string;
+  platform: string;
+  maxIterations: number;
+  buildTimeoutSeconds: number;
+}
+export interface SolutionBuild {
+  iteration: number;
+  startedAt: string;
+  finishedAt: string;
+  success: boolean;
+  exitCode: number;
+  output: string;
+  diagnostics: SourceDiagnostic[];
+}
+export interface SolutionRun {
+  reviews?: SolutionReview[];
+  requestPending?: boolean;
+  id: string;
+  status: string;
+  startedAt: string;
+  finishedAt: string;
+  iteration: number;
+  note: string;
+  builds: SolutionBuild[];
+  files: string[];
+  commit?: string;
+  usage: Usage;
+}
+export interface SolutionReview {
+  iteration: number;
+  verdict: string;
+  summary: string;
+  assessments: { ruleId: string; status: string; reason: string }[];
+  originalHashes: Record<string, string>;
+  candidateHashes: Record<string, string>;
+  usage: Usage;
 }
 export interface RuleContent {
   pathPattern: string;
@@ -256,6 +298,7 @@ export interface PublishResultsRequest {
   messageAsFile: boolean;
 }
 export interface State {
+  solutionRun?: SolutionRun;
   executionRuns: ExecutionRun[];
   workspaces: Workspace[];
   llmConnections: LLMConnection[];
@@ -315,6 +358,9 @@ export interface Backend {
   SaveConfig(config: Config): Promise<State>;
   ChooseDirectory(kind: "root" | "demo"): Promise<string>;
   ChooseRulePackage(): Promise<string>;
+  ChooseSolutionSkillsDirectory(): Promise<string>;
+  ImportSolutionSkills(path: string, mode: "replace" | "merge"): Promise<State>;
+  ExportSolutionSkills(): Promise<string>;
   ImportRulePackage(path: string, mode: "replace" | "merge"): Promise<State>;
   ExportRulePackage(): Promise<string>;
   ExportRuleImportTemplate(): Promise<string>;
@@ -322,11 +368,13 @@ export interface Backend {
   ImportDiagnostics(path: string): Promise<State>;
   ClearDiagnostics(): Promise<State>;
   Scan(): Promise<State>;
+  DiscoverSolutions(): Promise<string[]>;
   Start(limit: number): Promise<void>;
   Stop(): Promise<void>;
   RetryTasks(files: string[]): Promise<State>;
   DiscardFileChanges(file: string): Promise<State>;
   GetFileDetail(file: string, attempt: number): Promise<FileDetail>;
+  GetSolutionFileDetail(file: string): Promise<FileDetail>;
   GetExecutionRun(id: string): Promise<ExecutionRunResult>;
   GetExecutionFileDetail(id: string, file: string, attempt: number): Promise<FileDetail>;
   ListTargetFiles(workspaceId: string, root: string): Promise<TargetFileList>;
@@ -363,6 +411,8 @@ export function normalizeConcurrency(value: number | undefined): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.min(10, Math.max(1, Math.trunc(value))) : 2;
 }
 export const defaultConfig: Config = {
+  mode: "files",
+  solution: { path: "", msbuildPath: "", configuration: "Debug", platform: "Any CPU", maxIterations: 20, buildTimeoutSeconds: 300 },
   concurrency: 2,
   provider: "azure",
   root: "",
@@ -444,10 +494,24 @@ export function normalizeState(state: State): State {
     ...emptyState,
     ...state,
     executionRuns: state.executionRuns || [],
+    solutionRun: state.solutionRun ? {
+      ...state.solutionRun,
+      reviews: (state.solutionRun.reviews || []).map(review => ({
+        ...review,
+        assessments: review.assessments || [],
+        originalHashes: review.originalHashes || {},
+        candidateHashes: review.candidateHashes || {},
+        usage: { ...emptyUsage, ...review.usage },
+      })),
+      files: state.solutionRun.files || [],
+      builds: (state.solutionRun.builds || []).map(build => ({ ...build, diagnostics: normalizeSourceDiagnostics(build.diagnostics) })),
+      usage: { ...emptyUsage, ...state.solutionRun.usage },
+    } : undefined,
     config: {
       ...defaultConfig,
       ...state.config,
       concurrency: normalizeConcurrency(state.config?.concurrency),
+      solution: { ...defaultConfig.solution!, ...state.config?.solution },
     },
     currentFiles: state.currentFiles || [],
     filePhases: state.filePhases || {},

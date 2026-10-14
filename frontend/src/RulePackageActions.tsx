@@ -4,8 +4,9 @@ import { Icon } from "./icons";
 import { HoverTip } from "./HoverTip";
 import "./rule-package-actions.css";
 
-export function RulePackageActions({ disabled, exportDisabled, disabledReason, onImport, onExport, onExportTemplate }: {
+export function RulePackageActions({ disabled, exportDisabled, disabledReason, solutionMode, onImport, onExport, onExportTemplate, onImportSkills, onExportSkills }: {
   disabled: boolean; exportDisabled: boolean; disabledReason?: string; onImport: () => void; onExport: () => void; onExportTemplate: () => void;
+  solutionMode?: boolean; onImportSkills?: () => void; onExportSkills?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [position, setPosition] = useState({ top: 0, left: 0 });
@@ -49,15 +50,17 @@ export function RulePackageActions({ disabled, exportDisabled, disabledReason, o
           choices[next]?.focus();
         }
       }}>
-      <button type="button" role="menuitem" onClick={() => { close(); onImport(); }}><Icon name="folder" size={16} />JSON・CSVをインポート</button>
-      <button type="button" role="menuitem" onClick={() => { close(); onExportTemplate(); }}><Icon name="download" size={16} />Excel用テンプレート（CSV）</button>
-      <HoverTip reason={exportDisabled ? "書き出すルールを追加してください。" : ""}><button type="button" role="menuitem" disabled={exportDisabled} onClick={() => { close(); onExport(); }}><Icon name="download" size={16} />書き出す</button></HoverTip>
+      <button type="button" role="menuitem" onClick={() => { close(); onImport(); }}><Icon name="folder" size={16} />{solutionMode ? "JSON・CSV・SKILL.mdをインポート" : "JSON・CSVをインポート"}</button>
+      {solutionMode ? <button type="button" role="menuitem" onClick={() => { close(); onImportSkills?.(); }}><Icon name="folder" size={16} />スキルフォルダをインポート</button> : <button type="button" role="menuitem" onClick={() => { close(); onExportTemplate(); }}><Icon name="download" size={16} />Excel用テンプレート（CSV）</button>}
+      <HoverTip reason={exportDisabled ? "書き出すルールを追加してください。" : ""}><button type="button" role="menuitem" disabled={exportDisabled} onClick={() => { close(); onExport(); }}><Icon name="download" size={16} />{solutionMode ? "JSONで書き出す" : "書き出す"}</button></HoverTip>
+      {solutionMode && <HoverTip reason={exportDisabled ? "書き出すルールを追加してください。" : ""}><button type="button" role="menuitem" disabled={exportDisabled} onClick={() => { close(); onExportSkills?.(); }}><Icon name="download" size={16} />スキルとして書き出す</button></HoverTip>}
     </div>, document.body)}
   </>;
 }
 
-export function RulePackageImportDialog({ path, busy, error, onCancel, onConfirm }: {
+export function RulePackageImportDialog({ path, busy, error, solutionMode, onCancel, onConfirm }: {
   path: string; busy: boolean; error?: string; onCancel: () => void; onConfirm: (mode: "replace" | "merge") => void;
+  solutionMode?: boolean;
 }) {
   const [mode, setMode] = useState<"replace" | "merge">("merge");
   const form = useRef<HTMLFormElement>(null);
@@ -86,7 +89,7 @@ export function RulePackageImportDialog({ path, busy, error, onCancel, onConfirm
       <p className="package-import-filename" title={path}>{path.split(/[\\/]/).at(-1)}</p>
       <label className={`package-import-choice${mode === "merge" ? " selected" : ""}`}>
         <input type="radio" name="package-mode" value="merge" checked={mode === "merge"} disabled={busy} onChange={() => setMode("merge")} />
-        <span><strong>マージ</strong><span>現在のルールを残し、読み込んだルールを追加します。同じIDには _2、_3… を付けて追加します。</span></span>
+        <span><strong>マージ</strong><span>現在のルールを残し、読み込んだルールを追加します。同じIDには {solutionMode ? "-2、-3…" : "_2、_3…"} を付けて追加します。</span></span>
       </label>
       <label className={`package-import-choice${mode === "replace" ? " selected" : ""}`}>
         <input type="radio" name="package-mode" value="replace" checked={mode === "replace"} disabled={busy} onChange={() => setMode("replace")} />

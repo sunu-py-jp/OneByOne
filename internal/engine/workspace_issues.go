@@ -70,6 +70,14 @@ func (s *Service) cachedWorkspaceIssuesLocked(id string) []model.WorkspaceIssue 
 }
 
 func (s *Service) redactLocked(message string) string {
+	message = s.redactSecretsLocked(message)
+	if len(message) > 8192 {
+		message = message[:8192] + "…"
+	}
+	return message
+}
+
+func (s *Service) redactSecretsLocked(message string) string {
 	secrets := []string{s.state.Config.Credential}
 	for _, connection := range s.state.LLMConnections {
 		secrets = append(secrets, connection.Credential)
@@ -81,9 +89,6 @@ func (s *Service) redactLocked(message string) string {
 		if secret != "" {
 			message = strings.ReplaceAll(message, secret, "[redacted]")
 		}
-	}
-	if len(message) > 8192 {
-		message = message[:8192] + "…"
 	}
 	return message
 }

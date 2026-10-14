@@ -5,6 +5,7 @@ import type { Config, Rule } from "./types";
 export function selectionContextKey(workspaceId: string, config: Config, rules: Rule[]): string {
   return JSON.stringify([
     workspaceId, config.root, config.queuePath, config.rulesPath,
+    config.mode || "files", config.mode === "solution" ? config.solution : null,
     config.diagnosticsPath || "", config.diagnosticsSourceFile || "", Boolean(config.diagnosticsOnly),
     [...new Set(config.excludedRuleIds || [])].sort(),
     rules.map(({ id, title, summary, pathPattern, contentPattern, diagnosticPattern, body }) =>

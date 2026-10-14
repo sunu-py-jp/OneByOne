@@ -23,17 +23,18 @@ import (
 )
 
 type manifest struct {
-	Version        int          `json:"version"`
-	Root           string       `json:"root"`
-	RepoRoot       string       `json:"repoRoot"`
-	SourceRelative string       `json:"sourceRelative"`
-	BaseCommit     string       `json:"baseCommit"`
-	Worktree       string       `json:"worktree"`
-	Branch         string       `json:"branch"`
-	RuleHash       string       `json:"ruleHash"`
-	Config         model.Config `json:"config"`
-	Scanned        int          `json:"scanned"`
-	Excluded       int          `json:"excluded"`
+	SolutionRun    *model.SolutionRun `json:"solutionRun,omitempty"`
+	Version        int                `json:"version"`
+	Root           string             `json:"root"`
+	RepoRoot       string             `json:"repoRoot"`
+	SourceRelative string             `json:"sourceRelative"`
+	BaseCommit     string             `json:"baseCommit"`
+	Worktree       string             `json:"worktree"`
+	Branch         string             `json:"branch"`
+	RuleHash       string             `json:"ruleHash"`
+	Config         model.Config       `json:"config"`
+	Scanned        int                `json:"scanned"`
+	Excluded       int                `json:"excluded"`
 }
 
 type Service struct {
@@ -52,6 +53,8 @@ type Service struct {
 	cancel               context.CancelFunc
 	done                 chan struct{}
 	propose              func(context.Context, agent.Input) (model.Proposal, error)
+	proposeSolution      func(context.Context, agent.SolutionInput) (agent.SolutionProposal, error)
+	buildSolution        func(context.Context, string, model.SolutionSettings) (model.SolutionBuild, error)
 	workspaces           []workspaceRecord
 	workspaceIssues      map[string]map[string]model.WorkspaceIssue
 	personal             *privateconfig.Store
@@ -119,7 +122,7 @@ func (s *Service) Snapshot() model.State {
 	x := s.state
 	x.Tasks = copyTasks(s.state.Tasks)
 	for i := range x.Tasks {
-		x.Tasks[i].CanDiscardChanges = canDiscardChanges(x.Tasks[i])
+		x.Tasks[i].CanDiscardChanges = !x.Config.SolutionMode() && canDiscardChanges(x.Tasks[i])
 	}
 	x.Config = safeConfig(x.Config)
 	if x.SelectedLLMConnectionID == "" {
@@ -184,6 +187,11 @@ func (s *Service) idle() error {
 }
 
 func normalizeConfig(c model.Config) (model.Config, error) {
+	var solutionErr error
+	c, solutionErr = model.NormalizeSolutionConfig(c)
+	if solutionErr != nil {
+		return c, solutionErr
+	}
 	if c.Concurrency < 0 || c.Concurrency > 10 {
 		return c, fmt.Errorf("並列数は1〜10です（未指定は2）")
 	}
@@ -279,12 +287,21 @@ func (s *Service) SaveConfig(c model.Config) (model.State, error) {
 	if e != nil {
 		return s.Snapshot(), e
 	}
+	if c.SolutionMode() != old.SolutionMode() || (old.SolutionMode() && old.Solution != nil && c.Solution != nil && old.Solution.Path != c.Solution.Path) {
+		s.mu.Lock()
+		hasHistory := s.state.Worktree != "" || len(s.state.ExecutionRuns) > 0
+		s.mu.Unlock()
+		if hasHistory {
+			return s.Snapshot(), fmt.Errorf("実行後のモード・ソリューション変更は新しいワークスペースで行ってください")
+		}
+	}
 	if e = s.saveWorkspaceConfig(&c); e != nil {
 		return s.Snapshot(), e
 	}
 	s.mu.Lock()
 	s.state.Config = c
-	if c.Root != old.Root || c.QueuePath != old.QueuePath {
+	if c.Root != old.Root || c.QueuePath != old.QueuePath || c.SolutionMode() != old.SolutionMode() {
+		s.state.SolutionRun = nil
 		s.state.ExecutionRuns = []model.ExecutionRun{}
 		s.state.Tasks = []model.Task{}
 		s.state.Rules = []model.Rule{}
@@ -337,6 +354,7 @@ func (s *Service) load(path string) error {
 			c.DiagnosticsSourceFile = connection.DiagnosticsSourceFile
 			c.DiagnosticsOnly = connection.DiagnosticsOnly
 			c.Concurrency = connection.Concurrency
+			c.Mode, c.Solution = connection.Mode, connection.Solution
 			c.InputPricePerMillion = connection.InputPricePerMillion
 			c.CachedInputPricePerMillion = connection.CachedInputPricePerMillion
 			c.OutputPricePerMillion = connection.OutputPricePerMillion
@@ -355,6 +373,13 @@ func (s *Service) load(path string) error {
 	s.mu.Lock()
 	s.state.Config = c
 	s.state.Tasks = tasks
+	s.state.SolutionRun = m.SolutionRun
+	if run := s.state.SolutionRun; run != nil && run.Status == "running" && !s.state.ReadOnly && s.workspaceLease != nil {
+		run.Status, run.FinishedAt = "stopped", now()
+		run.Note = "前回のソリューション処理が中断しました。再実行すると採用済みの内容から初回ビルドをやり直します"
+		run.Usage.Uncertain = run.Usage.Uncertain || run.RequestPending
+		s.recordSolutionFailureLocked(run)
+	}
 	s.meta = m
 	s.state.Worktree = m.Worktree
 	s.state.Branch = m.Branch
@@ -362,6 +387,9 @@ func (s *Service) load(path string) error {
 	s.state.ExcludedCount = m.Excluded
 	s.recountLocked()
 	s.mu.Unlock()
+	if err := s.restorePendingSolution(); err != nil {
+		return err
+	}
 	return s.loadExecutionRuns(path)
 }
 
@@ -419,6 +447,12 @@ func (s *Service) persist() error {
 	s.mu.Lock()
 	tasks := copyTasks(s.state.Tasks)
 	m := s.meta
+	if s.state.SolutionRun != nil {
+		data, _ := json.Marshal(s.state.SolutionRun)
+		var run model.SolutionRun
+		_ = json.Unmarshal(data, &run)
+		m.SolutionRun = &run
+	}
 	m.Config = storedConfig(s.state.Config)
 	m.Root = s.state.Config.Root
 	m.Worktree = s.state.Worktree
@@ -449,6 +483,9 @@ func (s *Service) Scan() (state model.State, err error) {
 	s.mu.Lock()
 	cfg := s.state.Config
 	s.mu.Unlock()
+	if cfg.SolutionMode() {
+		return s.scanSolution(cfg)
+	}
 	cfg, e := normalizeConfig(cfg)
 	if e != nil {
 		return s.Snapshot(), e
@@ -630,6 +667,9 @@ func (s *Service) Start(limit int) error {
 	cfg, extractedHash := s.state.Config, s.meta.RuleHash
 	hasTasks := len(s.state.Tasks) > 0
 	s.mu.Unlock()
+	if cfg.SolutionMode() {
+		return s.startSolution(cfg)
+	}
 	if hasTasks {
 		validationContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		fresh, err := catalog.Load(validationContext, cfg)
@@ -754,6 +794,9 @@ func (s *Service) RetryTasks(files []string) (model.State, error) {
 	s.mu.Lock()
 	cfg := s.state.Config
 	s.mu.Unlock()
+	if cfg.SolutionMode() {
+		return s.Snapshot(), errors.New("ソリューションモードではファイル単位の再試行はできません。ソリューション全体を再実行してください")
+	}
 	unlock, e := lockSharedQueue(cfg)
 	if e != nil {
 		return s.Snapshot(), e
@@ -823,7 +866,7 @@ func (s *Service) recountLocked() {
 	selected := 0
 	for i := range s.state.Tasks {
 		t := &s.state.Tasks[i]
-		t.CanDiscardChanges = canDiscardChanges(*t)
+		t.CanDiscardChanges = !s.state.Config.SolutionMode() && canDiscardChanges(*t)
 		if !t.Excluded {
 			selected++
 			for _, id := range t.Rules {
@@ -843,6 +886,19 @@ func (s *Service) recountLocked() {
 			s.state.Rules[i].CandidateCount = selected
 		}
 		s.state.Rules[i].AppliedCount = applied[s.state.Rules[i].ID]
+	}
+	if run := s.state.SolutionRun; run != nil {
+		accounted := false
+		for _, task := range s.state.Tasks {
+			for _, a := range task.History {
+				if a.ExecutionID == run.ID {
+					accounted = true
+				}
+			}
+		}
+		if !accounted {
+			addUsage(&s.state.Usage, run.Usage)
+		}
 	}
 	s.updateTaskIssuesLocked(s.state.ActiveWorkspaceID, s.state.Tasks)
 	s.publishWorkspacesLocked()

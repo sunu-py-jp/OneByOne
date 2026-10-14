@@ -27,7 +27,10 @@ type Entry struct {
 	ID       string `json:"id"`
 	Markdown string `json:"markdown"`
 }
-type Package struct{ Rules []Entry }
+type Package struct {
+	Rules    []Entry
+	Solution bool
+}
 type document struct {
 	Rules []string `json:"rules"`
 }
@@ -103,6 +106,9 @@ func identify(docs []string) (*Package, error) {
 
 // Decode reads a portable document and validates every rule.
 func Decode(data []byte) (*Package, error) {
+	if isSolutionDocument(data) {
+		return decodeSolutionDocument(data)
+	}
 	docs, err := decodeDocument(data)
 	if err != nil {
 		return nil, err
@@ -151,6 +157,9 @@ func Encode(p *Package) ([]byte, error) {
 	return encodeDocument(p)
 }
 func encodeDocument(p *Package) ([]byte, error) {
+	if p.Solution {
+		return encodeSolutionDocument(p)
+	}
 	d := document{Rules: []string{}}
 	for _, e := range p.Rules {
 		d.Rules = append(d.Rules, e.Markdown)

@@ -12,6 +12,7 @@ import (
 	"onebyone/internal/engine"
 	"onebyone/internal/model"
 	"onebyone/internal/rulepack"
+	"onebyone/internal/solutionrules"
 )
 
 // These command adapters leave validation, workspace ownership, package
@@ -140,7 +141,7 @@ func executeRulesCommand(ctx context.Context, s *engine.Service, args []string, 
 		return nil, err
 	}
 	if len(args) == 0 {
-		return nil, errors.New("rules の操作を指定してください: list / show / create / update / delete / import / export / template")
+		return nil, errors.New("rules の操作を指定してください: list / show / create / update / delete / import / export / export-skills / template")
 	}
 	command, rest := args[0], args[1:]
 	var id, input, output, mode string
@@ -162,11 +163,15 @@ func executeRulesCommand(ctx context.Context, s *engine.Service, args []string, 
 		}
 	case "import":
 		configure = func(f *flag.FlagSet) {
-			f.StringVar(&input, "input", "", "rules.json またはCSVファイル")
+			f.StringVar(&input, "input", "", "rules.json、CSV、またはソリューション用 SKILL.md / スキルフォルダ")
 			f.StringVar(&mode, "mode", "", "replace または merge")
 		}
 	case "export":
 		configure = func(f *flag.FlagSet) { f.StringVar(&output, "output", "", "保存先 rules.json") }
+	case "export-skills":
+		configure = func(f *flag.FlagSet) {
+			f.StringVar(&output, "output", "", "ソリューション用スキルの保存先ディレクトリ")
+		}
 	case "template":
 		configure = func(f *flag.FlagSet) {
 			f.StringVar(&output, "output", "", "Excel用テンプレートの保存先 rules-template.csv")
@@ -186,7 +191,7 @@ func executeRulesCommand(ctx context.Context, s *engine.Service, args []string, 
 		if err := requireWorkspaceRuleValue("input", input); err != nil {
 			return nil, err
 		}
-	case "export", "template":
+	case "export", "export-skills", "template":
 		if err := requireWorkspaceRuleValue("output", output); err != nil {
 			return nil, err
 		}
@@ -214,13 +219,37 @@ func executeRulesCommand(ctx context.Context, s *engine.Service, args []string, 
 	}
 	switch command {
 	case "list":
+		if state := s.Snapshot(); state.Config.SolutionMode() {
+			rules := make([]solutionrules.Rule, 0, len(state.Rules))
+			for _, rule := range state.Rules {
+				rules = append(rules, solutionrules.Rule{ID: rule.ID, Description: rule.Summary, Content: rule.Body})
+			}
+			return rules, nil
+		}
 		return s.Snapshot().Rules, nil
 	case "show":
 		defer s.CloseRule()
+		if s.Snapshot().Config.SolutionMode() {
+			editor, err := s.OpenRule(id)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{"rule": solutionrules.Rule{ID: editor.Rule.ID, Description: editor.Rule.Summary, Content: editor.Rule.Body}, "revision": editor.Revision, "readOnly": editor.ReadOnly}, nil
+		}
 		return s.OpenRule(id)
 	case "create", "update":
 		var edit model.RuleEdit
-		if err := readCLIJSON(in, input, &edit); err != nil {
+		if s.Snapshot().Config.SolutionMode() {
+			var inputRule struct {
+				solutionrules.Rule
+				ExpectedRevision string `json:"expectedRevision,omitempty"`
+			}
+			if err := readCLIJSON(in, input, &inputRule); err != nil {
+				return nil, err
+			}
+			edit = model.RuleEdit{ID: inputRule.ID, Name: inputRule.ID, Description: inputRule.Description, ExpectedRevision: inputRule.ExpectedRevision}
+			edit.Body = inputRule.Content
+		} else if err := readCLIJSON(in, input, &edit); err != nil {
 			return nil, err
 		}
 		if command == "update" && strings.TrimSpace(edit.ExpectedRevision) == "" {
@@ -253,6 +282,15 @@ func executeRulesCommand(ctx context.Context, s *engine.Service, args []string, 
 	case "export":
 		path, err := s.ExportRulePackage(output)
 		if err != nil {
+			return nil, err
+		}
+		return map[string]string{"path": path}, nil
+	case "export-skills":
+		path, err := filepath.Abs(output)
+		if err != nil {
+			return nil, err
+		}
+		if err = s.ExportSolutionSkills(path); err != nil {
 			return nil, err
 		}
 		return map[string]string{"path": path}, nil
