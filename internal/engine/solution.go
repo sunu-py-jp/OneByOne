@@ -391,6 +391,10 @@ func (s *Service) runSolution(ctx context.Context, cfg model.Config) (runErr err
 	if propose == nil {
 		propose = agent.RunSolution
 	}
+	trace, err := s.newSolutionTraceWriter(cfg, executionID, runID)
+	if err != nil {
+		return fmt.Errorf("AIの操作履歴を作成できません: %w", err)
+	}
 	notes, applied := []string{}, map[string]map[string]bool{}
 	seen := map[string]bool{}
 	for iteration := 0; ; iteration++ {
@@ -476,6 +480,9 @@ func (s *Service) runSolution(ctx context.Context, cfg model.Config) (runErr err
 		hookedUsage := false
 		proposal, proposeErr := propose(ctx, agent.SolutionInput{
 			Config: cfg, Rules: selected, RuleFiles: ruleFiles, Files: texts, BuildOutput: buildEvidence,
+			Trace: func(event model.AgentTraceEvent) error {
+				return trace(iteration, event)
+			},
 			Log: func(msg string) {
 				if strings.HasPrefix(msg, "ソリューション全体の独立レビュー") {
 					s.mu.Lock()

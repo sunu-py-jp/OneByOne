@@ -28,6 +28,7 @@ type SolutionInput struct {
 	PreviousFailure string
 	BeforeRequest   func(string) error
 	AfterRequest    func(model.Usage, error) error
+	Trace           func(model.AgentTraceEvent) error
 	Log             func(string)
 }
 
@@ -90,9 +91,10 @@ func RunSolution(ctx context.Context, in SolutionInput) (out SolutionProposal, e
 	var usage model.Usage
 	var reviews []SolutionReview
 	defer func() { out.Usage, out.Reviews = usage, reviews }()
+	trace := &solutionTrace{callback: in.Trace}
 	rejected := map[string]bool{}
 	for {
-		decision, note, loopErr := c.runSolutionSession(ctx, s, &usage)
+		decision, note, loopErr := c.runSolutionSession(ctx, s, &usage, trace)
 		if loopErr != nil {
 			return out, loopErr
 		}
@@ -114,7 +116,7 @@ func RunSolution(ctx context.Context, in SolutionInput) (out SolutionProposal, e
 			in.Log("ソリューション全体の独立レビューを開始します")
 		}
 		beforeReview := usage
-		verdict, reviewNote, reviewErr := c.runSolutionSession(ctx, review, &usage)
+		verdict, reviewNote, reviewErr := c.runSolutionSession(ctx, review, &usage, trace)
 		if reviewErr != nil {
 			return out, reviewErr
 		}
@@ -339,7 +341,17 @@ func (s *solutionSession) initialHistory(reason string) []json.RawMessage {
 	}))})}
 }
 
-func (c *client) runSolutionSession(ctx context.Context, s *solutionSession, usage *model.Usage) (string, string, error) {
+func (c *client) runSolutionSession(ctx context.Context, s *solutionSession, usage *model.Usage, trace *solutionTrace) (decision, note string, sessionErr error) {
+	activity, err := trace.beginSession(s.reviewer)
+	if err != nil {
+		return "", "", err
+	}
+	before := *usage
+	defer func() {
+		if err := activity.finishSession(usageDifference(*usage, before), sessionErr); err != nil {
+			sessionErr = errors.Join(sessionErr, err)
+		}
+	}()
 	history := s.initialHistory("")
 	lastAction, repeats, invalid := "", 0, 0
 	for {
@@ -349,24 +361,44 @@ func (c *client) runSolutionSession(ctx context.Context, s *solutionSession, usa
 		if repeats >= 12 || invalid >= 12 {
 			return "", "", errors.New("LLM が同じ操作または無効な応答を繰り返したため停止しました。ソリューション候補は採用していません")
 		}
+		activity.turn++
 		body, err := c.solutionRequest(history, s)
 		if err != nil {
 			return "", "", err
 		}
+		request := activity.event("request", "AI の応答を取得します")
+		if err := trace.emit(request); err != nil {
+			return "", "", err
+		}
 		res, delta, err := c.solutionResponse(ctx, s.in, body)
 		*usage = addReviewUsage(*usage, delta)
+		responseErr := err
+		if responseErr == nil {
+			responseErr = completed(res)
+		}
+		if traceErr := activity.complete(request, "", delta, responseErr); traceErr != nil {
+			return "", "", errors.Join(err, traceErr)
+		}
 		if err != nil {
 			if IsContextLimit(err) {
-				history = s.initialHistory("Provider context limit; read saved state and continue in smaller pages.")
+				reason := "Provider context limit; read saved state and continue in smaller pages."
+				if traceErr := activity.context(reason); traceErr != nil {
+					return "", "", traceErr
+				}
+				history = s.initialHistory(reason)
 				invalid++
 				continue
 			}
 			return "", "", err
 		}
-		if err = completed(res); err != nil {
+		if err = responseErr; err != nil {
 			if IsOutputLimit(err) || IsContextLimit(err) {
 				c.growOutputLimit()
-				history = s.initialHistory("Incomplete response discarded. Continue using smaller edit/assessment batches; saved state remains available.")
+				reason := "Incomplete response discarded. Continue using smaller edit/assessment batches; saved state remains available."
+				if traceErr := activity.context(reason); traceErr != nil {
+					return "", "", traceErr
+				}
+				history = s.initialHistory(reason)
 				invalid++
 				continue
 			}
@@ -374,7 +406,11 @@ func (c *client) runSolutionSession(ctx context.Context, s *solutionSession, usa
 		}
 		calls, final, err := parseOutput(res.Output)
 		if err != nil {
-			history = s.initialHistory("Invalid response: use the supplied tools and final JSON schema.")
+			reason := "Invalid response: use the supplied tools and final JSON schema."
+			if traceErr := activity.context(reason); traceErr != nil {
+				return "", "", traceErr
+			}
+			history = s.initialHistory(reason)
 			invalid++
 			continue
 		}
@@ -390,13 +426,16 @@ func (c *client) runSolutionSession(ctx context.Context, s *solutionSession, usa
 		if len(calls) > 0 {
 			results, seen := []toolResult{}, map[string]bool{}
 			for _, call := range calls {
-				if call.CallID == "" || len(call.CallID) > 1024 || seen[call.CallID] {
-					return "", "", errors.New("Invalid or duplicate solution tool call ID")
-				}
+				invalidID := call.CallID == "" || len(call.CallID) > 1024 || seen[call.CallID]
 				seen[call.CallID] = true
-				value, toolErr := s.execute(call)
+				value, toolErr, traceErr := activity.execute(s, call, invalidID)
+				if traceErr != nil {
+					return "", "", traceErr
+				}
+				if invalidID {
+					return "", "", toolErr
+				}
 				if toolErr != nil {
-					value = "Tool error: " + bounded(toolErr.Error(), 2048)
 					invalid++
 				} else {
 					invalid = 0
@@ -407,6 +446,9 @@ func (c *client) runSolutionSession(ctx context.Context, s *solutionSession, usa
 			continue
 		}
 		decision, note, err := s.finish(final)
+		if traceErr := activity.decision(final, err); traceErr != nil {
+			return "", "", traceErr
+		}
 		if err == nil {
 			return decision, note, nil
 		}

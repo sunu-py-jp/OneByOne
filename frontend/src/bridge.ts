@@ -63,6 +63,13 @@ export const api: Backend = {
     isPreview
       ? Promise.resolve(previewDetail(file, attempt))
       : native().GetFileDetail(file, attempt),
+  ListSolutionTrace: async (workspaceId, executionId, solutionRunId, offset) => {
+    const page = isPreview ? { entries: [], nextOffset: 0, total: 0, complete: true } : await native().ListSolutionTrace(workspaceId, executionId, solutionRunId, offset);
+    return { ...page, entries: page.entries || [] };
+  },
+  ReadSolutionTrace: (workspaceId, executionId, solutionRunId, sequence, section, offset) => isPreview
+    ? Promise.resolve({ content: "", offset: 0, nextOffset: 0, totalBytes: 0, complete: true })
+    : native().ReadSolutionTrace(workspaceId, executionId, solutionRunId, sequence, section, offset),
   GetSolutionFileDetail: (file) => native().GetSolutionFileDetail(file),
   GetExecutionRun: async (id) => normalizeExecutionRunResult(isPreview ? previewExecutionRun(id) : await native().GetExecutionRun(id)),
   GetExecutionFileDetail: (id, file, attempt) => isPreview

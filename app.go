@@ -135,6 +135,12 @@ func (a *App) SetTaskSelection(files []string) (model.State, error) {
 func (a *App) GetFileDetail(file string, attempt int) (model.FileDetail, error) {
 	return a.service.GetFileDetail(file, attempt)
 }
+func (a *App) ListSolutionTrace(workspaceID, executionID, solutionRunID string, offset int) (model.AgentTracePage, error) {
+	return a.service.ListSolutionTrace(workspaceID, executionID, solutionRunID, offset)
+}
+func (a *App) ReadSolutionTrace(workspaceID, executionID, solutionRunID string, sequence int, section string, offset int) (model.AgentTraceContent, error) {
+	return a.service.ReadSolutionTrace(workspaceID, executionID, solutionRunID, sequence, section, offset)
+}
 func (a *App) GetSolutionFileDetail(file string) (model.FileDetail, error) {
 	return a.service.GetSolutionFileDetail(file)
 }

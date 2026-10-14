@@ -339,6 +339,36 @@ export interface State {
   usage: Usage;
   lastError: string;
 }
+export interface AgentTraceEntry {
+  sequence: number;
+  iteration: number;
+  session: number;
+  turn: number;
+  phase: string;
+  kind: string;
+  tool: string;
+  callId: string;
+  status: string;
+  summary: string;
+  startedAt: string;
+  finishedAt: string;
+  argumentsBytes: number;
+  outputBytes: number;
+  usage: Usage;
+}
+export interface AgentTracePage {
+  entries: AgentTraceEntry[];
+  nextOffset: number;
+  total: number;
+  complete: boolean;
+}
+export interface AgentTraceContent {
+  content: string;
+  offset: number;
+  nextOffset: number;
+  totalBytes: number;
+  complete: boolean;
+}
 export interface FileDetail {
   task: Task;
   before: string;
@@ -389,6 +419,8 @@ export interface Backend {
   RetryTasks(files: string[]): Promise<State>;
   DiscardFileChanges(file: string): Promise<State>;
   GetFileDetail(file: string, attempt: number): Promise<FileDetail>;
+  ListSolutionTrace(workspaceId: string, executionId: string, solutionRunId: string, offset: number): Promise<AgentTracePage>;
+  ReadSolutionTrace(workspaceId: string, executionId: string, solutionRunId: string, sequence: number, section: "arguments" | "output", offset: number): Promise<AgentTraceContent>;
   GetSolutionFileDetail(file: string): Promise<FileDetail>;
   GetExecutionRun(id: string): Promise<ExecutionRunResult>;
   GetExecutionFileDetail(id: string, file: string, attempt: number): Promise<FileDetail>;

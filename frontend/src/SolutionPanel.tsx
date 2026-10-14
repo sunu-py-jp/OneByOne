@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
+import { SolutionTracePanel } from "./SolutionTracePanel";
 import { api } from "./bridge";
 import { Icon } from "./icons";
 import { ResultCode } from "./ResultsPanel";
@@ -188,6 +189,7 @@ export function SolutionResultsPanel({ state, busy, usable, canSetup, executionI
         </details>)}
         {!(run.reviews || []).length && <p className="solution-hint">{running ? "候補の独立レビューが完了すると、判定とルールごとの評価を表示します。" : "独立レビューの記録はありません。"}</p>}
       </section>
+      <SolutionTracePanel workspaceId={state.activeWorkspaceId} executionId={executionId || run.executionId || batch?.id || run.id} solutionRunId={run.id} running={running} />
       <section className="solution-file-results" aria-label="ソリューションの変更差分"><h3>変更ファイル</h3>
         {files.length ? <><label className="field"><span className="field-label">ファイル</span><select value={selectedFile} onChange={event => setFile(event.target.value)}>{files.map(path => <option key={path} value={path}>{path}</option>)}</select></label>
           <div className="solution-code-tabs" role="tablist" aria-label="ファイルの表示">{(["diff", "before", "after"] as const).map(tab => <button key={tab} type="button" role="tab" aria-selected={tab === view} onClick={() => setView(tab)}>{tab === "diff" ? "差分" : tab === "before" ? "変更前" : "変更後"}</button>)}</div>
