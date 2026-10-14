@@ -340,6 +340,34 @@ func TestTargetFolderChangeRequiresIdleEditableWorkspaceAndExplicitOperation(t *
 	}
 }
 
+func TestSolutionTargetFolderChangeResetsSelectionAndDiscoversNewSolutions(t *testing.T) {
+	s, cfg := solutionFixture(t)
+	cfg.Solution.Paths = []string{"Demo.sln"}
+	cfg.Solution.Configuration = "Release"
+	if _, err := s.SaveConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	nextRoot := t.TempDir()
+	writeTest(t, filepath.Join(nextRoot, "Next.sln"), []byte(testSolution))
+	writeTest(t, filepath.Join(nextRoot, "Demo/Demo.vbproj"), []byte(`<Project><ItemGroup><Compile Include="A.vb" /></ItemGroup></Project>`))
+	writeTest(t, filepath.Join(nextRoot, "Demo/A.vb"), []byte("Public Class A\nEnd Class\n"))
+	initTargetTestGit(t, nextRoot)
+	state, err := s.ChangeTargetFolder(nextRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Config.Solution.Path != "" || state.Config.Solution.Paths != nil || state.Config.Solution.Configuration != "Release" || state.SolutionRun != nil || state.SolutionBatch != nil {
+		t.Fatalf("old selection survived target change or build settings lost: %+v", state.Config.Solution)
+	}
+	state, err = s.Scan()
+	if err != nil || !reflect.DeepEqual(state.Config.Solution.SelectedPaths(), []string{"Next.sln"}) {
+		t.Fatalf("new target solutions were not discovered: %+v %v", state.Config.Solution, err)
+	}
+	if cfg.Solution.Path != "Demo.sln" || !reflect.DeepEqual(cfg.Solution.Paths, []string{"Demo.sln"}) {
+		t.Fatal("changing folders mutated the old settings snapshot")
+	}
+}
+
 func TestSavedTargetIssuesAppearOnReloadAndClearAfterRepair(t *testing.T) {
 	s, root := workspaceTestService(t)
 	initial, err := s.CreateWorkspace("saved target", root)

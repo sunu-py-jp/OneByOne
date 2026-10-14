@@ -12,7 +12,6 @@ import (
 	"onebyone/internal/engine"
 	"onebyone/internal/model"
 	"onebyone/internal/rulepack"
-	"onebyone/internal/solutionrules"
 )
 
 // These command adapters leave validation, workspace ownership, package
@@ -219,36 +218,31 @@ func executeRulesCommand(ctx context.Context, s *engine.Service, args []string, 
 	}
 	switch command {
 	case "list":
-		if state := s.Snapshot(); state.Config.SolutionMode() {
-			rules := make([]solutionrules.Rule, 0, len(state.Rules))
-			for _, rule := range state.Rules {
-				rules = append(rules, solutionrules.Rule{ID: rule.ID, Description: rule.Summary, Content: rule.Body})
-			}
-			return rules, nil
-		}
 		return s.Snapshot().Rules, nil
 	case "show":
 		defer s.CloseRule()
-		if s.Snapshot().Config.SolutionMode() {
-			editor, err := s.OpenRule(id)
-			if err != nil {
-				return nil, err
-			}
-			return map[string]any{"rule": solutionrules.Rule{ID: editor.Rule.ID, Description: editor.Rule.Summary, Content: editor.Rule.Body}, "revision": editor.Revision, "readOnly": editor.ReadOnly}, nil
-		}
 		return s.OpenRule(id)
 	case "create", "update":
 		var edit model.RuleEdit
 		if s.Snapshot().Config.SolutionMode() {
+			// Older solution clients used content rather than the shared body field.
 			var inputRule struct {
-				solutionrules.Rule
-				ExpectedRevision string `json:"expectedRevision,omitempty"`
+				model.RuleEdit
+				Content *string `json:"content,omitempty"`
 			}
 			if err := readCLIJSON(in, input, &inputRule); err != nil {
 				return nil, err
 			}
-			edit = model.RuleEdit{ID: inputRule.ID, Name: inputRule.ID, Description: inputRule.Description, ExpectedRevision: inputRule.ExpectedRevision}
-			edit.Body = inputRule.Content
+			edit = inputRule.RuleEdit
+			if inputRule.Content != nil {
+				if edit.Body != "" {
+					return nil, errors.New("body と互換用の content は同時に指定できません")
+				}
+				edit.Body = *inputRule.Content
+				if edit.Name == "" {
+					edit.Name = edit.ID
+				}
+			}
 		} else if err := readCLIJSON(in, input, &edit); err != nil {
 			return nil, err
 		}

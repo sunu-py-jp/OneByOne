@@ -52,6 +52,9 @@ func (s *Service) beginExecution(limit int) error {
 	s.mu.Lock()
 	r := &executionRecord{Version: 1, Run: model.ExecutionRun{ID: uid(), StartedAt: now(), Status: "running", Concurrency: s.state.Config.EffectiveConcurrency()}, StartingUsage: s.state.Usage, TargetFiles: []string{}, targetSet: map[string]bool{}}
 	for _, task := range s.state.Tasks {
+		if s.state.Config.SolutionMode() && task.Excluded {
+			continue
+		}
 		if !s.state.Config.SolutionMode() && (task.Excluded || (task.Status != "pending" && task.Status != "failed" && task.Status != "running")) {
 			continue
 		}
@@ -304,13 +307,19 @@ func (s *Service) loadExecutionRuns(queue string) error {
 			// for adopting an interrupted commit.
 			s.mu.Lock()
 			r.State.Tasks = copyTasks(s.state.Tasks)
-			if solutionRun := s.state.SolutionRun; solutionRun != nil && solutionRun.ID == r.Run.ID {
+			if solutionRun := s.state.SolutionRun; solutionRun != nil && solutionExecutionID(solutionRun) == r.Run.ID {
 				data, _ := json.Marshal(solutionRun)
 				var recovered model.SolutionRun
 				_ = json.Unmarshal(data, &recovered)
 				r.State.SolutionRun = &recovered
-				if recovered.Status == "completed" {
+				if recovered.Status == "completed" && s.state.SolutionBatch == nil {
 					r.Run.Status, r.Run.Error, r.Run.FinishedAt = "completed", "", recovered.FinishedAt
+				}
+			}
+			if batch := s.state.SolutionBatch; batch != nil && batch.ID == r.Run.ID {
+				r.State.SolutionBatch = copySolutionBatch(batch)
+				if batch.Status == "completed" {
+					r.Run.Status, r.Run.Error, r.Run.FinishedAt = "completed", "", batch.FinishedAt
 				}
 			}
 			r.Meta = s.meta

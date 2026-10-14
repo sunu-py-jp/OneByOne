@@ -38,9 +38,8 @@ func (s *Service) ImportRulePackage(path, mode string) (model.State, error) {
 	if w.ID == "" || cfg.Root == "" {
 		return s.Snapshot(), fmt.Errorf("先にワークスペースを選択してください")
 	}
-	var incoming *rulepack.Package
-	var err error
-	if cfg.SolutionMode() {
+	incoming, err := rulepack.Read(path)
+	if err != nil && cfg.SolutionMode() {
 		var rules []solutionrules.Rule
 		var absolute string
 		absolute, err = filepath.Abs(path)
@@ -49,11 +48,6 @@ func (s *Service) ImportRulePackage(path, mode string) (model.State, error) {
 		}
 		if err == nil {
 			incoming, err = rulepack.FromSolutionRules(rules)
-		}
-	} else {
-		incoming, err = rulepack.Read(path)
-		if err == nil && incoming.Solution {
-			err = fmt.Errorf("3項目のルールはソリューションモードで取り込んでください")
 		}
 	}
 	if err != nil {
@@ -72,7 +66,7 @@ func (s *Service) ImportRulePackage(path, mode string) (model.State, error) {
 			}
 		}
 		renamed := mergedRuleIDs(packageRuleIDs(current), packageRuleIDs(incoming))
-		if cfg.SolutionMode() {
+		if incoming.Solution {
 			renamed = mergedSolutionRuleIDs(packageRuleIDs(current), packageRuleIDs(incoming))
 		}
 		pkg = &rulepack.Package{Rules: append([]rulepack.Entry{}, current.Rules...)}
@@ -219,7 +213,6 @@ func (s *Service) installRulePackage(w model.Workspace, cfg model.Config, pkg *r
 }
 
 func (s *Service) installRuleVersion(w model.Workspace, cfg model.Config, pkg *rulepack.Package, allowInvalid bool) (model.State, error) {
-	pkg.Solution = cfg.SolutionMode()
 	settings, err := s.workspacePath(w.ID, "setting.json")
 	if err != nil {
 		return s.Snapshot(), err

@@ -51,14 +51,15 @@ export function RulePackageActions({ disabled, exportDisabled, disabledReason, s
         }
       }}>
       <button type="button" role="menuitem" onClick={() => { close(); onImport(); }}><Icon name="folder" size={16} />{solutionMode ? "JSON・CSV・SKILL.mdをインポート" : "JSON・CSVをインポート"}</button>
-      {solutionMode ? <button type="button" role="menuitem" onClick={() => { close(); onImportSkills?.(); }}><Icon name="folder" size={16} />スキルフォルダをインポート</button> : <button type="button" role="menuitem" onClick={() => { close(); onExportTemplate(); }}><Icon name="download" size={16} />Excel用テンプレート（CSV）</button>}
+      {solutionMode && <button type="button" role="menuitem" onClick={() => { close(); onImportSkills?.(); }}><Icon name="folder" size={16} />スキルフォルダをインポート</button>}
+      <button type="button" role="menuitem" onClick={() => { close(); onExportTemplate(); }}><Icon name="download" size={16} />Excel用テンプレート（CSV）</button>
       <HoverTip reason={exportDisabled ? "書き出すルールを追加してください。" : ""}><button type="button" role="menuitem" disabled={exportDisabled} onClick={() => { close(); onExport(); }}><Icon name="download" size={16} />{solutionMode ? "JSONで書き出す" : "書き出す"}</button></HoverTip>
       {solutionMode && <HoverTip reason={exportDisabled ? "書き出すルールを追加してください。" : ""}><button type="button" role="menuitem" disabled={exportDisabled} onClick={() => { close(); onExportSkills?.(); }}><Icon name="download" size={16} />スキルとして書き出す</button></HoverTip>}
     </div>, document.body)}
   </>;
 }
 
-export function RulePackageImportDialog({ path, busy, error, solutionMode, onCancel, onConfirm }: {
+export function RulePackageImportDialog({ path, busy, error, onCancel, onConfirm }: {
   path: string; busy: boolean; error?: string; onCancel: () => void; onConfirm: (mode: "replace" | "merge") => void;
   solutionMode?: boolean;
 }) {
@@ -89,7 +90,7 @@ export function RulePackageImportDialog({ path, busy, error, solutionMode, onCan
       <p className="package-import-filename" title={path}>{path.split(/[\\/]/).at(-1)}</p>
       <label className={`package-import-choice${mode === "merge" ? " selected" : ""}`}>
         <input type="radio" name="package-mode" value="merge" checked={mode === "merge"} disabled={busy} onChange={() => setMode("merge")} />
-        <span><strong>マージ</strong><span>現在のルールを残し、読み込んだルールを追加します。同じIDには {solutionMode ? "-2、-3…" : "_2、_3…"} を付けて追加します。</span></span>
+        <span><strong>マージ</strong><span>現在のルールを残し、読み込んだルールを追加します。同じIDには連番を付けて追加します。</span></span>
       </label>
       <label className={`package-import-choice${mode === "replace" ? " selected" : ""}`}>
         <input type="radio" name="package-mode" value="replace" checked={mode === "replace"} disabled={busy} onChange={() => setMode("replace")} />

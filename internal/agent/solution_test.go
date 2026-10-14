@@ -64,7 +64,11 @@ func solutionStage(file, old, replacement string) solutionTestAction {
 
 func solutionPassActions(in SolutionInput) []solutionTestAction {
 	actions := solutionReadActions(in, true)
-	actions = append(actions, solutionRead("record_assessments", map[string]any{"assessments": []model.ReviewAssessment{{RuleID: "R001", Status: "satisfied", Reason: "宣言と呼び出しの変更が整合しています。"}}}), solutionDone("passed", "ソリューション全体の変更を確認しました。"))
+	assessment := map[string]any{"ruleId": "R001", "status": "satisfied", "reason": "宣言と呼び出しの変更が整合しています。"}
+	if in.RuleFiles != nil {
+		assessment["files"] = in.RuleFiles["R001"]
+	}
+	actions = append(actions, solutionRead("record_assessments", map[string]any{"assessments": []any{assessment}}), solutionDone("passed", "ソリューション全体の変更を確認しました。"))
 	return actions
 }
 
@@ -89,6 +93,7 @@ func TestRunSolutionAllProvidersAtomicMultiFileIndependentReview(t *testing.T) {
 	for _, provider := range []string{"azure", "openai", "claude"} {
 		t.Run(provider, func(t *testing.T) {
 			fixture := solutionFixture("", provider)
+			fixture.RuleFiles = map[string][]string{"R001": {"App/A.vb", "App/B.vb"}}
 			editor := append(solutionReadActions(fixture, false), solutionStage("App/A.vb", "LegacySave", "ModernSave"), solutionStage("App/B.vb", "LegacySave", "ModernSave"), solutionRead("read_manifest", map[string]any{"offset": 0}), solutionDone("modified", "private-editor-note"))
 			reviewer := solutionPassActions(fixture)
 			editorTurn, reviewTurn, requests := 0, 0, 0
@@ -140,6 +145,7 @@ func TestRunSolutionAllProvidersAtomicMultiFileIndependentReview(t *testing.T) {
 			}))
 			defer srv.Close()
 			in := solutionFixture(srv.URL, provider)
+			in.RuleFiles = fixture.RuleFiles
 			reserved, settled := 0, 0
 			var persisted model.Usage
 			in.BeforeRequest = func(id string) error {
@@ -340,12 +346,12 @@ func TestSolutionRejectsUnsafeInputBeforeProviderRequest(t *testing.T) {
 	}
 }
 
-func TestSolutionManifestUsesOnlyRuleIDAndDescription(t *testing.T) {
+func TestSolutionManifestCarriesFixedConditionsAndTargets(t *testing.T) {
 	in := solutionFixture("", "openai")
-	in.Rules[0].PathPattern = "must-not-leak"
-	in.Rules[0].ContentPattern = "must-not-leak"
-	in.Rules[0].DiagnosticPattern = "must-not-leak"
-	in.Rules[0].Always = true
+	in.Rules[0].PathPattern = "App/*.vb"
+	in.Rules[0].ContentPattern = "LegacySave"
+	in.Rules[0].DiagnosticPattern = "BC30456"
+	in.RuleFiles = map[string][]string{"R001": {"App/A.vb", "App/B.vb"}}
 	manifest := newSolutionSession(in, false).manifest()
 	var catalog struct {
 		Rules []map[string]any `json:"rules"`
@@ -353,14 +359,107 @@ func TestSolutionManifestUsesOnlyRuleIDAndDescription(t *testing.T) {
 	if err := json.Unmarshal([]byte(manifest), &catalog); err != nil {
 		t.Fatal(err)
 	}
-	if len(catalog.Rules) != 1 || len(catalog.Rules[0]) != 2 || catalog.Rules[0]["id"] != "R001" || catalog.Rules[0]["description"] != in.Rules[0].Summary || strings.Contains(manifest, "must-not-leak") {
-		t.Fatalf("solution rule catalog contains file-mode metadata: %s", manifest)
+	if len(catalog.Rules) != 1 || catalog.Rules[0]["id"] != "R001" || catalog.Rules[0]["description"] != in.Rules[0].Summary || catalog.Rules[0]["pathPattern"] != "App/*.vb" || catalog.Rules[0]["contentPattern"] != "LegacySave" || catalog.Rules[0]["diagnosticPattern"] != "BC30456" || !reflect.DeepEqual(catalog.Rules[0]["files"], []any{"App/A.vb", "App/B.vb"}) {
+		t.Fatalf("solution rule scope missing: %s", manifest)
 	}
 	for _, prompt := range []string{solutionInstructions, solutionReviewInstructions} {
-		for _, field := range []string{"pathPattern", "contentPattern", "diagnosticPattern", "(always)"} {
-			if strings.Contains(prompt, field) {
-				t.Fatalf("solution prompt still relies on %s", field)
+		for _, field := range []string{"pathPattern", "contentPattern", "diagnosticPattern", "INITIAL", "Common rules"} {
+			if !strings.Contains(prompt, field) {
+				t.Fatalf("solution prompt does not describe %s", field)
 			}
 		}
+	}
+}
+
+func TestSolutionScopedAttributionAndInputFreeze(t *testing.T) {
+	in := solutionFixture("", "openai")
+	in.RuleFiles = map[string][]string{"R001": {"App/A.vb"}}
+	frozen, err := cloneSolutionInput(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in.RuleFiles["R001"][0] = "App/B.vb"
+	if frozen.RuleFiles["R001"][0] != "App/A.vb" {
+		t.Fatal("input scope was not frozen")
+	}
+	s := newSolutionSession(frozen, false)
+	for _, file := range []string{"App/A.vb", "App/B.vb"} {
+		if _, err := s.execute(functionCall{Name: "read_file", Arguments: string(raw(map[string]any{"file": file, "version": "original", "offset": 0}))}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	outside := solutionStage("App/B.vb", "LegacySave", "ModernSave")
+	if _, err := s.execute(functionCall{Name: outside.name, Arguments: string(raw(outside.args))}); err == nil {
+		t.Fatal("attribution outside fixed scope accepted")
+	}
+	inside := solutionStage("App/A.vb", "LegacySave", "ModernSave")
+	if _, err := s.execute(functionCall{Name: inside.name, Arguments: string(raw(inside.args))}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(s.after["App/A.vb"], "ModernSave") || !strings.Contains(s.after["App/B.vb"], "LegacySave") || !reflect.DeepEqual(s.ruleFiles("R001"), []string{"App/A.vb"}) {
+		t.Fatal("candidate changed frozen scope or accepted rejected edit")
+	}
+}
+
+func TestSolutionScopedReviewCannotOmitAFileOrOverwriteViolation(t *testing.T) {
+	in := solutionFixture("", "openai")
+	in.RuleFiles = map[string][]string{"R001": {"App/A.vb", "App/B.vb"}}
+	s := newSolutionSession(in, true)
+	for _, action := range solutionReadActions(in, true) {
+		if _, err := s.execute(functionCall{Name: action.name, Arguments: string(raw(action.args))}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	record := func(file, status string) error {
+		_, err := s.execute(functionCall{Name: "record_assessments", Arguments: string(raw(map[string]any{"assessments": []any{map[string]any{"ruleId": "R001", "status": status, "reason": "Checked this scoped file.", "files": []string{file}}}}))})
+		return err
+	}
+	decision := `{"status":"passed","note":"checked"}`
+	if err := record("App/A.vb", "satisfied"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.finish(decision); err == nil || !strings.Contains(err.Error(), "App/B.vb") {
+		t.Fatalf("unassessed file approved: %v", err)
+	}
+	if err := record("App.sln", "satisfied"); err == nil {
+		t.Fatal("unscoped assessment accepted")
+	}
+	if err := record("App/B.vb", "violated"); err != nil {
+		t.Fatal(err)
+	}
+	if err := record("App/A.vb", "satisfied"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.finish(decision); err == nil || s.assessments["R001"].Status != "violated" {
+		t.Fatal("later assessment hid another file's violation")
+	}
+	if err := record("App/B.vb", "satisfied"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.finish(decision); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(s.assessments["R001"].Reason, "App/A.vb") || !strings.Contains(s.assessments["R001"].Reason, "App/B.vb") {
+		t.Fatal("file-specific review evidence missing")
+	}
+}
+
+func TestSolutionScopeRequiresSelectedRulesAndAllCommonTargets(t *testing.T) {
+	for _, scopes := range []map[string][]string{{}, {"UNKNOWN": {"App/A.vb"}}, {"R001": {}}, {"R001": {"missing.vb"}}, {"R001": {"App/A.vb", "App/A.vb"}}} {
+		in := solutionFixture("", "openai")
+		in.RuleFiles = scopes
+		if _, err := cloneSolutionInput(in); err == nil {
+			t.Fatalf("invalid scopes accepted: %+v", scopes)
+		}
+	}
+	in := solutionFixture("", "openai")
+	in.Rules[0].Always = true
+	in.RuleFiles = map[string][]string{"R001": {"App/A.vb"}}
+	if _, err := cloneSolutionInput(in); err == nil {
+		t.Fatal("common rule omitted solution files")
+	}
+	in.RuleFiles = nil
+	if _, err := cloneSolutionInput(in); err != nil {
+		t.Fatalf("legacy nil scope failed: %v", err)
 	}
 }

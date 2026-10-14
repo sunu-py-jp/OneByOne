@@ -37,6 +37,7 @@ export interface Config {
   outputPricePerMillion: number;
 }
 export interface SolutionConfig {
+  paths?: string[] | null;
   path: string;
   msbuildPath: string;
   configuration: string;
@@ -54,6 +55,8 @@ export interface SolutionBuild {
   diagnostics: SourceDiagnostic[];
 }
 export interface SolutionRun {
+  path?: string;
+  executionId?: string;
   reviews?: SolutionReview[];
   requestPending?: boolean;
   id: string;
@@ -66,6 +69,16 @@ export interface SolutionRun {
   files: string[];
   commit?: string;
   usage: Usage;
+}
+export interface SolutionBatch {
+  id: string;
+  status: string;
+  paths: string[];
+  currentIndex: number;
+  runs: SolutionRun[];
+  startedAt: string;
+  finishedAt?: string;
+  note?: string;
 }
 export interface SolutionReview {
   iteration: number;
@@ -166,6 +179,7 @@ export interface ChangeReportItem {
   reason: string;
 }
 export interface Attempt {
+  solutionRunId?: string;
   id: string;
   sourceDiagnostics?: SourceDiagnostic[];
   executionId?: string;
@@ -298,6 +312,7 @@ export interface PublishResultsRequest {
   messageAsFile: boolean;
 }
 export interface State {
+  solutionBatch?: SolutionBatch;
   solutionRun?: SolutionRun;
   executionRuns: ExecutionRun[];
   workspaces: Workspace[];
@@ -489,24 +504,28 @@ export function normalizeTask(task: Task): Task {
 export function normalizeSourceDiagnostics(diagnostics?: SourceDiagnostic[]): SourceDiagnostic[] {
   return (diagnostics || []).map(diagnostic => ({ ...diagnostic, ruleIds: diagnostic.ruleIds || [] }));
 }
+function normalizeSolutionRun(run: SolutionRun): SolutionRun {
+  return {
+    ...run,
+    reviews: (run.reviews || []).map(review => ({
+      ...review,
+      assessments: review.assessments || [],
+      originalHashes: review.originalHashes || {},
+      candidateHashes: review.candidateHashes || {},
+    usage: { ...emptyUsage, ...review.usage },
+    })),
+    files: run.files || [],
+    builds: (run.builds || []).map(build => ({ ...build, diagnostics: normalizeSourceDiagnostics(build.diagnostics) })),
+    usage: { ...emptyUsage, ...run.usage },
+  };
+}
 export function normalizeState(state: State): State {
   return {
     ...emptyState,
     ...state,
     executionRuns: state.executionRuns || [],
-    solutionRun: state.solutionRun ? {
-      ...state.solutionRun,
-      reviews: (state.solutionRun.reviews || []).map(review => ({
-        ...review,
-        assessments: review.assessments || [],
-        originalHashes: review.originalHashes || {},
-        candidateHashes: review.candidateHashes || {},
-        usage: { ...emptyUsage, ...review.usage },
-      })),
-      files: state.solutionRun.files || [],
-      builds: (state.solutionRun.builds || []).map(build => ({ ...build, diagnostics: normalizeSourceDiagnostics(build.diagnostics) })),
-      usage: { ...emptyUsage, ...state.solutionRun.usage },
-    } : undefined,
+    solutionRun: state.solutionRun ? normalizeSolutionRun(state.solutionRun) : undefined,
+    solutionBatch: state.solutionBatch ? { ...state.solutionBatch, paths: state.solutionBatch.paths || [], runs: (state.solutionBatch.runs || []).map(normalizeSolutionRun) } : undefined,
     config: {
       ...defaultConfig,
       ...state.config,

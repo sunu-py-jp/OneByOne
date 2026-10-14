@@ -23,18 +23,19 @@ import (
 )
 
 type manifest struct {
-	SolutionRun    *model.SolutionRun `json:"solutionRun,omitempty"`
-	Version        int                `json:"version"`
-	Root           string             `json:"root"`
-	RepoRoot       string             `json:"repoRoot"`
-	SourceRelative string             `json:"sourceRelative"`
-	BaseCommit     string             `json:"baseCommit"`
-	Worktree       string             `json:"worktree"`
-	Branch         string             `json:"branch"`
-	RuleHash       string             `json:"ruleHash"`
-	Config         model.Config       `json:"config"`
-	Scanned        int                `json:"scanned"`
-	Excluded       int                `json:"excluded"`
+	SolutionRun    *model.SolutionRun   `json:"solutionRun,omitempty"`
+	SolutionBatch  *model.SolutionBatch `json:"solutionBatch,omitempty"`
+	Version        int                  `json:"version"`
+	Root           string               `json:"root"`
+	RepoRoot       string               `json:"repoRoot"`
+	SourceRelative string               `json:"sourceRelative"`
+	BaseCommit     string               `json:"baseCommit"`
+	Worktree       string               `json:"worktree"`
+	Branch         string               `json:"branch"`
+	RuleHash       string               `json:"ruleHash"`
+	Config         model.Config         `json:"config"`
+	Scanned        int                  `json:"scanned"`
+	Excluded       int                  `json:"excluded"`
 }
 
 type Service struct {
@@ -287,12 +288,12 @@ func (s *Service) SaveConfig(c model.Config) (model.State, error) {
 	if e != nil {
 		return s.Snapshot(), e
 	}
-	if c.SolutionMode() != old.SolutionMode() || (old.SolutionMode() && old.Solution != nil && c.Solution != nil && old.Solution.Path != c.Solution.Path) {
+	if c.SolutionMode() != old.SolutionMode() {
 		s.mu.Lock()
 		hasHistory := s.state.Worktree != "" || len(s.state.ExecutionRuns) > 0
 		s.mu.Unlock()
 		if hasHistory {
-			return s.Snapshot(), fmt.Errorf("実行後のモード・ソリューション変更は新しいワークスペースで行ってください")
+			return s.Snapshot(), fmt.Errorf("実行後のモード変更は新しいワークスペースで行ってください")
 		}
 	}
 	if e = s.saveWorkspaceConfig(&c); e != nil {
@@ -302,6 +303,7 @@ func (s *Service) SaveConfig(c model.Config) (model.State, error) {
 	s.state.Config = c
 	if c.Root != old.Root || c.QueuePath != old.QueuePath || c.SolutionMode() != old.SolutionMode() {
 		s.state.SolutionRun = nil
+		s.state.SolutionBatch = nil
 		s.state.ExecutionRuns = []model.ExecutionRun{}
 		s.state.Tasks = []model.Task{}
 		s.state.Rules = []model.Rule{}
@@ -374,11 +376,16 @@ func (s *Service) load(path string) error {
 	s.state.Config = c
 	s.state.Tasks = tasks
 	s.state.SolutionRun = m.SolutionRun
+	s.state.SolutionBatch = m.SolutionBatch
 	if run := s.state.SolutionRun; run != nil && run.Status == "running" && !s.state.ReadOnly && s.workspaceLease != nil {
 		run.Status, run.FinishedAt = "stopped", now()
 		run.Note = "前回のソリューション処理が中断しました。再実行すると採用済みの内容から初回ビルドをやり直します"
 		run.Usage.Uncertain = run.Usage.Uncertain || run.RequestPending
 		s.recordSolutionFailureLocked(run)
+	}
+	if batch := s.state.SolutionBatch; batch != nil && batch.Status == "running" && !s.state.ReadOnly && s.workspaceLease != nil {
+		s.syncSolutionBatchLocked()
+		finishSolutionBatch(batch, false)
 	}
 	s.meta = m
 	s.state.Worktree = m.Worktree
@@ -447,6 +454,9 @@ func (s *Service) persist() error {
 	s.mu.Lock()
 	tasks := copyTasks(s.state.Tasks)
 	m := s.meta
+	s.syncSolutionBatchLocked()
+	m.SolutionRun = nil
+	m.SolutionBatch = copySolutionBatch(s.state.SolutionBatch)
 	if s.state.SolutionRun != nil {
 		data, _ := json.Marshal(s.state.SolutionRun)
 		var run model.SolutionRun
@@ -891,7 +901,7 @@ func (s *Service) recountLocked() {
 		accounted := false
 		for _, task := range s.state.Tasks {
 			for _, a := range task.History {
-				if a.ExecutionID == run.ID {
+				if attemptMatchesSolutionRun(a, run) {
 					accounted = true
 				}
 			}

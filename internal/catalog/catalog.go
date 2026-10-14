@@ -72,9 +72,6 @@ func Load(ctx context.Context, cfg model.Config) (_ *Catalog, err error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(pkg.Rules) > 0 && pkg.Solution != cfg.SolutionMode() {
-		return nil, fmt.Errorf("ルール形式がモードと一致しません。ソリューションモードは id・description・content の3項目で取り込んでください")
-	}
 	ids := make([]string, 0, len(pkg.Rules))
 	for _, entry := range pkg.Rules {
 		ids = append(ids, entry.ID)
@@ -85,6 +82,9 @@ func Load(ctx context.Context, cfg model.Config) (_ *Catalog, err error) {
 		c.excludedRules[id] = true
 	}
 	h := sha256.New()
+	// Matching semantics are part of extraction/checkpoint identity. Queues
+	// created with case-sensitive source conditions must be extracted again.
+	io.WriteString(h, "source-matching=case-insensitive-v1;")
 	if cfg.DiagnosticsSourceFile != "" {
 		fmt.Fprintf(h, "diagnostics-source=%d:%s;", len(cfg.DiagnosticsSourceFile), cfg.DiagnosticsSourceFile)
 	}
@@ -197,7 +197,7 @@ func (c *Catalog) validatePath(ctx context.Context, dir, pattern string) error {
 			return errors.New("path_patternに親フォルダは指定できません")
 		}
 	}
-	_, err := c.run(ctx, dir, nil, "--files", "--hidden", "--no-ignore", "--no-config", "--glob", pattern, "--", ".")
+	_, err := c.run(ctx, dir, nil, "--files", "--hidden", "--no-ignore", "--no-config", "--iglob", pattern, "--", ".")
 	if err != nil {
 		return fmt.Errorf("path_patternが不正です: %w", err)
 	}
@@ -279,7 +279,7 @@ func (c *Catalog) Scan(ctx context.Context, cfg model.Config) ([]model.Task, int
 		if rule.PathPattern != "" {
 			matches, ok := pathCache[rule.PathPattern]
 			if !ok {
-				output, err := c.run(ctx, root, nil, "--files", "--null", "--hidden", "--no-ignore", "--no-config", "--glob", rule.PathPattern)
+				output, err := c.run(ctx, root, nil, "--files", "--null", "--hidden", "--no-ignore", "--no-config", "--iglob", rule.PathPattern)
 				if err != nil {
 					return nil, scanned, 0, ruleError(rule.ID, err)
 				}

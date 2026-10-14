@@ -2,7 +2,7 @@
 
 CLIはデスクトップアプリと同じ処理・保存先・検証を使います。GUIを先に開かなくても、ワークスペース作成、LLM接続、ルールの取り込み、実行、結果確認、新規ブランチへの結果反映まで行えます。
 
-VB.NETの `.sln` を処理する場合は、[ソリューションモード](solution-mode.md#cliでの実行)の設定例を使用してください。`settings update` で `mode: "solution"` と `solution` を保存すると、`run` が初回ビルド・ルールに沿った複数ファイル修正・再ビルドを行います。以下のファイル選択・並列数・抽出条件はファイル単位モードの操作です。
+VB.NETの `.sln` を処理する場合は、[ソリューションモード](solution-mode.md#cliでの実行)の設定例を使用してください。`settings update` で `mode: "solution"` と `solution` を保存すると、`run` が選択した `solution.paths` を順次処理し、初回ビルド・共通／条件付きルールに沿った複数ファイル修正・独立レビュー・再ビルドを行います。以下のファイル選択・並列数はファイル単位モードの操作です。
 
 以下の例は、配布フォルダでmacOSの `./onebyone` を使います。Windows PowerShellでは `./onebyone-cli.exe` に読み替えてください。開発ビルドの実行ファイルは `build/bin/` にあります。CLIを移動する場合は同梱の `tools/`・`bin/` も保持してください。
 
@@ -126,7 +126,9 @@ APIキーを保存する場合はJSONの `credential` へ指定し、アクセ�
 
 ## ルールと設定を編集する
 
-ファイル単位モードの`rules.json`はYAML front matter付きMarkdown文字列を`rules`配列へ格納する形式です。`rules import --input ./rules.csv`でCSVも取り込めます。CSVの必須ヘッダーは`id,name,description,path_pattern,content_pattern`で、`diagnostic_pattern`は任意のメタデータ列です。それ以外の追加列は列名をH1、セルを本文としてMarkdownにします。ソリューションモードでは `{"rules":[{"id":"...","description":"...","content":"..."}]}` の3項目形式、同名3列のCSV、`SKILL.md` またはスキルフォルダを取り込みます。`rules export-skills --output DIR` でスキルフォルダを書き出せます。
+両モード共通の`rules.json`はYAML front matter付きMarkdown文字列を`rules`配列へ格納する形式です。`rules import --input ./rules.csv`でCSVも取り込めます。CSVの必須ヘッダーは`id,name,description,path_pattern,content_pattern`で、`diagnostic_pattern`は任意のメタデータ列です。それ以外の追加列は列名をH1、セルを本文としてMarkdownにします。ソリューションモードでは旧 `{"rules":[{"id":"...","description":"...","content":"..."}]}` の3項目形式、同名3列のCSV、`SKILL.md` またはスキルフォルダも共通ルールとして取り込めます。通常の編集・JSON書き出しは共用形式です。スキルに適合するIDの条件なしルールは `rules export-skills --output DIR` で書き出せます。
+
+`path_pattern`のglobは大文字・小文字を区別せず、`content_pattern`の正規表現も既定では区別しません。本文条件で区別する場合は`(?-i)Save`のように先頭へ`(?-i)`を付けます。`diagnostic_pattern`は既定で大文字・小文字を区別し、診断JSONLの`file`と対象ファイルの対応付けも区別します。単一ルールJSONの`pathPattern`・`contentPattern`・`diagnosticPattern`も同じ照合方法です。
 
 `rules template --output ./rules-template.csv`で、上記5列・任意の`diagnostic_pattern`列・標準の本文見出しを含む空の入力テンプレートを書き出します。ワークスペースや既存ルールは不要です。Excelで編集し、CSV UTF-8形式で保存して取り込んでください。テンプレートはUTF-8 BOM付き・CRLF改行です。
 
@@ -171,9 +173,9 @@ APIキーを保存する場合はJSONの `credential` へ指定し、アクセ�
 
 外部診断の形式・照合方法・保存については[診断JSONL](diagnostics.md)を参照してください。
 
-更新可能なのは`mode`、`solution`、`diagnosticsOnly`、`excludedRuleIds`、`concurrency`、`inputPricePerMillion`、`cachedInputPricePerMillion`、`outputPricePerMillion`です。`mode`は`files`または`solution`、`solution`は[ビルド設定](solution-mode.md)のオブジェクトで、入れ子の指定済み項目だけを更新します。実行済みワークスペースのモードは変更できません。`concurrency`はファイル単位モードの1〜10、`0`は既定の2へ戻します。単価は推定料金の集計用で、処理を止める条件ではありません。ファイル単位のターン・試行・時間・費用・出力トークン・対象ファイル容量の旧上限設定は廃止し、指定すると未定義項目として拒否します。過去の設定に残る廃止値は読込時に破棄し、再保存しません。ソリューションモードの`maxIterations`と`buildTimeoutSeconds`は`solution`内で指定します。ファイル単位の絞り込みは各ルールの`pathPattern`・`contentPattern`・`diagnosticPattern`、適用しないルールは両モードとも`excludedRuleIds`で指定します。空配列なら全ルールを選択します。利用者指定の検証コマンドや旧シンボル定義の指定はありません。
+更新可能なのは`mode`、`solution`、`diagnosticsOnly`、`excludedRuleIds`、`concurrency`、`inputPricePerMillion`、`cachedInputPricePerMillion`、`outputPricePerMillion`です。`mode`は`files`または`solution`、`solution`は[ビルド設定](solution-mode.md)のオブジェクトで、入れ子の指定済み項目だけを更新します。実行済みワークスペースのモードは変更できませんが、`solution.paths` の選択は変更できます。`paths: []` は明示的な全解除、`paths: null` と空の `path` は次回検索で全件選択、旧単一 `path` は `paths` 未指定時のみ使用します。`concurrency`はファイル単位モードの1〜10、`0`は既定の2へ戻します。単価は推定料金の集計用で、処理を止める条件ではありません。ファイル単位のターン・試行・時間・費用・出力トークン・対象ファイル容量の旧上限設定は廃止し、指定すると未定義項目として拒否します。過去の設定に残る廃止値は読込時に破棄し、再保存しません。ソリューションモードの`maxIterations`と`buildTimeoutSeconds`は`solution`内で指定します。両モードで共用するファイル条件は各ルールの`pathPattern`・`contentPattern`・`diagnosticPattern`、適用しないルールは両モードとも`excludedRuleIds`で指定します。空配列なら全ルールを選択します。利用者指定の検証コマンドや旧シンボル定義の指定はありません。
 
-ルールや抽出条件を変えたら `scan` で対象を更新し、選択を確認してから実行してください。`scan --root PATH` は対象フォルダを設定してから抽出します。ワークスペースがある場合は対象フォルダの変更、ない場合は作成を行います。
+ファイル単位モードでルールや抽出条件を変えたら `scan` で対象を更新し、選択を確認してから実行してください。`scan --root PATH` は対象フォルダを設定してから抽出します。ワークスペースがある場合は対象フォルダの変更、ない場合は作成を行います。
 
 ## 対象を選び、実行する
 

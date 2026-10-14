@@ -215,9 +215,9 @@ func executeSettingsCommand(ctx context.Context, s *engine.Service, args []strin
 				if err := json.Unmarshal(raw, &fields); err != nil {
 					return nil, errors.New("solution はビルド設定のオブジェクトで指定してください")
 				}
-				for _, value := range fields {
-					if bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
-						return nil, errors.New("solution の設定項目に null は使用できません")
+				for field, value := range fields {
+					if field != "paths" && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+						return nil, errors.New("solution.paths 以外の設定項目に null は使用できません")
 					}
 				}
 			}
@@ -228,6 +228,9 @@ func executeSettingsCommand(ctx context.Context, s *engine.Service, args []strin
 			settings := model.DefaultSolutionSettings()
 			if cfg.Solution != nil {
 				settings = *cfg.Solution
+				if settings.Paths != nil {
+					settings.Paths = append([]string{}, settings.Paths...)
+				}
 			}
 			cfg.Solution = &settings
 		}

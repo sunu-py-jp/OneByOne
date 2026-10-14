@@ -143,6 +143,13 @@ func (s *Service) ChangeTargetFolder(root string) (model.State, error) {
 	c.QueuePath = queue
 	c.DiagnosticsPath, c.DiagnosticsOnly = "", false
 	c.DiagnosticsSourceFile = ""
+	if c.Solution != nil {
+		settings := *c.Solution
+		// Selections belong to the previous source tree. A new target discovers
+		// its own solutions while preserving the chosen build settings.
+		settings.Path, settings.Paths = "", nil
+		c.Solution = &settings
+	}
 	if c, err = normalizeConfig(c); err != nil {
 		return s.Snapshot(), err
 	}

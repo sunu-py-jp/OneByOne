@@ -46,3 +46,14 @@
 .solution-review-assessments dt { display: flex; flex-wrap: wrap; gap: 12px; }
 .solution-review-assessments dd { margin: 6px 0 0; color: var(--text-secondary); line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
 @media (max-width: 850px) { .solution-settings-grid { grid-template-columns: minmax(0, 1fr); } .solution-facts { grid-template-columns: 130px minmax(0, 1fr); } .solution-path-input { flex-wrap: wrap; } }
+
+.solution-selection { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.solution-selection-actions { display: flex; flex-wrap: wrap; gap: 16px; font-size: 12px; }
+.solution-selection-list { border: 1px solid var(--line); border-radius: 6px; max-height: 320px; overflow: auto; }
+.solution-selection-list > label { display: flex; gap: 10px; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--line); font-size: 12px; }
+.solution-selection-list > label > span { overflow-wrap: anywhere; }
+.solution-selection-list > label > small { margin-left: auto; color: var(--text-secondary); }
+.solution-selection-list > p { padding: 14px; }
+.solution-selected-paths { margin: 0; padding-left: 20px; line-height: 1.8; }
+.solution-batch-summary { display: flex; flex-direction: column; gap: 14px; padding: 20px; background: #fff; border: 1px solid var(--line); border-radius: 10px; }
+.solution-batch-summary .field { margin: 0; }

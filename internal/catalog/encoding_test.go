@@ -15,8 +15,8 @@ import (
 func TestContentPatternMatchesJapaneseAcrossUTF8AndShiftJIS(t *testing.T) {
 	cfg := fixture(t)
 	updateRule(t, cfg, "R001", func(d *model.RuleDefinition) { d.ContentPattern = "不存在" })
-	updateRule(t, cfg, "R019", func(d *model.RuleDefinition) { d.ContentPattern = `請求\.保存` })
-	source := "請求.保存();\r\n"
+	updateRule(t, cfg, "R019", func(d *model.RuleDefinition) { d.ContentPattern = `請求\.Save` })
+	source := "請求.SAVE();\r\n"
 	sjis, err := japanese.ShiftJIS.NewEncoder().Bytes([]byte(source))
 	if err != nil {
 		t.Fatal(err)

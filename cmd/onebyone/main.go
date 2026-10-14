@@ -120,7 +120,7 @@ func executeContext(ctx context.Context, args []string, input io.Reader, stdout,
 				if err = s.Start(o.limit); err == nil {
 					waitForRun(s, stderr)
 					state := s.Snapshot()
-					if state.Config.SolutionMode() && state.SolutionRun != nil {
+					if state.Config.SolutionMode() && (state.SolutionRun != nil || state.SolutionBatch != nil) {
 						code, err = executionExitCode(s, previous)
 					} else if state.LastError != "" {
 						err = errors.New(state.LastError)
@@ -270,8 +270,14 @@ func executionExitCode(s *engine.Service, previous map[string]bool) (int, error)
 }
 
 func executionResultExitCode(result model.ExecutionRunResult) int {
-	if result.State.Config.SolutionMode() && result.State.SolutionRun != nil {
-		switch result.State.SolutionRun.Status {
+	if result.State.Config.SolutionMode() && (result.State.SolutionBatch != nil || result.State.SolutionRun != nil) {
+		status := ""
+		if result.State.SolutionBatch != nil {
+			status = result.State.SolutionBatch.Status
+		} else {
+			status = result.State.SolutionRun.Status
+		}
+		switch status {
 		case "completed":
 			return 0
 		case "failed", "needs_human":
@@ -604,9 +610,32 @@ func writeJSON(w io.Writer, value any) error {
 }
 
 func printSummary(w io.Writer, state model.State) {
-	if state.Config.SolutionMode() && state.SolutionRun != nil {
+	if state.Config.SolutionMode() && state.SolutionBatch != nil {
+		batch := state.SolutionBatch
+		fmt.Fprintf(w, "ソリューション一括実行: %d 件 | 状態 %s\n", len(batch.Paths), batch.Status)
+		for index, path := range batch.Paths {
+			status, iteration, builds := "not_run", 0, 0
+			if batch.Status == "running" {
+				status = "pending"
+			}
+			for _, run := range batch.Runs {
+				if run.Path == path {
+					status, iteration, builds = run.Status, run.Iteration, len(run.Builds)
+					break
+				}
+			}
+			fmt.Fprintf(w, "  %d. %s | 状態 %s | 修正 %d 回 | ビルド %d 回\n", index+1, path, status, iteration, builds)
+		}
+		if batch.Note != "" {
+			fmt.Fprintln(w, "終了・進捗理由:", batch.Note)
+		}
+	} else if state.Config.SolutionMode() && state.SolutionRun != nil {
 		run := state.SolutionRun
-		fmt.Fprintf(w, "ソリューション: %s | 状態 %s | 修正 %d 回 | ビルド %d 回\n", state.Config.Solution.Path, run.Status, run.Iteration, len(run.Builds))
+		path := run.Path
+		if path == "" && state.Config.Solution != nil {
+			path = state.Config.Solution.Path
+		}
+		fmt.Fprintf(w, "ソリューション: %s | 状態 %s | 修正 %d 回 | ビルド %d 回\n", path, run.Status, run.Iteration, len(run.Builds))
 		if run.Note != "" {
 			fmt.Fprintln(w, "終了・進捗理由:", run.Note)
 		}

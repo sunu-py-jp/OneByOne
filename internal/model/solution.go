@@ -8,12 +8,15 @@ import (
 
 // SolutionSettings uses VS2022 MSBuild; zero MaxIterations means until stopped.
 type SolutionSettings struct {
-	Path                string `json:"path"`
-	MSBuildPath         string `json:"msbuildPath"`
-	Configuration       string `json:"configuration"`
-	Platform            string `json:"platform"`
-	MaxIterations       int    `json:"maxIterations"`
-	BuildTimeoutSeconds int    `json:"buildTimeoutSeconds"`
+	// A nil list uses the legacy Path, or discovers all solutions on first use.
+	// An explicitly empty list means that no solutions are selected.
+	Paths               []string `json:"paths"`
+	Path                string   `json:"path"`
+	MSBuildPath         string   `json:"msbuildPath"`
+	Configuration       string   `json:"configuration"`
+	Platform            string   `json:"platform"`
+	MaxIterations       int      `json:"maxIterations"`
+	BuildTimeoutSeconds int      `json:"buildTimeoutSeconds"`
 }
 
 func DefaultSolutionSettings() SolutionSettings {
@@ -21,6 +24,16 @@ func DefaultSolutionSettings() SolutionSettings {
 }
 
 func (c Config) SolutionMode() bool { return c.Mode == "solution" }
+
+func (s SolutionSettings) SelectedPaths() []string {
+	if s.Paths != nil {
+		return append([]string{}, s.Paths...)
+	}
+	if s.Path != "" {
+		return []string{s.Path}
+	}
+	return nil
+}
 
 func NormalizeSolutionConfig(c Config) (Config, error) {
 	if c.Mode != "" && c.Mode != "files" && c.Mode != "solution" {
@@ -34,14 +47,40 @@ func NormalizeSolutionConfig(c Config) (Config, error) {
 		c.Solution = &settings
 	}
 	s := *c.Solution
-	s.Path = strings.TrimSpace(strings.ReplaceAll(s.Path, "\\", "/"))
-	if s.Path != "" && (!filepath.IsLocal(filepath.FromSlash(s.Path)) || strings.ContainsAny(s.Path, ":\x00\r\n") || strings.HasPrefix(s.Path, "-") || !strings.EqualFold(filepath.Ext(s.Path), ".sln")) {
-		return c, fmt.Errorf("ソリューションは対象フォルダ内の .sln 相対パスで指定してください")
-	}
-	for _, p := range strings.Split(s.Path, "/") {
-		if p == ".." {
-			return c, fmt.Errorf("ソリューションパスに親フォルダは指定できません")
+	normalizePath := func(value string) (string, error) {
+		value = strings.TrimSpace(strings.ReplaceAll(value, "\\", "/"))
+		if value == "" || !filepath.IsLocal(filepath.FromSlash(value)) || strings.ContainsAny(value, ":\x00\r\n") || strings.HasPrefix(value, "-") || !strings.EqualFold(filepath.Ext(value), ".sln") {
+			return "", fmt.Errorf("ソリューションは対象フォルダ内の .sln 相対パスで指定してください")
 		}
+		for _, part := range strings.Split(value, "/") {
+			if part == ".." {
+				return "", fmt.Errorf("ソリューションパスに親フォルダは指定できません")
+			}
+		}
+		return filepath.ToSlash(filepath.Clean(filepath.FromSlash(value))), nil
+	}
+	if strings.TrimSpace(s.Path) != "" {
+		var err error
+		s.Path, err = normalizePath(s.Path)
+		if err != nil {
+			return c, err
+		}
+	} else {
+		s.Path = ""
+	}
+	if s.Paths != nil {
+		paths, seen := []string{}, map[string]bool{}
+		for _, value := range s.Paths {
+			path, err := normalizePath(value)
+			if err != nil {
+				return c, err
+			}
+			if !seen[strings.ToLower(path)] {
+				paths = append(paths, path)
+				seen[strings.ToLower(path)] = true
+			}
+		}
+		s.Paths = paths
 	}
 	if s.Configuration == "" {
 		s.Configuration = "Debug"
@@ -81,18 +120,33 @@ type SolutionBuild struct {
 }
 
 type SolutionRun struct {
-	Reviews        []SolutionReview `json:"reviews,omitempty"`
-	RequestPending bool             `json:"requestPending,omitempty"`
-	ID             string           `json:"id"`
-	Status         string           `json:"status"`
-	StartedAt      string           `json:"startedAt"`
-	FinishedAt     string           `json:"finishedAt,omitempty"`
-	Iteration      int              `json:"iteration"`
-	Note           string           `json:"note"`
-	Builds         []SolutionBuild  `json:"builds"`
-	Files          []string         `json:"files"`
-	Commit         string           `json:"commit,omitempty"`
-	Usage          Usage            `json:"usage"`
+	Path           string              `json:"path,omitempty"`
+	ExecutionID    string              `json:"executionId,omitempty"`
+	SourceFiles    []string            `json:"sourceFiles,omitempty"`
+	RuleFiles      map[string][]string `json:"ruleFiles,omitempty"`
+	Reviews        []SolutionReview    `json:"reviews,omitempty"`
+	RequestPending bool                `json:"requestPending,omitempty"`
+	ID             string              `json:"id"`
+	Status         string              `json:"status"`
+	StartedAt      string              `json:"startedAt"`
+	FinishedAt     string              `json:"finishedAt,omitempty"`
+	Iteration      int                 `json:"iteration"`
+	Note           string              `json:"note"`
+	Builds         []SolutionBuild     `json:"builds"`
+	Files          []string            `json:"files"`
+	Commit         string              `json:"commit,omitempty"`
+	Usage          Usage               `json:"usage"`
+}
+
+type SolutionBatch struct {
+	ID           string        `json:"id"`
+	Status       string        `json:"status"`
+	Paths        []string      `json:"paths"`
+	CurrentIndex int           `json:"currentIndex"`
+	Runs         []SolutionRun `json:"runs"`
+	StartedAt    string        `json:"startedAt"`
+	FinishedAt   string        `json:"finishedAt,omitempty"`
+	Note         string        `json:"note,omitempty"`
 }
 
 // SolutionReview binds an independent decision to every original/candidate

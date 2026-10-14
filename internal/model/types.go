@@ -91,6 +91,7 @@ type Attempt struct {
 	SourceDiagnostics []SourceDiagnostic  `json:"sourceDiagnostics,omitempty"`
 	ID                string              `json:"id"`
 	ExecutionID       string              `json:"executionId,omitempty"`
+	SolutionRunID     string              `json:"solutionRunId,omitempty"`
 	Number            int                 `json:"number"`
 	StartedAt         string              `json:"startedAt"`
 	FinishedAt        string              `json:"finishedAt"`
@@ -199,6 +200,7 @@ type LLMConnection struct {
 
 type State struct {
 	SolutionRun             *SolutionRun       `json:"solutionRun,omitempty"`
+	SolutionBatch           *SolutionBatch     `json:"solutionBatch,omitempty"`
 	Diagnostics             *DiagnosticSummary `json:"diagnostics,omitempty"`
 	ExecutionRuns           []ExecutionRun     `json:"executionRuns"`
 	LLMConnections          []LLMConnection    `json:"llmConnections,omitempty"`

@@ -77,6 +77,28 @@ func TestDiagnosticPatternsIntersectPathsContentAndIndividualRecords(t *testing.
 	}
 }
 
+func TestSourceConditionsDoNotChangeDiagnosticCaseMatching(t *testing.T) {
+	cfg := fixture(t)
+	saveRules(t, cfg, &rulepack.Package{})
+	writeRule(t, cfg, "R1", model.RuleDefinition{Name: "missing API", Description: "repair", PathPattern: "src/**/*.cs", ContentPattern: "client", DiagnosticPattern: `^CS1061\b`})
+	for _, file := range []string{"Src/Match.CS", "Src/OtherCode.CS", "Src/OtherPath.CS"} {
+		write(t, filepath.Join(cfg.Root, file), "CLIENT.Call();")
+	}
+	cfg.DiagnosticsPath = filepath.Join(t.TempDir(), "diagnostics.jsonl")
+	writeDiagnostics(t, cfg.DiagnosticsPath,
+		model.SourceDiagnostic{File: "Src/Match.CS", Code: "CS1061", Message: "Missing"},
+		model.SourceDiagnostic{File: "Src/OtherCode.CS", Code: "cs1061", Message: "Missing"},
+		model.SourceDiagnostic{File: "src/otherpath.cs", Code: "CS1061", Message: "Missing"})
+	cat, err := Load(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks, _, _, err := cat.Scan(context.Background(), cfg)
+	if err != nil || len(tasks) != 1 || tasks[0].File != "Src/Match.CS" {
+		t.Fatalf("diagnostic scope changed: %+v %v", tasks, err)
+	}
+}
+
 func TestDiagnosticOnlyModeKeepsNormalRulesWithoutBroadeningDiagnosticRules(t *testing.T) {
 	cfg := fixture(t)
 	write(t, filepath.Join(cfg.Root, "a.txt"), "plain")

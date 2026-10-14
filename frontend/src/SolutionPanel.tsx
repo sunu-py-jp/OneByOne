@@ -4,7 +4,7 @@ import { Icon } from "./icons";
 import { ResultCode } from "./ResultsPanel";
 import { executionLabel } from "./ExecutionResultsPanel";
 import { useResultSnapshot } from "./useResultSnapshot";
-import { solutionConfigurationIssue, solutionStatusLabel } from "./solution";
+import { selectedSolutionPaths, solutionAttemptIndex, solutionConfigurationIssue, solutionStatusLabel } from "./solution";
 import { defaultConfig, type Config, type ExecutionRunResult, type FileDetail, type SolutionConfig, type State } from "./types";
 import "./solution.css";
 
@@ -25,40 +25,60 @@ export function WorkspaceModeSelect({ mode, disabled, onChange }: { mode: Config
   </div>;
 }
 
-export function SolutionSettings({ config, workspaceId, disabled, onChange }: { config?: SolutionConfig; workspaceId: string; disabled: boolean; onChange: (config: SolutionConfig) => void }) {
-  const value = { ...defaultConfig.solution!, ...config };
-  const listId = useId();
+export function SolutionSelection({ config, workspaceId, root, disabled, readOnly = false, selectionEnabled = true, onChange }: {
+  config?: SolutionConfig; workspaceId: string; root: string; disabled: boolean; readOnly?: boolean; selectionEnabled?: boolean; onChange: (config: SolutionConfig) => void;
+}) {
   const [solutions, setSolutions] = useState<string[]>([]);
   const [searching, setSearching] = useState(false);
-  const [discoveryNote, setDiscoveryNote] = useState("");
-  const discoveryVersion = useRef(0);
-  useEffect(() => { setSolutions([]); setDiscoveryNote(""); setSearching(false); ++discoveryVersion.current; return () => { ++discoveryVersion.current; }; }, [workspaceId]);
+  const [error, setError] = useState("");
+  const [refresh, setRefresh] = useState(0);
+  const latest = useRef({ config, onChange, readOnly });
+  latest.current = { config, onChange, readOnly };
+  useEffect(() => {
+    let current = true;
+    setSolutions([]); setError(""); setSearching(Boolean(root));
+    if (root) api.DiscoverSolutions().then(found => {
+      if (!current) return;
+      const ordered = [...(found || [])].sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
+      setSolutions(ordered);
+      const latestValue = { ...defaultConfig.solution!, ...latest.current.config };
+      if (latestValue.paths == null && !latest.current.readOnly && ordered.length) {
+        latest.current.onChange({ ...latestValue, path: "", paths: latestValue.path.trim() ? selectedSolutionPaths(latestValue) : ordered });
+      }
+    }).catch(failure => { if (current) setError(message(failure)); }).finally(() => { if (current) setSearching(false); });
+    return () => { current = false; };
+  }, [workspaceId, root, refresh]);
+  const selected = selectedSolutionPaths(config);
+  const listed = [...new Set([...solutions, ...selected])].sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
+  const select = (paths: string[]) => onChange({ ...defaultConfig.solution!, ...latest.current.config, path: "", paths: [...new Set(paths)].sort((a, b) => a < b ? -1 : a > b ? 1 : 0) });
+  return <section className="solution-selection" aria-label="対象フォルダ内のソリューション">
+    <div className="solution-section-heading"><h2>ソリューション一覧 <span>{solutions.length} 件</span></h2>
+      <button type="button" className="button" disabled={disabled || searching || !root} onClick={() => setRefresh(value => value + 1)}><Icon name="refresh" size={14} />{searching ? "検索中…" : "一覧を更新"}</button></div>
+    <p className="solution-hint">{selectionEnabled ? "選択した .sln を1件ずつ処理します。実行する順番は次の確認画面に表示します。" : "対象フォルダ配下を再帰的に検索しています。実行設定で処理する .sln を選択できます。"}</p>
+    {selectionEnabled && <div className="solution-selection-actions"><span>{selected.length} 件選択</span><button type="button" className="text-button" disabled={disabled || readOnly || searching || !solutions.length} onClick={() => select(solutions)}>すべて選択</button><button type="button" className="text-button" disabled={disabled || readOnly || !selected.length} onClick={() => select([])}>選択を解除</button></div>}
+    {error && <p className="field-validation-error" role="alert">{error}</p>}
+    <div className="solution-selection-list">{listed.map(path => <label key={path}>
+      {selectionEnabled && <input type="checkbox" disabled={disabled || readOnly} checked={selected.includes(path)} onChange={event => select(event.target.checked ? [...selected, path] : selected.filter(value => value !== path))} />}
+      <span>{path}</span>{!searching && !solutions.includes(path) && <small>現在の一覧にありません</small>}
+    </label>)}{!listed.length && <p className="solution-hint" role="status">{searching ? ".sln を検索中…" : "対象フォルダ内に .sln が見つかりませんでした。"}</p>}</div>
+  </section>;
+}
+
+export function SolutionSettings({ config, workspaceId, root, disabled, readOnly, onChange }: { config?: SolutionConfig; workspaceId: string; root: string; disabled: boolean; readOnly?: boolean; onChange: (config: SolutionConfig) => void }) {
+  const value = { ...defaultConfig.solution!, ...config };
   const change = <K extends keyof SolutionConfig>(key: K, next: SolutionConfig[K]) => onChange({ ...value, [key]: next });
   const issue = solutionConfigurationIssue(value);
   return <section className="solution-settings" aria-label="ソリューションのビルド設定">
-    <div className="solution-section-heading"><h2>ソリューションのビルド設定</h2><span>Visual Studio 2022 / VB.NET</span></div>
+    <SolutionSelection config={value} workspaceId={workspaceId} root={root} disabled={disabled} readOnly={readOnly} onChange={onChange} />
+    <div className="solution-section-heading"><h2>共通のビルド設定</h2><span>Visual Studio 2022 / VB.NET</span></div>
     <div className="solution-settings-grid">
-      <div className="field solution-wide"><label htmlFor={`${listId}-path`} className="field-label">ソリューション (.sln)</label>
-        <div className="solution-path-input"><input id={`${listId}-path`} list={listId} value={value.path} spellCheck={false} disabled={disabled} placeholder="例: src/MyApplication.sln" onChange={event => change("path", event.target.value)} />
-          <button type="button" className="button" disabled={disabled || searching} onClick={async () => {
-            const version = ++discoveryVersion.current;
-            setSearching(true); setDiscoveryNote("");
-            try { const found = await api.DiscoverSolutions(); if (version !== discoveryVersion.current) return; setSolutions(found); setDiscoveryNote(found.length ? `${found.length} 件のソリューションが見つかりました。入力欄から選択できます。` : "対象フォルダ内に .sln が見つかりませんでした。"); if (found.length === 1 && !value.path) change("path", found[0]); }
-            catch (error) { if (version === discoveryVersion.current) setDiscoveryNote(message(error)); }
-            finally { if (version === discoveryVersion.current) setSearching(false); }
-          }}><Icon name="search" size={14} />{searching ? "検索中…" : ".sln を検索"}</button>
-        </div>
-        <datalist id={listId}>{solutions.map(path => <option key={path} value={path} />)}</datalist>
-        <span className="solution-hint">対象フォルダからの相対パスを指定します。</span>
-      </div>
-      {discoveryNote && <p className="solution-wide solution-hint" role="status">{discoveryNote}</p>}
       <label className="field"><span className="field-label">ビルド構成</span><input disabled={disabled} value={value.configuration} onChange={event => change("configuration", event.target.value)} placeholder="Debug" /></label>
       <label className="field"><span className="field-label">プラットフォーム</span><input disabled={disabled} value={value.platform} onChange={event => change("platform", event.target.value)} placeholder="Any CPU" /></label>
       <label className="field solution-wide"><span className="field-label">MSBuild の実行ファイル（省略可）</span><input className="code-input" disabled={disabled} value={value.msbuildPath} onChange={event => change("msbuildPath", event.target.value)} placeholder="空欄で Visual Studio 2022 の MSBuild を自動検出" spellCheck={false} />
         <span className="solution-hint">ビルド環境には VS2022 または Build Tools と、対象プロジェクトの SDK・参照アセンブリが必要です。</span>
       </label>
       <label className="field"><span className="field-label">修正回数の上限</span><input type="number" min={0} step={1} disabled={disabled} value={value.maxIterations} onChange={event => change("maxIterations", Number(event.target.value))} />
-        <span className="solution-hint">コンパイルエラーが残る場合は、この回数で停止します。0 は回数を制限せず実行します。</span>
+        <span className="solution-hint">ソリューションごとに、この回数で修正を終了します。0 は回数を制限せず実行します。</span>
       </label>
       <label className="field"><span className="field-label">1 回のビルドの制限時間（秒）</span><input type="number" min={1} max={86400} step={1} disabled={disabled} value={value.buildTimeoutSeconds} onChange={event => change("buildTimeoutSeconds", Number(event.target.value))} /></label>
     </div>
@@ -70,9 +90,9 @@ export function SolutionReview({ state, onEdit }: { state: State; onEdit: () => 
   const config = { ...defaultConfig.solution!, ...state.config.solution };
   return <section className="solution-review" aria-label="ソリューション実行の確認">
     <div className="solution-section-heading"><h2>ソリューション単位で実行</h2><button type="button" className="text-button" onClick={onEdit}>設定を変更<Icon name="arrow" size={13} /></button></div>
-    <dl className="solution-facts"><dt>ソリューション</dt><dd>{config.path}</dd><dt>ビルド設定</dt><dd>{config.configuration} / {config.platform}</dd><dt>MSBuild</dt><dd>{config.msbuildPath || "Visual Studio 2022 を自動検出"}</dd><dt>修正回数の上限</dt><dd>{config.maxIterations === 0 ? "無制限" : `${config.maxIterations} 回`}</dd><dt>ビルドの制限時間</dt><dd>{config.buildTimeoutSeconds} 秒 / 回</dd><dt>適用ルール</dt><dd>{state.rules.filter(rule => !state.config.excludedRuleIds?.includes(rule.id)).map(rule => rule.title || rule.id).join("、")}</dd></dl>
-    <ol className="solution-process"><li>作業コピーでソリューションをビルド</li><li>ルールとビルド結果を基に関連ファイルの修正案を作り、別のAI会話で独立レビュー</li><li>レビューに合格した候補を再ビルドし、両方に合格するまで修正を繰り返す</li></ol>
-    <p className="solution-hint">原本のフォルダとチェックアウト中のブランチは変更しません。「コミット」では新しいブランチを作成します。停止・上限到達・ビルド環境の問題は結果に表示されます。</p>
+    <dl className="solution-facts"><dt>処理するソリューション</dt><dd><ol className="solution-selected-paths">{selectedSolutionPaths(config).map(path => <li key={path}>{path}</li>)}</ol></dd><dt>ビルド設定</dt><dd>{config.configuration} / {config.platform}</dd><dt>MSBuild</dt><dd>{config.msbuildPath || "Visual Studio 2022 を自動検出"}</dd><dt>修正回数の上限</dt><dd>{config.maxIterations === 0 ? "無制限" : `${config.maxIterations} 回`}</dd><dt>ビルドの制限時間</dt><dd>{config.buildTimeoutSeconds} 秒 / 回</dd><dt>適用ルール</dt><dd>{state.rules.filter(rule => !state.config.excludedRuleIds?.includes(rule.id)).map(rule => rule.title || rule.id).join("、")}</dd></dl>
+    <ol className="solution-process"><li>確認した順番に、作業コピーで各ソリューションを初回ビルド</li><li>共通ルールと各ファイルに条件が一致するルール、ビルド結果を基に修正案を作り、別のAI会話で独立レビュー</li><li>レビューに合格した候補を再ビルドし、両方に合格するまで修正を繰り返す</li></ol>
+    <p className="solution-hint">原本のフォルダとチェックアウト中のブランチは変更しません。「コミット」では新しいブランチを作成します。要確認になったソリューションは記録して次へ進みます。停止や環境・通信エラーの場合は残りを未実行にします。共有ファイルを修正する場合は、先に成功したソリューションも必要に応じて再検証します。</p>
   </section>;
 }
 
@@ -100,8 +120,12 @@ export function SolutionExecutionResultsPanel(props: SolutionResultsProps) {
 }
 
 export function SolutionResultsPanel({ state, busy, usable, canSetup, executionId, onStop, onExport, onOpenWorktree, onSetup }: SolutionResultsProps & { executionId?: string }) {
-  const run = state.solutionRun;
-  const running = state.running && !executionId;
+  const [pathChoice, setPathChoice] = useState("");
+  const batch = state.solutionBatch;
+  const selectedPath = batch?.paths.includes(pathChoice) ? pathChoice : batch?.paths[batch.currentIndex] || batch?.paths[0] || "";
+  const run = batch ? batch.runs.find(item => item.path === selectedPath) : state.solutionRun;
+  const liveRunning = state.running && !executionId;
+  const running = liveRunning && run?.status === "running";
   const [buildChoice, setBuildChoice] = useState<number | null>(null);
   const [file, setFile] = useState("");
   const [view, setView] = useState<"diff" | "before" | "after">("diff");
@@ -116,13 +140,23 @@ export function SolutionResultsPanel({ state, busy, usable, canSetup, executionI
   useEffect(() => {
     let current = true;
     setDetail(null); setError("");
-    if (selectedFile && !running) (executionId ? api.GetExecutionFileDetail(executionId, selectedFile, -1) : api.GetSolutionFileDetail(selectedFile)).then(value => { if (current) setDetail(value); }).catch(failure => { if (current) setError(message(failure)); });
+    if (selectedFile && run && !running) {
+      const attemptIndex = solutionAttemptIndex(state.tasks, selectedFile, run);
+      if (attemptIndex === null) setError("このソリューションの差分履歴が見つかりません。結果の記録を確認してください。");
+      else (executionId ? api.GetExecutionFileDetail(executionId, selectedFile, attemptIndex) : api.GetFileDetail(selectedFile, attemptIndex)).then(value => { if (current) setDetail(value); }).catch(failure => { if (current) setError(message(failure)); });
+    }
     return () => { current = false; };
   }, [state.activeWorkspaceId, run?.id, run?.finishedAt, selectedFile, running, executionId, retry]);
   return <section className="solution-results" aria-label="ソリューションの実行結果">
+    {batch && <section className="solution-batch-summary" aria-label="選択したソリューションの処理状況"><div className="solution-section-heading"><h2>{solutionStatusLabel(batch.status)}</h2><span>{batch.runs.filter(item => item.status === "completed").length} / {batch.paths.length} 件成功</span></div>
+      <label className="field"><span className="field-label">結果を表示するソリューション</span><select value={selectedPath} onChange={event => setPathChoice(event.target.value)}>{batch.paths.map((path, index) => {
+        const item = batch.runs.find(value => value.path === path);
+        return <option key={path} value={path}>{index + 1}. {path} · {solutionStatusLabel(item?.status || (batch.status === "running" ? "pending" : "not_run"))}</option>;
+      })}</select></label>{batch.note && <p className="solution-hint">{batch.note}</p>}
+    </section>}
     <div className="solution-section-heading"><div><h2>{run ? solutionStatusLabel(run.status) : "ソリューションの実行結果"}</h2>{run && <p className="solution-hint">修正 {run.iteration} 回 · ビルド {builds.length} 回 · {run.status === "completed" ? `変更 ${files.length}` : `対象 ${run.files.length}`} ファイル</p>}</div>
-      <div className="solution-actions">{running ? <button type="button" className="button" disabled={busy || !usable} onClick={onStop}><Icon name="stop" size={14} />停止</button> : <button type="button" className="button" disabled={busy || !canSetup} onClick={onSetup}>実行設定へ</button>}
-        <button type="button" className="button" disabled={!run || busy || !usable} onClick={() => onExport(executionId)}>結果を出力</button>
+      <div className="solution-actions">{liveRunning ? <button type="button" className="button" disabled={busy || !usable} onClick={onStop}><Icon name="stop" size={14} />停止</button> : <button type="button" className="button" disabled={busy || !canSetup} onClick={onSetup}>実行設定へ</button>}
+        <button type="button" className="button" disabled={(!run && !batch) || busy || !usable} onClick={() => onExport(executionId)}>結果を出力</button>
         {!executionId && <button type="button" className="button" disabled={!state.worktree || busy || !usable} onClick={onOpenWorktree}>作業コピーを開く</button>}</div>
     </div>
     {run?.note && <p className="solution-run-note" role="status">{run.note}</p>}
@@ -132,7 +166,7 @@ export function SolutionResultsPanel({ state, busy, usable, canSetup, executionI
       {(run.usage.uncertain || run.requestPending) && <span role="status">{run.requestPending ? "AI応答待ち · 使用量は受信後に更新" : "一部の使用量は未計上"}</span>}
     </div>}
     {running && <p className="solution-hint" role="status"><span className="spinner" /> ビルドと修正を実行しています。結果は自動更新されます。</p>}
-    {!run ? <div className="results-empty"><Icon name="terminal" size={30} /><p>実行すると、初回ビルドから修正後までの結果が表示されます。</p></div> : <>
+    {!run ? <div className="results-empty"><Icon name="terminal" size={30} /><p>{batch ? "このソリューションはまだ実行されていません。" : "実行すると、初回ビルドから修正後までの結果が表示されます。"}</p></div> : <>
       <section className="solution-build-results" aria-label="ビルド履歴">
         <label className="field"><span className="field-label">ビルド履歴</span><select value={buildChoice ?? ""} onChange={event => setBuildChoice(event.target.value === "" ? null : Number(event.target.value))} disabled={!builds.length}>
           <option value="">最新のビルド{selectedBuild ? ` · ${builds.at(-1)?.success ? "成功" : "失敗"}` : "を待機中"}</option>

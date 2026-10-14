@@ -168,7 +168,7 @@ func (a *App) ClearDiagnostics() (model.State, error) {
 }
 func (a *App) ChooseRulePackage() (string, error) {
 	if a.service.Snapshot().Config.SolutionMode() {
-		return runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{Title: "ソリューション用ルールを取り込む", Filters: []runtime.FileFilter{{DisplayName: "ルール (JSON・CSV・SKILL.md)", Pattern: "*.json;*.csv;SKILL.md"}}})
+		return runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{Title: "ルールを取り込む", Filters: []runtime.FileFilter{{DisplayName: "ルール (JSON・CSV・SKILL.md)", Pattern: "*.json;*.csv;SKILL.md"}}})
 	}
 	return runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
 		Title:   "ルールを取り込む",

@@ -54,7 +54,7 @@ func (c *Catalog) validate(ctx context.Context, patterns []string) error {
 	if len(patterns) == 0 {
 		return nil
 	}
-	args := []string{"--no-config", "--color", "never", "--text"}
+	args := []string{"--no-config", "--color", "never", "--text", "--ignore-case"}
 	for _, p := range patterns {
 		args = append(args, "-e", p)
 	}
@@ -122,7 +122,7 @@ func (c *Catalog) matchEncodedFiles(ctx context.Context, root string, files, pat
 	if len(files) == 0 || len(patterns) == 0 {
 		return matches, nil
 	}
-	base := []string{"--files-with-matches", "--null", "--text", "--no-config", "--color", "never", "--encoding", encoding}
+	base := []string{"--files-with-matches", "--null", "--text", "--no-config", "--color", "never", "--ignore-case", "--encoding", encoding}
 	baseBytes := 0
 	for _, pattern := range patterns {
 		base = append(base, "-e", pattern)

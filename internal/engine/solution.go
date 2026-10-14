@@ -56,12 +56,28 @@ func (s *Service) scanSolution(cfg model.Config) (model.State, error) {
 	if err != nil {
 		return s.Snapshot(), err
 	}
-	if cfg.Solution.Path == "" {
-		return s.Snapshot(), fmt.Errorf("VB.NET の .sln ファイルを選択してください")
+	paths := cfg.Solution.SelectedPaths()
+	if paths == nil {
+		paths, err = solution.Discover(cfg.Root)
+		if err != nil {
+			return s.Snapshot(), err
+		}
+		cfg.Solution.Paths = append([]string{}, paths...)
 	}
-	info, err := solution.Inspect(cfg.Root, cfg.Solution.Path)
-	if err != nil {
-		return s.Snapshot(), err
+	if len(paths) == 0 {
+		return s.Snapshot(), fmt.Errorf("処理するソリューションを1件以上選択してください")
+	}
+	files, notes := map[string]bool{}, map[string]string{}
+	for _, path := range paths {
+		files[path] = true
+		info, inspectErr := solution.Inspect(cfg.Root, path)
+		if inspectErr != nil {
+			notes[path] = inspectErr.Error()
+			continue
+		}
+		for _, file := range solutionFiles(info) {
+			files[file] = true
+		}
 	}
 	cat, err := solutionCatalog(context.Background(), cfg)
 	if err != nil {
@@ -73,27 +89,25 @@ func (s *Service) scanSolution(cfg model.Config) (model.State, error) {
 		previous[task.File] = task
 	}
 	tasks := []model.Task{}
-	for _, file := range solutionFiles(info) {
+	for file := range files {
 		t, ok := previous[file]
 		if !ok {
 			t = model.Task{File: file, Status: "pending", History: []model.Attempt{}, Rules: []string{}, RulesApplied: []string{}}
 		}
 		t.Excluded = false
+		if note := notes[file]; note != "" {
+			t.Note = note
+		}
 		tasks = append(tasks, t)
 	}
 	// Keep accepted history even when an updated project no longer includes it.
 	for _, task := range s.state.Tasks {
-		found := false
-		for _, current := range tasks {
-			if task.File == current.File {
-				found = true
-				break
-			}
-		}
-		if !found && len(task.History) > 0 {
+		if !files[task.File] && len(task.History) > 0 {
+			task.Excluded = true
 			tasks = append(tasks, task)
 		}
 	}
+	sortTasks(tasks)
 	s.state.Config, s.state.Tasks, s.state.Rules = cfg, tasks, cat.Rules
 	s.cat, s.meta.RuleHash = cat, cat.Hash
 	s.state.ScannedCount = len(tasks)
@@ -107,6 +121,9 @@ func (s *Service) scanSolution(cfg model.Config) (model.State, error) {
 
 // startSolution is called under s.op, after the shared workspace/LLM checks.
 func (s *Service) startSolution(cfg model.Config) error {
+	if err := s.restorePendingSolution(); err != nil {
+		return err
+	}
 	_, err := s.scanSolution(cfg)
 	if err != nil {
 		return err
@@ -138,7 +155,7 @@ func (s *Service) startSolution(cfg model.Config) error {
 	go func() {
 		defer close(done)
 		defer cancel()
-		err := s.runSolution(ctx, cfg)
+		err := s.runSolutionBatch(ctx, cfg)
 		if err != nil {
 			s.log("error", err.Error())
 		}
@@ -167,6 +184,7 @@ func (s *Service) startSolution(cfg model.Config) error {
 func (s *Service) solutionProgress(change func(*model.SolutionRun)) error {
 	s.mu.Lock()
 	change(s.state.SolutionRun)
+	s.syncSolutionBatchLocked()
 	s.recountLocked()
 	s.mu.Unlock()
 	return s.persist()
@@ -195,10 +213,11 @@ func (s *Service) restorePendingSolution() error {
 }
 
 type solutionAdoption struct {
-	Base   string            `json:"base"`
-	Commit string            `json:"commit"`
-	Tasks  []model.Task      `json:"tasks"`
-	Run    model.SolutionRun `json:"run"`
+	Base   string               `json:"base"`
+	Commit string               `json:"commit"`
+	Tasks  []model.Task         `json:"tasks"`
+	Run    model.SolutionRun    `json:"run"`
+	Batch  *model.SolutionBatch `json:"batch,omitempty"`
 }
 
 // The journal is durable before the fast-forward. Recovery never resets a
@@ -250,6 +269,11 @@ func (s *Service) recoverSolutionAdoption(ctx context.Context, cfg model.Config)
 	}
 	s.mu.Lock()
 	s.state.Tasks, s.state.SolutionRun = j.Tasks, &j.Run
+	if j.Batch != nil {
+		s.state.SolutionBatch = j.Batch
+		s.syncSolutionBatchLocked()
+		finishSolutionBatch(s.state.SolutionBatch, false)
+	}
 	s.recountLocked()
 	s.mu.Unlock()
 	return s.persist()
@@ -263,11 +287,6 @@ func (s *Service) runSolution(ctx context.Context, cfg model.Config) (runErr err
 			return err
 		}
 	}
-	unlock, err := lockSharedQueue(cfg)
-	if err != nil {
-		return err
-	}
-	defer unlock()
 	cat, err := solutionCatalog(ctx, cfg)
 	if err != nil {
 		return err
@@ -285,10 +304,15 @@ func (s *Service) runSolution(ctx context.Context, cfg model.Config) (runErr err
 	m := s.meta
 	oldTasks := copyTasks(s.state.Tasks)
 	runID := uid()
+	executionID := runID
 	if s.activeExecution != nil {
-		runID = s.activeExecution.Run.ID
+		executionID = s.activeExecution.Run.ID
+		runID = executionID
 	}
-	run := &model.SolutionRun{ID: runID, StartedAt: now(), Status: "running", Builds: []model.SolutionBuild{}, Files: []string{}}
+	if s.state.SolutionBatch != nil && s.state.SolutionRun != nil {
+		runID = s.state.SolutionRun.ID
+	}
+	run := &model.SolutionRun{ID: runID, ExecutionID: executionID, Path: cfg.Solution.Path, StartedAt: now(), Status: "running", Builds: []model.SolutionBuild{}, Files: []string{}}
 	s.state.SolutionRun = run
 	s.mu.Unlock()
 	defer func() {
@@ -307,6 +331,7 @@ func (s *Service) runSolution(ctx context.Context, cfg model.Config) (runErr err
 			s.recordSolutionFailureLocked(run)
 		}
 		run.FinishedAt = now()
+		s.syncSolutionBatchLocked()
 		s.recountLocked()
 		s.mu.Unlock()
 		if e := s.persist(); e != nil {
@@ -342,7 +367,7 @@ func (s *Service) runSolution(ctx context.Context, cfg model.Config) (runErr err
 	source := filepath.Join(scratch, m.SourceRelative)
 	info, err := solution.Inspect(source, cfg.Solution.Path)
 	if err != nil {
-		return err
+		return &solutionHoldError{err.Error()}
 	}
 	files := solutionFiles(info)
 	original, texts, err := prepareSolutionInputs(ctx, source, m.Worktree, head, m.SourceRelative, files)
@@ -353,19 +378,11 @@ func (s *Service) runSolution(ctx context.Context, cfg model.Config) (runErr err
 	for f, b := range original {
 		expected[f] = b
 	}
-	if err = s.solutionProgress(func(r *model.SolutionRun) { r.Files = files }); err != nil {
+	if err = s.solutionProgress(func(r *model.SolutionRun) { r.Files = files; r.SourceFiles = append([]string{}, files...) }); err != nil {
 		return err
 	}
-	selected := []model.Rule{}
-	disabled := map[string]bool{}
-	for _, id := range cfg.ExcludedRuleIDs {
-		disabled[id] = true
-	}
-	for _, rule := range cat.Rules {
-		if !disabled[rule.ID] {
-			selected = append(selected, rule)
-		}
-	}
+	var selected []model.Rule
+	var ruleFiles map[string][]string
 	build := s.buildSolution
 	if build == nil {
 		build = solution.Build
@@ -395,6 +412,12 @@ func (s *Service) runSolution(ctx context.Context, cfg model.Config) (runErr err
 		s.log("info", fmt.Sprintf("%s · ビルド %d", cfg.Solution.Path, iteration))
 		built, buildErr := build(ctx, source, *cfg.Solution)
 		built.Iteration = iteration
+		if buildErr == nil {
+			buildErr = verifySolutionScratch(ctx, scratch, m.SourceRelative, head, expected)
+		}
+		if buildErr == nil && built.Success && iteration > 0 {
+			built, buildErr = s.verifyEarlierSolutions(ctx, source, scratch, m, head, cfg, original, expected, built, build)
+		}
 		s.mu.Lock()
 		built.Output = s.redactSecretsLocked(built.Output)
 		for i := range built.Diagnostics {
@@ -410,6 +433,34 @@ func (s *Service) runSolution(ctx context.Context, cfg model.Config) (runErr err
 		if err = verifySolutionScratch(ctx, scratch, m.SourceRelative, head, expected); err != nil {
 			return err
 		}
+		if iteration == 0 {
+			selected, ruleFiles, err = cat.MatchSolutionRules(ctx, source, files, built.Diagnostics)
+			if err != nil {
+				return err
+			}
+			selected, ruleFiles, err = s.freezeSolutionRuleScope(cfg, cat.Rules, selected, ruleFiles, files)
+			if err != nil {
+				return err
+			}
+			byFile := map[string][]string{}
+			for _, file := range files {
+				byFile[file] = []string{}
+			}
+			for _, rule := range selected {
+				for _, file := range ruleFiles[rule.ID] {
+					byFile[file] = append(byFile[file], rule.ID)
+				}
+			}
+			s.mu.Lock()
+			for i := range s.state.Tasks {
+				if ids, ok := byFile[s.state.Tasks[i].File]; ok {
+					s.state.Tasks[i].Rules = ids
+				}
+			}
+			oldTasks = copyTasks(s.state.Tasks)
+			s.recountLocked()
+			s.mu.Unlock()
+		}
 		// Iteration zero also runs the rules even when the initial build succeeds.
 		if built.Success && iteration > 0 {
 			return s.adoptSolution(ctx, cfg, m, scratch, head, original, expected, oldTasks, run, notes, applied)
@@ -424,7 +475,7 @@ func (s *Service) runSolution(ctx context.Context, cfg model.Config) (runErr err
 		buildEvidence := fmt.Sprintf("MSBuild success: %t; exit code: %d\nCompiler diagnostics (including errors beyond the log preview):\n%s\nBuild log:\n%s", built.Success, built.ExitCode, diagnosticsJSON, built.Output)
 		hookedUsage := false
 		proposal, proposeErr := propose(ctx, agent.SolutionInput{
-			Config: cfg, Rules: selected, Files: texts, BuildOutput: buildEvidence,
+			Config: cfg, Rules: selected, RuleFiles: ruleFiles, Files: texts, BuildOutput: buildEvidence,
 			Log: func(msg string) {
 				if strings.HasPrefix(msg, "ソリューション全体の独立レビュー") {
 					s.mu.Lock()
@@ -529,14 +580,18 @@ func (s *Service) runSolution(ctx context.Context, cfg model.Config) (runErr err
 func (s *Service) recordSolutionFailureLocked(run *model.SolutionRun) {
 	for _, t := range s.state.Tasks {
 		for _, h := range t.History {
-			if h.ExecutionID == run.ID {
+			if attemptMatchesSolutionRun(h, run) {
 				return
 			}
 		}
 	}
 	for i := range s.state.Tasks {
 		t := &s.state.Tasks[i]
-		if s.state.Config.Solution == nil || t.File != s.state.Config.Solution.Path {
+		path := run.Path
+		if path == "" && s.state.Config.Solution != nil {
+			path = s.state.Config.Solution.Path
+		}
+		if t.File != path {
 			continue
 		}
 		t.Attempts++
@@ -544,7 +599,7 @@ func (s *Service) recordSolutionFailureLocked(run *model.SolutionRun) {
 		if run.Status == "needs_human" || run.Status == "stopped" {
 			status = "needs_human"
 		}
-		t.History = append(t.History, model.Attempt{ID: uid(), ExecutionID: run.ID, Number: t.Attempts, StartedAt: run.StartedAt, FinishedAt: now(), Outcome: status, Note: run.Note, Usage: run.Usage, RulesApplied: []string{}, Checks: []model.Check{}})
+		t.History = append(t.History, model.Attempt{ID: uid(), ExecutionID: solutionExecutionID(run), SolutionRunID: run.ID, Number: t.Attempts, StartedAt: run.StartedAt, FinishedAt: now(), Outcome: status, Note: run.Note, Usage: run.Usage, RulesApplied: []string{}, Checks: []model.Check{}})
 		t.Status, t.Note, t.UpdatedAt = status, run.Note, now()
 		return
 	}
@@ -650,7 +705,7 @@ func (s *Service) adoptSolution(ctx context.Context, cfg model.Config, m manifes
 			outcome = "done"
 			fileCommit = commit
 		}
-		a := model.Attempt{ID: uid(), ExecutionID: run.ID, Number: t.Attempts, StartedAt: run.StartedAt, FinishedAt: now(), Outcome: outcome, Note: note, RulesApplied: ruleIDs, BaseCommit: head, CommitBase: head, Commit: fileCommit, InputHash: digest(before[file]), OutputHash: digest(after[file]), Checks: []model.Check{{Name: "ソリューションビルド", Status: "passed", Detail: "VS2022 MSBuild が正常終了しました"}, {Name: "ソリューション独立レビュー", Status: "passed", Detail: "各修正案を別コンテキストでレビューしました"}}}
+		a := model.Attempt{ID: uid(), ExecutionID: solutionExecutionID(run), SolutionRunID: run.ID, Number: t.Attempts, StartedAt: run.StartedAt, FinishedAt: now(), Outcome: outcome, Note: note, RulesApplied: ruleIDs, BaseCommit: head, CommitBase: head, Commit: fileCommit, InputHash: digest(before[file]), OutputHash: digest(after[file]), Checks: []model.Check{{Name: "ソリューションビルド", Status: "passed", Detail: "VS2022 MSBuild が正常終了しました"}, {Name: "ソリューション独立レビュー", Status: "passed", Detail: "各修正案を別コンテキストでレビューしました"}}}
 		if i == 0 {
 			a.Usage = run.Usage
 		}
@@ -685,7 +740,9 @@ func (s *Service) adoptSolution(ctx context.Context, cfg model.Config, m manifes
 	s.mu.Lock()
 	run.Status, run.Note, run.Files, run.Commit = "completed", note, changed, commit
 	run.FinishedAt = now()
+	s.syncSolutionBatchLocked()
 	snapshot := *run
+	batchSnapshot := copySolutionBatch(s.state.SolutionBatch)
 	s.mu.Unlock()
 	if commit != "" {
 		if err := requireCleanDiscardWorktree(ctx, m.Worktree); err != nil {
@@ -695,7 +752,7 @@ func (s *Service) adoptSolution(ctx context.Context, cfg model.Config, m manifes
 		if err != nil || trim(current) != head {
 			return fmt.Errorf("採用直前に作業コピーが変更されました")
 		}
-		j := solutionAdoption{Base: head, Commit: commit, Tasks: tasks, Run: snapshot}
+		j := solutionAdoption{Base: head, Commit: commit, Tasks: tasks, Run: snapshot, Batch: batchSnapshot}
 		if err = writeOutputJSON(cfg, cfg.QueuePath+".solution-adoption.json", j); err != nil {
 			return err
 		}

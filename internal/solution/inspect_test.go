@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -80,6 +81,10 @@ func TestInspectIncludesDesignerAndAutoGenCompilationInputs(t *testing.T) {
 			for _, name := range append(append([]string{}, expected...), "App/bin/Generated.Designer.vb", "App/obj/CustomAutoGen.vb", "App/obj/Debug/Generated.g.vb", "App/Form1.resx") {
 				fixtureFile(t, root, name, "")
 			}
+			if sdk {
+				expected = append(expected, "App/Form1.resx")
+				sort.Strings(expected)
+			}
 			info, err := Inspect(root, "App.sln")
 			if err != nil {
 				t.Fatal(err)
@@ -88,6 +93,123 @@ func TestInspectIncludesDesignerAndAutoGenCompilationInputs(t *testing.T) {
 				t.Fatalf("compilation inputs: %#v; want %#v", info.Files, expected)
 			}
 		})
+	}
+}
+
+func TestInspectLinkedProjectTextItemsUsePhysicalPaths(t *testing.T) {
+	root := t.TempDir()
+	fixtureSolution(t, root, "ClientA/App.vbproj", "ClientB/App.vbproj")
+	for _, directory := range []string{"ClientA", "ClientB"} {
+		fixtureFile(t, root, directory+"/App.vbproj", `<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003"><ItemGroup>
+<Compile Include="..\WND\WLS_PASS.xaml.vb"><Link>Views\Password.xaml.vb</Link><DependentUpon>Password.xaml</DependentUpon></Compile>
+<Page Include="..\WND\WLS_PASS.xaml"><Link>Views\Password.xaml</Link><Generator>MSBuild:Compile</Generator></Page>
+<ApplicationDefinition Include="..\WND\Application.xaml"/>
+<EmbeddedResource Include="..\Shared\Messages.resx"><Link>Messages.resx</Link></EmbeddedResource>
+<Resource Include="..\Shared\Dictionary.xaml"/>
+<Content Include="..\Shared\View.xml;..\Shared\Options.json"/>
+<None Include="..\Shared\App.config;..\Shared\Settings.settings;..\Shared\Application.myapp"/>
+<None Remove="..\WND\WLS_PASS.xaml"/>
+<Content Include="..\Shared\logo.png;..\Shared\image.svg;..\Shared\library.dll;..\Shared\key.snk;..\Shared\certificate.pfx"/>
+<EmbeddedResource Include="..\Shared\Compiled.resources;..\Shared\payload.bin"/>
+</ItemGroup></Project>`)
+	}
+	expected := []string{"WND/WLS_PASS.xaml.vb", "WND/WLS_PASS.xaml", "WND/Application.xaml", "Shared/Messages.resx", "Shared/Dictionary.xaml", "Shared/View.xml", "Shared/Options.json", "Shared/App.config", "Shared/Settings.settings", "Shared/Application.myapp"}
+	for _, name := range expected {
+		fixtureFile(t, root, name, "text")
+	}
+	for _, name := range []string{"logo.png", "image.svg", "library.dll", "key.snk", "certificate.pfx", "Compiled.resources", "payload.bin"} {
+		fixtureFile(t, root, "Shared/"+name, "\x00binary")
+	}
+	// No physical Views/Password files exist: Link only names the project tree.
+	info, err := Inspect(root, "App.sln")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(expected)
+	if !reflect.DeepEqual(info.Files, expected) {
+		t.Fatalf("physical project inputs: %#v; want %#v", info.Files, expected)
+	}
+}
+
+func TestInspectSDKDefaultRelatedInputsAndItemSpecificRemoval(t *testing.T) {
+	root := t.TempDir()
+	fixtureSolution(t, root, "App/App.vbproj")
+	fixtureFile(t, root, "App/App.vbproj", `<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><UseWPF>true</UseWPF></PropertyGroup><ItemGroup>
+<None Remove="View.xaml;Class.vb;Messages.resx;Removed.json"/>
+<Compile Remove="NotCompiled.vb"/><Page Remove="NotAPage.xaml"/><EmbeddedResource Remove="Unused.resx"/>
+<None Remove="Release.json" Condition="'$(Configuration)' == 'Release'"/>
+<Content Include="Removed.json"/>
+<Content Include="data/*.xml" Exclude="data/Excluded.xml"/><None Remove="data/*.xml"/>
+</ItemGroup></Project>`)
+	expected := []string{"App/Application.xaml", "App/View.xaml", "App/Class.vb", "App/Messages.resx", "App/App.config", "App/Removed.json", "App/Release.json", "App/data/Included.xml", "App/Settings.settings"}
+	for _, name := range append(append([]string{}, expected...), "App/NotCompiled.vb", "App/NotAPage.xaml", "App/Unused.resx", "App/data/Excluded.xml", "App/bin/Generated.xaml", "App/obj/Generated.resx", "App/library.dll", "App/key.snk", "App/image.png", "App/Other.cs", "App/App.vbproj.user") {
+		fixtureFile(t, root, name, "")
+	}
+	info, err := Inspect(root, "App.sln")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(expected)
+	if !reflect.DeepEqual(info.Files, expected) {
+		t.Fatalf("SDK project inputs: %#v; want %#v", info.Files, expected)
+	}
+}
+
+func TestInspectSDKRelatedDefaultFlags(t *testing.T) {
+	for _, test := range []struct {
+		name, properties string
+		files            []string
+	}{
+		{"all-disabled", `<EnableDefaultItems>false</EnableDefaultItems>`, []string{}},
+		{"none-disabled", `<EnableDefaultNoneItems>false</EnableDefaultNoneItems>`, []string{"Application.xaml", "Class.vb", "Messages.resx", "View.xaml"}},
+		{"resource-disabled", `<EnableDefaultEmbeddedResourceItems>false</EnableDefaultEmbeddedResourceItems>`, []string{"App.config", "Application.xaml", "Class.vb", "View.xaml"}},
+		{"pages-disabled", `<EnableDefaultNoneItems>false</EnableDefaultNoneItems><EnableDefaultPageItems>false</EnableDefaultPageItems>`, []string{"Application.xaml", "Class.vb", "Messages.resx"}},
+		{"application-disabled", `<EnableDefaultNoneItems>false</EnableDefaultNoneItems><EnableDefaultApplicationDefinition>false</EnableDefaultApplicationDefinition>`, []string{"Application.xaml", "Class.vb", "Messages.resx", "View.xaml"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			fixtureSolution(t, root, "App.vbproj")
+			fixtureFile(t, root, "App.vbproj", `<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><UseWPF>true</UseWPF>`+test.properties+`</PropertyGroup><ItemGroup><Content Include="Explicit.xml"/></ItemGroup></Project>`)
+			for _, name := range []string{"Application.xaml", "View.xaml", "Class.vb", "Messages.resx", "App.config", "Explicit.xml"} {
+				fixtureFile(t, root, name, "")
+			}
+			info, err := Inspect(root, "App.sln")
+			if err != nil {
+				t.Fatal(err)
+			}
+			expected := append(append([]string{}, test.files...), "Explicit.xml")
+			sort.Strings(expected)
+			if !reflect.DeepEqual(info.Files, expected) {
+				t.Fatalf("default flags: %#v; want %#v", info.Files, expected)
+			}
+		})
+	}
+}
+
+func TestInspectRejectsUnsafeRelatedItems(t *testing.T) {
+	for _, test := range []struct{ kind, include string }{
+		{"Page", "../../outside.xaml"}, {"Content", "obj/Generated.json"},
+		{"None", "bin/App.config"}, {"EmbeddedResource", "$(Resources)/Messages.resx"},
+		{"Page", "@(OtherPages)"},
+	} {
+		t.Run(test.kind+test.include, func(t *testing.T) {
+			root := t.TempDir()
+			fixtureSolution(t, root, "App/App.vbproj")
+			fixtureFile(t, root, "App/App.vbproj", fmt.Sprintf(`<Project><ItemGroup><%s Include="%s"/></ItemGroup></Project>`, test.kind, test.include))
+			if _, err := Inspect(root, "App.sln"); err == nil {
+				t.Fatal("unsafe related input accepted")
+			}
+		})
+	}
+	root := t.TempDir()
+	fixtureSolution(t, root, "App/App.vbproj")
+	fixtureFile(t, root, "App/App.vbproj", `<Project><ItemGroup><Page Include="Linked.xaml"/></ItemGroup></Project>`)
+	target := fixtureFile(t, root, "Shared/View.xaml", "")
+	if err := os.Symlink(target, filepath.Join(root, "App/Linked.xaml")); err != nil {
+		t.Skip(err)
+	}
+	if _, err := Inspect(root, "App.sln"); err == nil {
+		t.Fatal("symlink related input accepted")
 	}
 }
 

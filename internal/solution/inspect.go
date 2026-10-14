@@ -58,10 +58,11 @@ func Discover(root string) ([]string, error) {
 	return paths, err
 }
 
-// Inspect returns root-relative .vb inputs. The .sln and .vbproj paths are
+// Inspect returns root-relative VB and related project text inputs. The .sln
+// and .vbproj paths are
 // exposed separately so callers can include them as editable project context.
 // This is a conservative, static inspection: custom MSBuild expressions in
-// Compile paths are rejected instead of silently selecting unrelated files.
+// item paths are rejected instead of silently selecting unrelated files.
 // Designer/AutoGen sources are compilation inputs too. The execution layer
 // separately requires every editable input to exist in its pinned Git snapshot.
 func Inspect(root, solutionPath string) (Info, error) {
@@ -130,6 +131,15 @@ func Inspect(root, solutionPath string) (Info, error) {
 	return info, nil
 }
 
+type projectItem struct {
+	XMLName   xml.Name
+	Include   string `xml:"Include,attr"`
+	Exclude   string `xml:"Exclude,attr"`
+	Remove    string `xml:"Remove,attr"`
+	Condition string `xml:"Condition,attr"`
+	// Link and DependentUpon are display metadata, not physical input paths.
+}
+
 type projectXML struct {
 	XMLName xml.Name `xml:"Project"`
 	SDK     string   `xml:"Sdk,attr"`
@@ -137,21 +147,18 @@ type projectXML struct {
 		Name string `xml:"Name,attr"`
 	} `xml:"Sdk"`
 	Properties []struct {
-		Condition                 string `xml:"Condition,attr"`
-		EnableDefaultItems        string `xml:"EnableDefaultItems"`
-		EnableDefaultCompileItems string `xml:"EnableDefaultCompileItems"`
+		Condition                          string `xml:"Condition,attr"`
+		EnableDefaultItems                 string `xml:"EnableDefaultItems"`
+		EnableDefaultCompileItems          string `xml:"EnableDefaultCompileItems"`
+		EnableDefaultEmbeddedResourceItems string `xml:"EnableDefaultEmbeddedResourceItems"`
+		EnableDefaultNoneItems             string `xml:"EnableDefaultNoneItems"`
+		EnableDefaultPageItems             string `xml:"EnableDefaultPageItems"`
+		EnableDefaultApplicationDefinition string `xml:"EnableDefaultApplicationDefinition"`
+		UseWPF                             string `xml:"UseWPF"`
 	} `xml:"PropertyGroup"`
 	Items []struct {
-		Condition string `xml:"Condition,attr"`
-		Compile   []struct {
-			Include   string `xml:"Include,attr"`
-			Exclude   string `xml:"Exclude,attr"`
-			Remove    string `xml:"Remove,attr"`
-			Condition string `xml:"Condition,attr"`
-		} `xml:"Compile"`
-		References []struct {
-			Include string `xml:"Include,attr"`
-		} `xml:"ProjectReference"`
+		Condition string        `xml:"Condition,attr"`
+		Entries   []projectItem `xml:",any"`
 	} `xml:"ItemGroup"`
 }
 
@@ -169,14 +176,23 @@ func inspectProject(root, path string) ([]string, []string, error) {
 		return nil, nil, fmt.Errorf("プロジェクトXMLを読み込めません: %w", err)
 	}
 	dir := filepath.Dir(path)
-	defaultItems, defaultCompileItems := true, true
+	defaultItems, defaultCompile, defaultResources, defaultNone := true, true, true, true
+	defaultPages, defaultApplication, useWPF := true, true, false
 	for _, props := range project.Properties {
-		// A conditional false value cannot suppress another configuration's
-		// inputs. Keep the union of potentially compiled source files.
+		// Conditional false values cannot suppress another configuration's
+		// inputs. Keep the union of potentially active project items.
 		for _, setting := range []struct {
 			value  string
 			target *bool
-		}{{props.EnableDefaultItems, &defaultItems}, {props.EnableDefaultCompileItems, &defaultCompileItems}} {
+		}{
+			{props.EnableDefaultItems, &defaultItems},
+			{props.EnableDefaultCompileItems, &defaultCompile},
+			{props.EnableDefaultEmbeddedResourceItems, &defaultResources},
+			{props.EnableDefaultNoneItems, &defaultNone},
+			{props.EnableDefaultPageItems, &defaultPages},
+			{props.EnableDefaultApplicationDefinition, &defaultApplication},
+			{props.UseWPF, &useWPF},
+		} {
 			value := strings.TrimSpace(setting.value)
 			if strings.EqualFold(value, "true") {
 				*setting.target = true
@@ -186,30 +202,83 @@ func inspectProject(root, path string) ([]string, []string, error) {
 			}
 		}
 	}
-	defaultCompile := (project.SDK != "" || len(project.SDKs) > 0) && defaultItems && defaultCompileItems
-	files := map[string]bool{}
-	if defaultCompile {
-		matches, err := expandCompile(root, dir, "**/*.vb", false)
+	// Keep item types separate: removing a None item must not remove a Page,
+	// Compile, or EmbeddedResource that references the same physical file.
+	byKind := map[string]map[string]bool{}
+	for _, kind := range []string{"Compile", "Page", "ApplicationDefinition", "EmbeddedResource", "Resource", "Content", "None", "AdditionalFiles", "PRIResource"} {
+		byKind[kind] = map[string]bool{}
+	}
+	if (project.SDK != "" || len(project.SDKs) > 0) && defaultItems {
+		matches, err := expandProjectItems(root, dir, "**/*")
 		if err != nil {
 			return nil, nil, err
 		}
 		for _, file := range matches {
-			files[file] = true
+			switch strings.ToLower(filepath.Ext(file)) {
+			case ".vb":
+				if defaultCompile {
+					byKind["Compile"][file] = true
+				}
+			case ".resx":
+				if defaultResources {
+					byKind["EmbeddedResource"][file] = true
+				}
+			default:
+				if defaultNone {
+					byKind["None"][file] = true
+				}
+			}
+			if useWPF && strings.EqualFold(filepath.Ext(file), ".xaml") {
+				application := defaultApplication && strings.EqualFold(relative(dir, file), "Application.xaml")
+				if application {
+					byKind["ApplicationDefinition"][file] = true
+				} else if defaultPages {
+					byKind["Page"][file] = true
+				}
+				// This mirrors the Desktop SDK's default None removal.
+				if defaultApplication && defaultPages {
+					delete(byKind["None"], file)
+				}
+			}
 		}
 	}
 	references := []string{}
 	for _, group := range project.Items {
-		for _, item := range group.Compile {
-			if item.Include != "" {
-				matches, err := expandCompile(root, dir, item.Include, true)
+		for _, item := range group.Entries {
+			kind := item.XMLName.Local
+			if kind == "ProjectReference" {
+				if item.Include == "" {
+					continue
+				}
+				if unresolved(item.Include) {
+					return nil, nil, fmt.Errorf("ProjectReferenceの動的なパスには対応していません: %s", item.Include)
+				}
+				refPath, err := safePath(root, dir, item.Include)
 				if err != nil {
 					return nil, nil, err
 				}
-				excluded, err := compileMatchers(root, dir, item.Exclude)
+				if strings.EqualFold(filepath.Ext(refPath), ".vbproj") {
+					references = append(references, refPath)
+				}
+				continue
+			}
+			files, supported := byKind[kind]
+			if !supported {
+				continue
+			}
+			if item.Include != "" {
+				matches, err := expandProjectItems(root, dir, item.Include)
 				if err != nil {
-					return nil, nil, err
+					return nil, nil, fmt.Errorf("%s: %w", kind, err)
+				}
+				excluded, err := itemMatchers(root, dir, item.Exclude)
+				if err != nil {
+					return nil, nil, fmt.Errorf("%s: %w", kind, err)
 				}
 				for _, file := range matches {
+					if kind == "Compile" && !strings.EqualFold(filepath.Ext(file), ".vb") {
+						continue
+					}
 					if !matchesAny(excluded, filepath.ToSlash(file)) {
 						files[file] = true
 					}
@@ -218,9 +287,9 @@ func inspectProject(root, path string) ([]string, []string, error) {
 			// Conditional removals must not omit files that may be active for
 			// another configuration. They remain in the conservative union.
 			if item.Remove != "" && item.Condition == "" && group.Condition == "" {
-				removed, err := compileMatchers(root, dir, item.Remove)
+				removed, err := itemMatchers(root, dir, item.Remove)
 				if err != nil {
-					return nil, nil, err
+					return nil, nil, fmt.Errorf("%s: %w", kind, err)
 				}
 				for file := range files {
 					if matchesAny(removed, filepath.ToSlash(file)) {
@@ -229,17 +298,11 @@ func inspectProject(root, path string) ([]string, []string, error) {
 				}
 			}
 		}
-		for _, ref := range group.References {
-			if unresolved(ref.Include) {
-				return nil, nil, fmt.Errorf("ProjectReferenceの動的なパスには対応していません: %s", ref.Include)
-			}
-			refPath, err := safePath(root, dir, ref.Include)
-			if err != nil {
-				return nil, nil, err
-			}
-			if strings.EqualFold(filepath.Ext(refPath), ".vbproj") {
-				references = append(references, refPath)
-			}
+	}
+	files := map[string]bool{}
+	for _, inputs := range byKind {
+		for file := range inputs {
+			files[file] = true
 		}
 	}
 	result := make([]string, 0, len(files))
@@ -254,7 +317,7 @@ func unresolved(value string) bool {
 	return strings.Contains(value, "$(") || strings.Contains(value, "@(") || strings.Contains(value, "%(") || strings.Contains(value, "%")
 }
 
-func compileMatchers(root, dir, value string) ([]*regexp.Regexp, error) {
+func itemMatchers(root, dir, value string) ([]*regexp.Regexp, error) {
 	result := []*regexp.Regexp{}
 	for _, item := range strings.Split(value, ";") {
 		item = strings.TrimSpace(item)
@@ -262,14 +325,14 @@ func compileMatchers(root, dir, value string) ([]*regexp.Regexp, error) {
 			continue
 		}
 		if unresolved(item) {
-			return nil, fmt.Errorf("Compileの動的なパスには対応していません: %s", item)
+			return nil, fmt.Errorf("項目の動的なパスには対応していません: %s", item)
 		}
 		pattern := strings.ReplaceAll(item, "\\", "/")
 		if !filepath.IsAbs(filepath.FromSlash(pattern)) {
 			pattern = filepath.ToSlash(filepath.Join(dir, filepath.FromSlash(pattern)))
 		}
 		if !insideRoot(root, filepath.FromSlash(pattern)) {
-			return nil, fmt.Errorf("Compileのパスがワークスペース外です: %s", item)
+			return nil, fmt.Errorf("項目のパスがワークスペース外です: %s", item)
 		}
 		var expression strings.Builder
 		expression.WriteString("(?i)^")
@@ -313,14 +376,14 @@ func matchesAny(patterns []*regexp.Regexp, path string) bool {
 	return false
 }
 
-func expandCompile(root, dir, value string, _ bool) ([]string, error) {
+func expandProjectItems(root, dir, value string) ([]string, error) {
 	result := []string{}
 	for _, item := range strings.Split(value, ";") {
 		item = strings.TrimSpace(item)
 		if item == "" {
 			continue
 		}
-		matchers, err := compileMatchers(root, dir, item)
+		matchers, err := itemMatchers(root, dir, item)
 		if err != nil {
 			return nil, err
 		}
@@ -330,9 +393,9 @@ func expandCompile(root, dir, value string, _ bool) ([]string, error) {
 				return nil, err
 			}
 			if info, err := os.Stat(path); err != nil || !info.Mode().IsRegular() {
-				return nil, fmt.Errorf("Compileには通常ファイルを指定してください: %s", item)
+				return nil, fmt.Errorf("項目には通常ファイルを指定してください: %s", item)
 			}
-			if editableSource(path) {
+			if editableProjectText(path) {
 				result = append(result, path)
 			}
 			continue
@@ -362,7 +425,7 @@ func expandCompile(root, dir, value string, _ bool) ([]string, error) {
 				}
 				return nil
 			}
-			if d.Type().IsRegular() && editableSource(path) && matchesAny(matchers, filepath.ToSlash(path)) {
+			if d.Type().IsRegular() && editableProjectText(path) && matchesAny(matchers, filepath.ToSlash(path)) {
 				result = append(result, path)
 			}
 			return nil
@@ -374,11 +437,21 @@ func expandCompile(root, dir, value string, _ bool) ([]string, error) {
 	return result, nil
 }
 
-func editableSource(path string) bool {
-	// A generated-looking name does not make a committed source disposable:
-	// WinForms designers and other checked-in generated code can contain type
-	// references and calls that must migrate alongside handwritten source.
-	return strings.EqualFold(filepath.Ext(path), ".vb")
+func editableProjectText(path string) bool {
+	// Include related source/configuration text, not arbitrary project assets.
+	// In particular images, assemblies, compiled resources and signing keys
+	// must never be proposed as textual replacements. Generated-looking source
+	// names remain editable when they are committed inputs outside bin/obj.
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".vb", ".xaml", ".resx", ".resw", ".config", ".xml", ".json",
+		".settings", ".myapp", ".manifest", ".xsd", ".xsl", ".xslt", ".wsdl",
+		".disco", ".discomap", ".svcmap", ".datasource", ".txt", ".md",
+		".csv", ".yaml", ".yml", ".ini", ".sql", ".html", ".htm", ".css",
+		".js", ".ts", ".vbhtml", ".aspx", ".ascx", ".master", ".ashx",
+		".asmx", ".asax", ".editorconfig":
+		return true
+	}
+	return false
 }
 
 func excludedDirectory(name string) bool {
